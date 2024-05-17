@@ -1,8 +1,8 @@
 ../../initramfs-tools/lvm2/* usr/share/initramfs-tools
 etc/lvm
-lib/systemd/system/blk-availability*
-lib/systemd/system/lvm2-lvmpolld*
-lib/systemd/system/lvm2-monitor*
+usr/lib/systemd/system/blk-availability*
+usr/lib/systemd/system/lvm2-lvmpolld*
+usr/lib/systemd/system/lvm2-monitor*
 lib/udev/rules.d/*-lvm*.rules
 sbin/fsadm
 sbin/lvchange

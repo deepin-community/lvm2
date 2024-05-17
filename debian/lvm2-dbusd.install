@@ -1,5 +1,5 @@
 etc/dbus-1/system.d/com.redhat.lvmdbus1.conf
-lib/systemd/system/lvm2-lvmdbusd.service
+usr/lib/systemd/system/lvm2-lvmdbusd.service
 sbin/lvmdbusd
 usr/lib/python*/*-packages/lvmdbusd/
 usr/share/dbus-1/system-services/com.redhat.lvmdbus1.service

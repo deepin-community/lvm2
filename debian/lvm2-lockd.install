@@ -1,5 +1,5 @@
-lib/systemd/system/lvmlockd.service
-lib/systemd/system/lvmlocks.service
+usr/lib/systemd/system/lvmlockd.service
+usr/lib/systemd/system/lvmlocks.service
 sbin/lvmlockctl
 sbin/lvmlockd
 usr/share/man/man8/lvmlockctl.8
