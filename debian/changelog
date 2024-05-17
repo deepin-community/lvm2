@@ -1,3 +1,9 @@
+lvm2 (2.03.16-2deepin1) unstable; urgency=medium
+
+  * fix: lvm2-lvmdbusd.service install path error
+
+ -- hudeng <hudeng@deepin.org>  Fri, 17 May 2024 11:25:22 +0800
+
 lvm2 (2.03.16-2) unstable; urgency=medium
 
   * Remove remaining unused init scripts.
