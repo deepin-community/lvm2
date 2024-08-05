@@ -25,18 +25,13 @@
 /* The path to 'cache_restore', if available. */
 #undef CACHE_RESTORE_CMD
 
-/* Define to 1 if the `closedir' function returns void instead of `int'. */
+/* Define to 1 if the `closedir' function returns void instead of int. */
 #undef CLOSEDIR_VOID
 
 /* Path to cmirrord pidfile. */
 #undef CMIRRORD_PIDFILE
 
-/* Define to one of `_getb67', `GETB67', `getb67' for Cray-2 and Cray-YMP
-   systems. This function is required for `alloca.c' support on those systems.
-   */
-#undef CRAY_STACKSEG_END
-
-/* Define to 1 if using `alloca.c'. */
+/* Define to 1 if using 'alloca.c'. */
 #undef C_ALLOCA
 
 /* Name of default metadata archive subdirectory. */
@@ -90,7 +85,7 @@
 /* Use blkid wiping by default. */
 #undef DEFAULT_USE_BLKID_WIPING
 
-/* Default for lvm.conf use_devicefile. */
+/* Default for lvm.conf use_devicesfile. */
 #undef DEFAULT_USE_DEVICES_FILE
 
 /* Use lvmlockd by default. */
@@ -141,11 +136,10 @@
 /* Define to 1 if you have the `alarm' function. */
 #undef HAVE_ALARM
 
-/* Define to 1 if you have `alloca', as a function or macro. */
+/* Define to 1 if you have 'alloca', as a function or macro. */
 #undef HAVE_ALLOCA
 
-/* Define to 1 if you have <alloca.h> and it should be used (not on Ultrix).
-   */
+/* Define to 1 if <alloca.h> works. */
 #undef HAVE_ALLOCA_H
 
 /* Define to 1 if you have the <arpa/inet.h> header file. */
@@ -159,6 +153,9 @@
 
 /* Define to 1 if you have the `atexit' function. */
 #undef HAVE_ATEXIT
+
+/* Define if blkid.h has BLKID_SUBLKS_FSINFO */
+#undef HAVE_BLKID_SUBLKS_FSINFO
 
 /* Define if ioctl BLKZEROOUT can be used for device zeroing. */
 #undef HAVE_BLKZEROOUT
@@ -273,6 +270,9 @@
 /* Define to 1 if you have the <machine/endian.h> header file. */
 #undef HAVE_MACHINE_ENDIAN_H
 
+/* Define to 1 if you have the `mallinfo2' function. */
+#undef HAVE_MALLINFO2
+
 /* Define to 1 if your system has a GNU libc compatible `malloc' function, and
    to 0 otherwise. */
 #undef HAVE_MALLOC
@@ -282,9 +282,6 @@
 
 /* Define to 1 if you have the `memchr' function. */
 #undef HAVE_MEMCHR
-
-/* Define to 1 if you have the <memory.h> header file. */
-#undef HAVE_MEMORY_H
 
 /* Define to 1 if you have the `memset' function. */
 #undef HAVE_MEMSET
@@ -402,7 +399,7 @@
 /* Define to 1 if you have the `strerror' function. */
 #undef HAVE_STRERROR
 
-/* Define to 1 if you have the `strerror_r' function. */
+/* Define if you have `strerror_r'. */
 #undef HAVE_STRERROR_R
 
 /* Define to 1 if you have the <strings.h> header file. */
@@ -604,6 +601,9 @@
 /* Path to lvm binary. */
 #undef LVM_PATH
 
+/* Path to lvresize_fs_helper script. */
+#undef LVRESIZE_FS_HELPER_PATH
+
 /* Define to 1 if `major', `minor', and `makedev' are declared in <mkdev.h>.
    */
 #undef MAJOR_IN_MKDEV
@@ -648,9 +648,6 @@
 /* Define to 1 to include the LVM readline shell. */
 #undef READLINE_SUPPORT
 
-/* Define as the return type of signal handlers (`int' or `void'). */
-#undef RETSIGTYPE
-
 /* Define to 1 to include built-in support for snapshots. */
 #undef SNAPSHOT_INTERNAL
 
@@ -662,7 +659,9 @@
 	STACK_DIRECTION = 0 => direction of growth unknown */
 #undef STACK_DIRECTION
 
-/* Define to 1 if you have the ANSI C header files. */
+/* Define to 1 if all of the C90 standard headers exist (not just the ones
+   required in a freestanding environment). This macro is provided for
+   backward compatibility; new code need not use it. */
 #undef STDC_HEADERS
 
 /* Define to 1 if strerror_r returns char *. */
@@ -693,13 +692,10 @@
 /* The path to 'thin_restore', if available. */
 #undef THIN_RESTORE_CMD
 
-/* Define to 1 if you can safely include both <sys/time.h> and <time.h>. */
-#undef TIME_WITH_SYS_TIME
-
 /* Define to 1 if your <sys/time.h> declares `struct tm'. */
 #undef TM_IN_SYS_TIME
 
-/* Define to 1 to enable synchronisation with udev processing. */
+/* Define to 1 to enable synchronization with udev processing. */
 #undef UDEV_SYNC_SUPPORT
 
 /* Enable a valgrind aware build of pool */
@@ -772,7 +768,7 @@
 /* Define to `long int' if <sys/types.h> does not define. */
 #undef off_t
 
-/* Define to `int' if <sys/types.h> does not define. */
+/* Define as a signed integer type capable of holding a process identifier. */
 #undef pid_t
 
 /* Define to rpl_realloc if the replacement function should be used. */

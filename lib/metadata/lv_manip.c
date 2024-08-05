@@ -31,6 +31,7 @@
 #include "lib/locking/lvmlockd.h"
 #include "lib/label/label.h"
 #include "lib/misc/lvm-signal.h"
+#include "lib/device/filesystem.h"
 
 #ifdef HAVE_BLKZEROOUT
 #include <sys/ioctl.h>
@@ -4369,13 +4370,12 @@ static int _lv_extend_layered_lv(struct alloc_handle *ah,
 		for (s = 0; s < seg->area_count; s++) {
 			struct logical_volume *lv_image;
 			struct logical_volume *lv_iorig;
-			struct logical_volume *lv_imeta;
 			struct lv_segment *seg_image;
 
 			lv_image = seg_lv(seg, s);
 			seg_image = first_seg(lv_image);
 
-			if (!(lv_imeta = seg_image->integrity_meta_dev)) {
+			if (!seg_image->integrity_meta_dev) {
 				log_error("1");
 				return 0;
 			}
@@ -4452,6 +4452,41 @@ static int _lv_extend_layered_lv(struct alloc_handle *ah,
 	}
 
 	return 1;
+}
+
+/* Check either RAID images and metas are being allocated redundantly. */
+static int _lv_raid_redundant(struct logical_volume *lv,
+			      struct dm_list *allocatable_pvs, int meta)
+{
+	uint32_t nlvs, s;
+	struct lv_segment *seg = first_seg(lv);
+	struct pv_list *pvl;
+
+	if (meta && !seg->meta_areas)
+		return 1;
+
+	dm_list_iterate_items(pvl, allocatable_pvs) {
+		nlvs = 0;
+
+		for (s = 0; s < seg->area_count; s++) {
+			struct logical_volume *slv = meta ? seg_metalv(seg, s) : seg_lv(seg, s);
+
+			if (slv && lv_is_on_pv(slv, pvl->pv) && nlvs++) {
+				log_error("LV %s using PV %s is not redundant.",
+					  display_lvname(slv), dev_name(pvl->pv->dev));
+				return 0;
+			}
+		}
+	}
+
+	return 1;
+}
+
+/* Check both RAID images and metas are being allocated redundantly. */
+static int _lv_raid_redundant_allocation(struct logical_volume *lv, struct dm_list *allocatable_pvs)
+{
+	return _lv_raid_redundant(lv, allocatable_pvs, 0) &&
+	       _lv_raid_redundant(lv, allocatable_pvs, 1);
 }
 
 /*
@@ -4555,6 +4590,15 @@ int lv_extend(struct logical_volume *lv,
 		if (!(r = _lv_extend_layered_lv(ah, lv, new_extents - lv->le_count, 0,
 						mirrors, stripes, stripe_size)))
 			goto_out;
+
+		if (segtype_is_raid(segtype) &&
+		    alloc != ALLOC_ANYWHERE &&
+		    !(r = _lv_raid_redundant_allocation(lv, allocatable_pvs))) {
+			log_error("Insufficient suitable allocatable extents for logical volume %s", display_lvname(lv));
+			if (!lv_remove(lv) || !vg_write(lv->vg) || !vg_commit(lv->vg))
+				return_0;
+			goto out;
+		}
 
 		if (lv_raid_has_integrity(lv)) {
 			if (!lv_extend_integrity_in_raid(lv, allocatable_pvs)) {
@@ -4935,29 +4979,14 @@ static int _validate_stripesize(const struct volume_group *vg,
 	return 1;
 }
 
-static int _request_confirmation(const struct logical_volume *lv,
-				 const struct lvresize_params *lp)
+static int _lv_reduce_confirmation(struct logical_volume *lv,
+				   struct lvresize_params *lp)
 {
 	const struct volume_group *vg = lv->vg;
 	struct lvinfo info = { 0 };
 
 	if (!lv_info(vg->cmd, lv, 0, &info, 1, 0) && driver_version(NULL, 0)) {
 		log_error("lv_info failed: aborting.");
-		return 0;
-	}
-
-	if (lp->resizefs) {
-		if (!info.exists) {
-			log_error("Logical volume %s must be activated "
-				  "before resizing filesystem.",
-				  display_lvname(lv));
-			return 0;
-		}
-		return 1;
-	} else if (lv_is_vdo(lv) && !info.exists) {
-		log_error("Logical volume %s must be activated "
-			  "before reducing device size.",
-			  display_lvname(lv));
 		return 0;
 	}
 
@@ -4984,7 +5013,7 @@ static int _request_confirmation(const struct logical_volume *lv,
 
 enum fsadm_cmd_e { FSADM_CMD_CHECK, FSADM_CMD_RESIZE };
 
-#define FSADM_CMD_MAX_ARGS 6
+#define FSADM_CMD_MAX_ARGS 10
 #define FSADM_CHECK_FAILS_FOR_MOUNTED 3 /* shell exist status code */
 
 /*
@@ -5002,10 +5031,15 @@ static int _fsadm_cmd(enum fsadm_cmd_e fcmd,
 	struct cmd_context *cmd = vg->cmd;
 	char lv_path[PATH_MAX];
 	char size_buf[SIZE_BUF];
-	const char *argv[FSADM_CMD_MAX_ARGS + 4];
-	unsigned i = 0;
+	unsigned i = 1;
+	const char *argv[FSADM_CMD_MAX_ARGS] = {
+		find_config_tree_str(cmd, global_fsadm_executable_CFG, NULL)
+	};
 
-	argv[i++] = find_config_tree_str(cmd, global_fsadm_executable_CFG, NULL);
+	if (!argv[0] || !*argv[0]) {
+		log_error("Cannot use misconfigured fsadm executable to resize %s.", display_lvname(lv));
+		return 0;
+	}
 
 	if (test_mode())
 		argv[i++] = "--dry-run";
@@ -5042,8 +5076,6 @@ static int _fsadm_cmd(enum fsadm_cmd_e fcmd,
 		argv[i++] = size_buf;
 	}
 
-	argv[i] = NULL;
-
 	return exec_cmd(cmd, argv, status, 1);
 }
 
@@ -5064,8 +5096,9 @@ static uint32_t _adjust_amount(dm_percent_t percent, int policy_threshold, int p
 	return (policy_amount < percent) ? (uint32_t) percent : (uint32_t) policy_amount;
 }
 
-static int _lvresize_adjust_policy(const struct logical_volume *lv,
-				   uint32_t *amount, uint32_t *meta_amount)
+/* "amount" here is percent */
+int lv_extend_policy_calculate_percent(struct logical_volume *lv,
+				       uint32_t *amount, uint32_t *meta_amount)
 {
 	struct cmd_context *cmd = lv->vg->cmd;
 	dm_percent_t percent;
@@ -5111,8 +5144,10 @@ static int _lvresize_adjust_policy(const struct logical_volume *lv,
 		}
 	}
 
-	if (policy_threshold >= 100)
+	if (policy_threshold >= 100) {
+		log_debug("lvextend policy disabled by threshold 100");
 		return 1; /* nothing to do */
+	}
 
 	if (!policy_amount) {
 		log_error("Can't extend %s with %s autoextend percent set to 0%%.",
@@ -5125,7 +5160,7 @@ static int _lvresize_adjust_policy(const struct logical_volume *lv,
 			goto_bad;
 
 		/* Resize below the minimal usable value */
-		min_threshold = pool_metadata_min_threshold(first_seg(lv)) / DM_PERCENT_1;
+		min_threshold = thin_pool_metadata_min_threshold(first_seg(lv)) / DM_PERCENT_1;
 		*meta_amount = _adjust_amount(thin_pool_status->metadata_usage,
 					      (min_threshold < policy_threshold) ?
 					      min_threshold : policy_threshold, policy_amount);
@@ -5148,27 +5183,43 @@ static int _lvresize_adjust_policy(const struct logical_volume *lv,
 
 	*amount = _adjust_amount(percent, policy_threshold, policy_amount);
 
+	log_debug("lvextend policy calculated percentages main %u meta %u from threshold %d percent %d",
+		  *amount, *meta_amount, policy_threshold, policy_amount);
 	return 1;
 }
 
 static uint32_t _lvseg_get_stripes(struct lv_segment *seg, uint32_t *stripesize)
 {
 	uint32_t s;
-	struct lv_segment *seg_mirr;
+	struct lv_segment *seg_get, *seg_image, *seg_iorig;
+	struct logical_volume *lv_image, *lv_iorig;
 
 	/* If segment mirrored, check if images are striped */
-	if (seg_is_mirrored(seg))
+	if (seg_is_mirrored(seg)) {
 		for (s = 0; s < seg->area_count; s++) {
 			if (seg_type(seg, s) != AREA_LV)
 				continue;
-			seg_mirr = first_seg(seg_lv(seg, s));
 
-			if (seg_is_striped(seg_mirr)) {
-				seg = seg_mirr;
+			lv_image = seg_lv(seg, s);
+			seg_image = first_seg(lv_image);
+			seg_get = NULL;
+
+			if (seg_is_integrity(seg_image)) {
+				/* Get stripe values from the iorig layer. */
+				lv_iorig = seg_lv(seg_image, 0);
+				seg_iorig = first_seg(lv_iorig);
+				seg_get = seg_iorig;
+			} else {
+				/* Get stripe values from the image layer. */
+				seg_get = seg_image;
+			}
+
+			if (seg_get && seg_is_striped(seg_get)) {
+				seg = seg_get;
 				break;
 			}
 		}
-
+	}
 
 	if (seg_is_striped(seg)) {
 		*stripesize = seg->stripe_size;
@@ -5177,125 +5228,11 @@ static uint32_t _lvseg_get_stripes(struct lv_segment *seg, uint32_t *stripesize)
 
 	if (seg_is_raid(seg)) {
 		*stripesize = seg->stripe_size;
-		return _raid_stripes_count(seg);
+		return _raid_stripes_count(seg); 
 	}
 
 	*stripesize = 0;
 	return 0;
-}
-
-static int _lvresize_check(struct logical_volume *lv,
-			   struct lvresize_params *lp)
-{
-	struct volume_group *vg = lv->vg;
-	struct lv_segment *seg = first_seg(lv);
-
-	if (lv_is_external_origin(lv)) {
-		/*
-		 * Since external-origin can be activated read-only,
-		 * there is no way to use extended areas.
-		 */
-		log_error("Cannot resize external origin logical volume %s.",
-			  display_lvname(lv));
-		return 0;
-	}
-
-	if (lv_is_raid_image(lv) || lv_is_raid_metadata(lv)) {
-		log_error("Cannot resize a RAID %s directly",
-			  lv_is_raid_image(lv) ? "image" : "metadata area");
-		return 0;
-	}
-
-	if (lv_is_raid_with_tracking(lv)) {
-		log_error("Cannot resize logical volume %s while it is "
-			  "tracking a split image.", display_lvname(lv));
-		return 0;
-	}
-
-	if ((seg_is_raid4(seg) || seg_is_any_raid5(seg)) && seg->area_count < 3) {
-		log_error("Cannot resize %s LV %s. Convert to more stripes first.",
-			  lvseg_name(seg), display_lvname(lv));
-		return 0;
-	}
-
-	if (lv_is_raid(lv) &&
-	    lp->resize == LV_REDUCE) {
-		unsigned attrs = 0;
-		const struct segment_type *segtype = first_seg(lv)->segtype;
-
-		if (!segtype->ops->target_present ||
-		    !segtype->ops->target_present(lv->vg->cmd, NULL, &attrs) ||
-		    !(attrs & RAID_FEATURE_SHRINK)) {
-			log_error("RAID module does not support shrinking.");
-			return 0;
-		}
-	}
-
-	if (!lv_is_visible(lv) &&
-	    !lv_is_thin_pool_metadata(lv) &&
-	    !lv_is_vdo_pool_data(lv) &&
-	    !lv_is_lockd_sanlock_lv(lv)) {
-		log_error("Can't resize internal logical volume %s.", display_lvname(lv));
-		return 0;
-	}
-
-	if (lv_is_locked(lv)) {
-		log_error("Can't resize locked logical volume %s.", display_lvname(lv));
-		return 0;
-	}
-
-	if (lv_is_converting(lv)) {
-		log_error("Can't resize logical volume %s while "
-			  "lvconvert in progress.", display_lvname(lv));
-		return 0;
-	}
-
-	if (lp->stripe_size) {
-		if (!(vg->fid->fmt->features & FMT_SEGMENTS)) {
-			log_print_unless_silent("Varied stripesize not supported. Ignoring.");
-			lp->stripe_size = lp->stripes = 0;
-		} else if (!_validate_stripesize(vg, lp))
-			return_0;
-	}
-
-	if (lp->resizefs &&
-	    (lv_is_thin_pool(lv) ||
-	     lv_is_thin_pool_data(lv) ||
-	     lv_is_thin_pool_metadata(lv) ||
-	     lv_is_vdo_pool(lv) ||
-	     lv_is_vdo_pool_data(lv) ||
-	     lv_is_pool_metadata_spare(lv) ||
-	     lv_is_lockd_sanlock_lv(lv))) {
-		log_print_unless_silent("Ignoring --resizefs as volume %s does not have a filesystem.",
-					display_lvname(lv));
-		lp->resizefs = 0;
-	}
-
-	if (lp->stripes &&
-	    !(vg->fid->fmt->features & FMT_SEGMENTS)) {
-		log_print_unless_silent("Varied striping not supported. Ignoring.");
-		lp->stripes = 0;
-	}
-
-	if (lp->mirrors &&
-	    !(vg->fid->fmt->features & FMT_SEGMENTS)) {
-		log_print_unless_silent("Mirrors not supported. Ignoring.");
-		lp->mirrors = 0;
-	}
-
-	if (lv_component_is_active(lv)) {
-		log_error("Cannot resize logical volume %s with active component LV(s).",
-			  display_lvname(lv));
-		return 0;
-	}
-
-	if (lv_is_integrity(lv) || lv_raid_has_integrity(lv)) {
-		if (lp->resize == LV_REDUCE) {
-			log_error("Cannot reduce LV with integrity.");
-			return 0;
-		}
-	}
-	return 1;
 }
 
 static int _lvresize_adjust_size(struct volume_group *vg,
@@ -5320,24 +5257,31 @@ static int _lvresize_adjust_size(struct volume_group *vg,
 					display_size(vg->cmd, size));
 	}
 
-	*extents = size / extent_size;
+	if (!(*extents = extents_from_size(vg->cmd, size, extent_size)))
+		return_0;
 
 	return 1;
 }
 
 /*
  * If percent options were used, convert them into actual numbers of extents.
+ * FIXME: fix cases where lp->extents is initially used as a percentage,
+ * and is then rewritten to be a number of extents (simply save the percent
+ * value elsewhere.)
  */
 static int _lvresize_extents_from_percent(const struct logical_volume *lv,
-					  struct lvresize_params *lp,
-					  struct dm_list *pvh)
+					  struct lvresize_params *lp)
 {
 	const struct volume_group *vg = lv->vg;
 	uint32_t pv_extent_count;
 	uint32_t old_extents = lp->extents;
 
+	log_debug("lvresize_extents_from_percent type %d extents %u percent_value %u",
+		  lp->percent, lp->extents, lp->percent_value);
+
 	switch (lp->percent) {
 		case PERCENT_VG:
+			/* rewrites lp->extents from percentage to extents */
 			lp->extents = percent_of_extents(lp->extents, vg->extent_count,
 							 (lp->sign != SIGN_MINUS));
 			if ((lp->sign == SIGN_NONE) && (lp->extents > (lv->le_count + vg->free_count))) {
@@ -5348,21 +5292,45 @@ static int _lvresize_extents_from_percent(const struct logical_volume *lv,
 			}
 			break;
 		case PERCENT_FREE:
+			/* rewrites lp->extents from percentage to extents */
 			lp->extents = percent_of_extents(lp->extents, vg->free_count,
 							 (lp->sign != SIGN_MINUS));
 			break;
 		case PERCENT_LV:
-			lp->extents = percent_of_extents(lp->extents, lv->le_count,
-							 (lp->sign != SIGN_MINUS));
+			if (lp->extents) {
+				/* rewrites lp->extents from percentage to extents */
+				lp->extents = percent_of_extents(lp->extents, lv->le_count,
+								 (lp->sign != SIGN_MINUS));
+			} else if (lp->percent_value) {
+				old_extents = lp->percent_value;
+				lp->extents = percent_of_extents(lp->percent_value, lv->le_count,
+								 (lp->sign != SIGN_MINUS));
+			}
 			break;
 		case PERCENT_PVS:
-			if (pvh != &vg->pvs) {
-				pv_extent_count = pv_list_extents_free(pvh);
-				lp->extents = percent_of_extents(lp->extents, pv_extent_count,
+			if (lp->pvh != &vg->pvs) {
+				pv_extent_count = pv_list_extents_free(lp->pvh);
+				if (lp->extents) {
+					/* rewrites lp->extents from percentage to extents */
+					lp->extents = percent_of_extents(lp->extents, pv_extent_count,
 								 (lp->sign != SIGN_MINUS));
-			} else
-				lp->extents = percent_of_extents(lp->extents, vg->extent_count,
+				} else if (lp->percent_value) {
+					/* lvresize has PVs args and no size of exents options */
+					old_extents = lp->percent_value;
+					lp->extents = percent_of_extents(lp->percent_value, pv_extent_count,
 								 (lp->sign != SIGN_MINUS));
+				}
+			} else {
+				if (lp->extents) {
+					/* rewrites lp->extents from percentage to extents */
+					lp->extents = percent_of_extents(lp->extents, vg->extent_count,
+								 (lp->sign != SIGN_MINUS));
+				} else if (lp->percent_value) {
+					old_extents = lp->percent_value;
+					lp->extents = percent_of_extents(lp->percent_value, vg->extent_count,
+								 (lp->sign != SIGN_MINUS));
+				}
+			}
 			break;
 		case PERCENT_ORIGIN:
 			if (!lv_is_cow(lv)) {
@@ -5430,7 +5398,7 @@ static uint32_t _lv_pe_count(struct logical_volume *lv)
 /* FIXME Avoid having variables like lp->extents mean different things at different places */
 static int _lvresize_adjust_extents(struct logical_volume *lv,
 				    struct lvresize_params *lp,
-				    struct dm_list *pvh)
+				    int *matches_existing)
 {
 	struct volume_group *vg = lv->vg;
 	struct cmd_context *cmd = vg->cmd;
@@ -5621,6 +5589,7 @@ static int _lvresize_adjust_extents(struct logical_volume *lv,
 				seg_size = lp->extents - existing_logical_extents;	// Recalculate
 				if (lp->extents == existing_logical_extents) {
 					/* Signal that normal resizing is not required */
+					lp->size_changed = 1;
 					return 1;
 				}
 			}
@@ -5652,10 +5621,8 @@ static int _lvresize_adjust_extents(struct logical_volume *lv,
 			if (!(seg_size = lp->extents - existing_logical_extents))
 				return 1;  /* No change in metadata size */
 		}
-	} else {  /* If reducing, find stripes, stripesize & size of last segment */
-		if (lp->stripes || lp->stripe_size || lp->mirrors)
-			log_print_unless_silent("Ignoring stripes, stripesize and mirrors "
-						"arguments when reducing.");
+	} else { 
+		/* If reducing, find stripes, stripesize & size of last segment */
 
 		if (lp->sign == SIGN_MINUS)  {
 			if (lp->extents >= existing_extents) {
@@ -5687,7 +5654,7 @@ static int _lvresize_adjust_extents(struct logical_volume *lv,
 						seg_size /= seg_mirrors;
 					lp->extents = logical_extents_used + seg_size;
 					break;
-			}
+				}
 			} else if (new_extents <= logical_extents_used + seg_logical_extents) {
 				seg_size = new_extents - logical_extents_used;
 				lp->extents = new_extents;
@@ -5711,12 +5678,12 @@ static int _lvresize_adjust_extents(struct logical_volume *lv,
 	}
 
 	if ((lp->extents == existing_logical_extents) && !lp->use_policies) {
-		if (!lp->resizefs && !lp->poolmetadata_size) {
-			log_error("New size (%d extents) matches existing size (%d extents).",
-				  lp->extents, existing_logical_extents);
-			return 0;
-		}
-		lp->resize = LV_EXTEND; /* lets pretend zero size extension */
+		log_print_unless_silent("New size (%d extents) matches existing size (%d extents).",
+					lp->extents, existing_logical_extents);
+		if (lp->resize == LV_ANY)
+			lp->resize = LV_EXTEND; /* lets pretend zero size extension */
+		*matches_existing = 1;
+		return 1;
 	}
 
 	/* Perform any rounding to produce complete stripes. */
@@ -5771,12 +5738,12 @@ static int _lvresize_adjust_extents(struct logical_volume *lv,
 		}
 		lp->resize = LV_EXTEND;
 	} else if ((lp->extents == existing_logical_extents) && !lp->use_policies) {
-		if (!lp->resizefs && !lp->poolmetadata_size) {
-			log_error("New size (%d extents) matches existing size "
-				  "(%d extents)", lp->extents, existing_logical_extents);
-			return 0;
-		}
-		lp->resize = LV_EXTEND;
+		log_print_unless_silent("New size (%d extents) matches existing size (%d extents)",
+					lp->extents, existing_logical_extents);
+		if (lp->resize == LV_ANY)
+			lp->resize = LV_EXTEND;
+		*matches_existing = 1;
+		return 1;
 	}
 
 	/*
@@ -5794,8 +5761,52 @@ static int _lvresize_adjust_extents(struct logical_volume *lv,
 	return 1;
 }
 
-static int _lvresize_check_type(const struct logical_volume *lv,
-				const struct lvresize_params *lp)
+static int _lv_reduce_vdo_discard(struct cmd_context *cmd,
+				  struct logical_volume *lv,
+				  struct lvresize_params *lp)
+{
+	char name[PATH_MAX];
+	struct device *dev;
+	struct volume_group *vg = lv->vg;
+
+	/* FIXME: stop using dev-cache and struct device here, dev-cache
+	   should only be used for scanning headers/metadata to find PVs. */
+
+	if (dm_snprintf(name, sizeof(name), "%s%s/%s", cmd->dev_dir,
+			vg->name, lv->name) < 0) {
+		log_error("Name too long - device not discarded (%s)", lv->name);
+		return 0;
+	}
+
+	if (!(dev = dev_cache_get(cmd, name, NULL))) {
+		log_error("%s: not found: device not discarded.", name);
+		return 0;
+	}
+
+	if (!dev_discard_max_bytes(cmd->dev_types, dev) ||
+	    !dev_discard_granularity(cmd->dev_types, dev)) {
+		log_error("%s: max bytes and granularity query fails.", name);
+		dev_destroy_file(dev);
+		return 0;
+	}
+
+	log_warn("WARNING: %s: Discarding %s at offset " FMTu64 ", please wait...",
+		 name, display_size(cmd, (uint64_t)(lv->le_count - lp->extents) * vg->extent_size),
+		 ((uint64_t)lp->extents * vg->extent_size) << SECTOR_SHIFT);
+
+	if (!dev_discard_blocks(dev, ((uint64_t)lp->extents * vg->extent_size) << SECTOR_SHIFT,
+				((uint64_t)(lv->le_count - lp->extents) * vg->extent_size) << SECTOR_SHIFT)) {
+		log_error("%s: discarding failed.", name);
+		dev_destroy_file(dev);
+		return 0;
+	}
+
+	dev_destroy_file(dev);
+	return 1;
+}
+
+static int _lv_resize_check_type(struct logical_volume *lv,
+				 struct lvresize_params *lp)
 {
 	struct lv_segment *seg;
 
@@ -5810,6 +5821,20 @@ static int _lvresize_check_type(const struct logical_volume *lv,
 				  "only while inactive: try lvchange -an.");
 			return 0;
 		}
+	}
+
+	if (lv_is_raid_image(lv) || lv_is_raid_metadata(lv)) {
+		log_error("Cannot resize a RAID %s directly for %s",
+			  lv_is_raid_image(lv) ? "image" : "metadata area",
+			  display_lvname(lv));
+		return 0;
+	}
+
+	seg = first_seg(lv);
+	if ((seg_is_raid4(seg) || seg_is_any_raid5(seg)) && seg->area_count < 3) {
+		log_error("Cannot resize %s LV %s. Convert to more stripes first.",
+			  lvseg_name(seg), display_lvname(lv));
+		return 0;
 	}
 
 	if (lp->resize == LV_REDUCE) {
@@ -5830,6 +5855,21 @@ static int _lvresize_check_type(const struct logical_volume *lv,
 		if (lv_is_writecache(lv)) {
 			/* TODO: detect kernel with support for reduction */
 			log_error("Reduce not yet allowed on LVs with writecache attached.");
+			return 0;
+		}
+		if (lv_is_raid(lv)) {
+			unsigned attrs = 0;
+			const struct segment_type *segtype = first_seg(lv)->segtype;
+
+			if (!segtype->ops->target_present ||
+			    !segtype->ops->target_present(lv->vg->cmd, NULL, &attrs) ||
+			    !(attrs & RAID_FEATURE_SHRINK)) {
+				log_error("RAID module does not support shrinking.");
+				return 0;
+			}
+		}
+		if (lv_is_integrity(lv) || lv_raid_has_integrity(lv)) {
+			log_error("Cannot reduce LV with integrity.");
 			return 0;
 		}
 	} else if (lp->resize == LV_EXTEND)  {
@@ -5856,12 +5896,15 @@ static int _lvresize_check_type(const struct logical_volume *lv,
 		return 0;
 	}
 
+	if ((lp->resize == LV_REDUCE) && (lp->pvh != &lv->vg->pvs))
+		log_print_unless_silent("Ignoring PVs on command line when reducing.");
+
 	return 1;
 }
 
-static int _lvresize_volume(struct logical_volume *lv,
-			    struct lvresize_params *lp,
-			    struct dm_list *pvh)
+static int _lv_resize_volume(struct logical_volume *lv,
+			     struct lvresize_params *lp,
+			     struct dm_list *pvh)
 {
 	struct volume_group *vg = lv->vg;
 	struct cmd_context *cmd = vg->cmd;
@@ -5895,24 +5938,32 @@ static int _lvresize_volume(struct logical_volume *lv,
 					display_lvname(lv),
 					display_size(cmd, (uint64_t) old_extents * vg->extent_size), old_extents,
 					display_size(cmd, (uint64_t) lv->le_count * vg->extent_size), lv->le_count);
-
-		/* Resizing metadata and PV list is not specified -> maintain size of _pmspare volume */
-		if ((&vg->pvs == pvh) && lv_is_pool_metadata(lv))
-			(void) handle_pool_metadata_spare(vg, 0, pvh, 1);
 	}
 
 	return 1;
 }
 
-static int _lvresize_prepare(struct logical_volume *lv,
-			     struct lvresize_params *lp,
-			     struct dm_list *pvh)
+static int _lv_resize_adjust_size(struct logical_volume *lv,
+				  struct lvresize_params *lp,
+				  int *matches_existing)
 {
 	/* Resolve extents from size */
-	if (lp->size && !_lvresize_adjust_size(lv->vg, lp->size, lp->sign, &lp->extents))
-		return_0;
-	else if (lp->extents && !_lvresize_extents_from_percent(lv, lp, pvh))
-		return_0;
+	if (lp->size) {
+		if (!_lvresize_adjust_size(lv->vg, lp->size, lp->sign, &lp->extents))
+			return_0;
+	}
+
+	/* set lp->extents based on lp->percent_value */
+	else if (lp->percent_value) {
+		if (!_lvresize_extents_from_percent(lv, lp))
+			return_0;
+	}
+
+	/* rewrites lp->extents from percentage to extents */
+	else if (lp->extents && (lp->percent != PERCENT_NONE)) {
+		if (!_lvresize_extents_from_percent(lv, lp))
+			return_0;
+	}
 
 	/* Ensure stripe boundary extents! */
 	if (!lp->percent && lv_is_raid(lv))
@@ -5920,18 +5971,15 @@ static int _lvresize_prepare(struct logical_volume *lv,
 						       seg_is_raid1(first_seg(lv)) ? 0 : _raid_stripes_count(first_seg(lv)),
 						       lp->resize == LV_REDUCE ? 0 : 1);
 
-	if (!_lvresize_adjust_extents(lv, lp, pvh))
-		return_0;
-
-	if (!_lvresize_check_type(lv, lp))
+	if (!_lvresize_adjust_extents(lv, lp, matches_existing))
 		return_0;
 
 	return 1;
 }
 
-/* Set aux LV properties, we can't use those from command line */
-static struct logical_volume *_lvresize_setup_aux(struct logical_volume *lv,
-						  struct lvresize_params *lp)
+/* Set thin pool metadata properties, we can't use those from command line */
+static void _setup_params_for_extend_metadata(struct logical_volume *lv,
+					     struct lvresize_params *lp)
 {
 	struct lv_segment *mseg = last_seg(lv);
 
@@ -5939,275 +5987,1161 @@ static struct logical_volume *_lvresize_setup_aux(struct logical_volume *lv,
 	lp->percent = PERCENT_NONE;
 	lp->segtype = mseg->segtype;
 	lp->mirrors = seg_is_mirrored(mseg) ? lv_mirror_count(lv) : 0;
-	lp->resizefs = 0;
+	lp->fsopt[0] = '\0';
 	lp->stripes = lp->mirrors ? mseg->area_count / lp->mirrors : 0;
 	lp->stripe_size = mseg->stripe_size;
-
-	return lv;
 }
 
-int lv_resize(struct logical_volume *lv,
-	      struct lvresize_params *lp,
-	      struct dm_list *pvh)
-{
-	struct volume_group *vg = lv->vg;
-	struct cmd_context *cmd = vg->cmd;
-	struct logical_volume *lock_lv = (struct logical_volume*) lv_lock_holder(lv);
-	struct logical_volume *aux_lv = NULL; /* Note: aux_lv never resizes fs */
-	struct logical_volume *resizable_layer_lv;
-	struct lvresize_params aux_lp;
-	struct lv_segment *seg = first_seg(lv);
-	int activated = 0;
-	int ret = 0;
-	int status;
-	struct device *dev;
-	char name[PATH_MAX];
 
-	if (lp->use_policies) {
-		if (!lv_is_cow(lv) &&
-		    !lv_is_thin_pool(lv) &&
-		    !lv_is_vdo_pool(lv)) {
-			log_error("Policy-based resize is supported only for snapshot, thin pool and vdo pool volumes.");
+static int _lv_resize_check_used(struct logical_volume *lv)
+{
+	if (!lv) {
+		log_error(INTERNAL_ERROR "LV is not specified.");
+		return 0;
+	}
+
+	if (lv_is_locked(lv)) {
+		log_error("Can't resize locked logical volume %s.", display_lvname(lv));
+		return 0;
+	}
+
+	if (lv_is_converting(lv)) {
+		log_error("Can't resize logical volume %s while lvconvert in progress.", display_lvname(lv));
+		return 0;
+	}
+
+	if (lv_component_is_active(lv)) {
+		log_error("Cannot resize logical volume %s with active component LV(s).", display_lvname(lv));
+		return 0;
+	}
+
+	if (lv_is_raid_with_tracking(lv)) {
+		log_error("Cannot resize logical volume %s while it is tracking a split image.", display_lvname(lv));
+		return 0;
+	}
+
+	if (lv_is_vdo(lv) && !lv_is_active(lv)) {
+		log_error("Cannot resize inactive VDO logical volume %s.", display_lvname(lv));
+		return 0;
+	}
+
+	if (lv_is_vdo_pool(lv) && !lv_is_active(lv_lock_holder(lv))) {
+		log_error("Cannot resize inactive VDO POOL volume %s.", display_lvname(lv));
+		return 0;
+	}
+
+	if (lv_is_external_origin(lv)) {
+		/*
+		 * Since external-origin can be activated read-only,
+		 * there is no way to use extended areas.
+		 */
+		log_error("Cannot resize external origin logical volume %s.",
+			  display_lvname(lv));
+		return 0;
+	}
+
+	return 1;
+}
+
+/*
+ * --fs checksize: check fs size and allow the lv to reduce if the fs is not
+ * 		using the affected space, i.e. the fs does not need to be
+ *		resized.  fail the command without reducing the fs or lv if
+ *		the fs is using the affected space.
+ *
+ * --fs resize --fsmode manage: resize the fs, mounting/unmounting the fs
+ *  		as needed, but avoiding mounting/unmounted when possible.
+ *
+ * --fs resize --fsmode nochange: resize the fs without changing the current
+ *		mount/unmount state. fail the command without reducing the
+ *		fs or lv if the fs resize would require mounting or unmounting.
+ *
+ * --fs resize --fsmode offline: resize the fs only while it's unmounted
+ *		unmounting the fs if needed.  fail the commandn without
+ *		reducing the fs or lv if the fs resize would require having
+ *		the fs mounted.
+ *
+ * --fs resize_fsadm: old method using fsadm script to do everything
+ */
+static int _fs_reduce_allow(struct cmd_context *cmd, struct logical_volume *lv,
+			    struct lvresize_params *lp, uint64_t newsize_bytes_lv,
+			    uint64_t newsize_bytes_fs, struct fs_info *fsi)
+{
+	const char *fs_reduce_cmd = "";
+	const char *cmp_desc = "";
+	int equal = 0, smaller = 0, larger = 0;
+	int is_ext_fstype = 0;
+	int confirm_mount_change = 0;
+
+	/*
+	 * Allow reducing the LV for other fs types if the fs is not using
+	 * space that's being reduced.
+	 */
+	if (!strcmp(fsi->fstype, "ext2") ||
+	    !strcmp(fsi->fstype, "ext3") ||
+	    !strcmp(fsi->fstype, "ext4") ||
+	    !strcmp(fsi->fstype, "xfs")) {
+		log_debug("Found fs %s last_byte %llu newsize_bytes_fs %llu",
+			  fsi->fstype,
+			  (unsigned long long)fsi->fs_last_byte,
+			  (unsigned long long)newsize_bytes_fs);
+		if (!strncmp(fsi->fstype, "ext", 3)) {
+			is_ext_fstype = 1;
+			fs_reduce_cmd = " resize2fs";
+		}
+	}
+
+	if (!fsi->mounted)
+		log_print_unless_silent("File system %s%s found on %s.",
+					fsi->fstype, fsi->needs_crypt ? "+crypto_LUKS" : "",
+					display_lvname(lv));
+	else
+		log_print_unless_silent("File system %s%s found on %s mounted at %s.",
+					fsi->fstype, fsi->needs_crypt ? "+crypto_LUKS" : "",
+					display_lvname(lv), fsi->mount_dir);
+
+	if (!fsi->fs_last_byte) {
+		if (!strcmp(fsi->fstype, "reiserfs")) {
+			log_error("File system reduce for reiserfs requires --fs resize_fsadm.");
 			return 0;
 		}
+		log_error("File system device usage is not available from libblkid.");
+		return 0;
+	}
 
-		lp->extents = 0;
-		lp->sign = SIGN_PLUS;
-		lp->percent = PERCENT_LV;
+	if ((equal = (fsi->fs_last_byte == newsize_bytes_fs)))
+		cmp_desc = "equal to";
+	else if ((smaller = (fsi->fs_last_byte < newsize_bytes_fs)))
+		cmp_desc = "smaller than";
+	else if ((larger = (fsi->fs_last_byte > newsize_bytes_fs)))
+		cmp_desc = "larger than";
 
-		aux_lp = *lp;
-		if (!_lvresize_adjust_policy(lv, &lp->extents, &aux_lp.extents))
+	log_print_unless_silent("File system size (%s) is %s the requested size (%s).",
+				display_size(cmd, fsi->fs_last_byte/512), cmp_desc,
+				display_size(cmd, newsize_bytes_fs/512));
+
+	/*
+	 * FS reduce is not needed, it's not using the affected space.
+	 */
+	if (smaller || equal) {
+		log_print_unless_silent("File system reduce is not needed, skipping.");
+		fsi->needs_reduce = 0;
+		return 1;
+	}
+
+	/*
+	 * FS reduce is required, but checksize does not allow it.
+	 */
+	if (!strcmp(lp->fsopt, "checksize")) {
+		if (is_ext_fstype)
+			log_error("File system reduce is required (see resize2fs or --resizefs.)");
+		else
+			log_error("File system reduce is required and not supported (%s).", fsi->fstype);
+		return 0;
+	}
+
+	/*
+	 * FS reduce required, ext* supports it, xfs does not.
+	 */
+	if (is_ext_fstype) {
+		log_print_unless_silent("File system reduce is required using resize2fs.");
+	} else if (!strcmp(fsi->fstype, "reiserfs")) {
+		log_error("File system reduce for reiserfs requires --fs resize_fsadm.");
+		return 0;
+	} else {
+		log_error("File system reduce is required and not supported (%s).", fsi->fstype);
+		return 0;
+	}
+
+	/*
+	 * Set fstype-specific requirements for running fs resize command.
+	 * ext2,3,4 require the fs to be unmounted to shrink with resize2fs,
+	 * and they require e2fsck to be run first, unless resize2fs -f is used.
+	 */
+	if (is_ext_fstype) {
+		/* it's traditional to run fsck before shrink */
+		if (!lp->nofsck)
+			fsi->needs_fsck = 1;
+
+		/* ext2,3,4 require fs to be unmounted to shrink */
+		if (fsi->mounted)
+			fsi->needs_unmount = 1;
+
+		fsi->needs_reduce = 1;
+	} else {
+		/*
+		 * Shouldn't reach here since no other fs types get this far.
+		 * A future fs supporting shrink may require the fs to be
+		 * mounted or unmounted to run the fs shrink command.
+		 * set fsi->needs_unmount or fs->needs_mount according to
+		 * the fs-specific shrink command's requirement.
+		 */
+		log_error("File system %s: fs reduce not implemented.", fsi->fstype);
+		return 0;
+	}
+
+	/*
+	 * FS reduce may require mounting or unmounting, check the fsopt value
+	 * from the user, and the current mount state to decide if fs resize
+	 * can be done.
+	 */
+	if (!strcmp(lp->fsopt, "resize") && !strcmp(lp->fsmode, "nochange")) {
+		/* can't mount|unmount to run fs resize */
+		if (fsi->needs_mount) {
+			log_error("File system needs to be mounted to reduce fs (see --fsmode).");
+			return 0;
+		}
+		if (fsi->needs_unmount) {
+			log_error("File system needs to be unmounted to reduce fs (see --fsmode).");
+			return 0;
+		}
+	} else if (!strcmp(lp->fsopt, "resize") && !strcmp(lp->fsmode, "offline")) {
+		/* we can unmount if needed to run fs resize */
+		if (fsi->needs_mount) {
+			log_error("File system needs to be mounted to reduce fs (see --fsmode).");
+			return 0;
+		}
+	} else if (!strcmp(lp->fsopt, "resize") && !strcmp(lp->fsmode, "manage")) {
+		/* we can mount|unmount as needed to run fs resize */
+		/* confirm mount change unless --fsmode manage is set explicitly */
+
+		if (fsi->needs_mount || fsi->needs_unmount)
+			confirm_mount_change = 1;
+
+		if (lp->user_set_fsmode)
+			confirm_mount_change = 0;
+	} else {
+		log_error("Unknown file system resize options: --fs %s --fsmode %s", lp->fsopt, lp->fsmode);
+		return 0;
+	}
+
+	/*
+	 * If future file systems can be reduced while mounted, then suppress
+	 * needs_fsck here if the fs is already mounted.
+	 */
+
+	if (fsi->needs_unmount)
+		log_print_unless_silent("File system unmount is needed for reduce.");
+	if (fsi->needs_fsck)
+		log_print_unless_silent("File system fsck will be run before reduce.");
+	if (fsi->needs_mount)
+		log_print_unless_silent("File system mount is needed for reduce.");
+	if (fsi->needs_crypt)
+		log_print_unless_silent("cryptsetup resize is needed for reduce.");
+
+	/*
+	 * Use a confirmation prompt because mount|unmount is needed, and
+	 * no specific --fsmode was set (i.e. the user did not give specific
+	 * direction about how to handle mounting|unmounting with --fsmode.)
+	 */
+	if (!lp->yes && confirm_mount_change) {
+		if (yes_no_prompt("Continue with %s file system reduce steps:%s%s%s%s%s? [y/n]:",
+				  fsi->fstype,
+				  fsi->needs_unmount ? " unmount," : "",
+				  fsi->needs_fsck ? " fsck," : "",
+				  fsi->needs_mount ? " mount," : "",
+				  fsi->needs_crypt ? " cryptsetup," : "",
+				  fsi->needs_reduce ? fs_reduce_cmd : "") == 'n') {
+			log_error("File system not reduced.");
+			return 0;
+		}
+	}
+
+	return 1;
+}
+
+static int _fs_extend_allow(struct cmd_context *cmd, struct logical_volume *lv,
+			    struct lvresize_params *lp, struct fs_info *fsi)
+{
+	const char *fs_extend_cmd = "";
+	int is_ext_fstype = 0;
+	int confirm_mount_change = 0;
+
+	if (!strcmp(fsi->fstype, "ext2") ||
+	    !strcmp(fsi->fstype, "ext3") ||
+	    !strcmp(fsi->fstype, "ext4") ||
+	    !strcmp(fsi->fstype, "xfs")) {
+		log_debug("Found fs %s last_byte %llu",
+			  fsi->fstype, (unsigned long long)fsi->fs_last_byte);
+		if (!strncmp(fsi->fstype, "ext", 3))
+			is_ext_fstype = 1;
+	} else if (!strcmp(fsi->fstype, "reiserfs")) {
+		log_error("File system extend for reiserfs requires --fs resize_fsadm.");
+		return 0;
+	} else {
+		log_error("File system extend is not supported (%s).", fsi->fstype);
+		return 0;
+	}
+
+	if (!fsi->mounted)
+		log_print_unless_silent("File system %s%s found on %s.",
+					fsi->fstype, fsi->needs_crypt ? "+crypto_LUKS" : "",
+					display_lvname(lv));
+	else
+		log_print_unless_silent("File system %s%s found on %s mounted at %s.",
+					fsi->fstype, fsi->needs_crypt ? "+crypto_LUKS" : "",
+					display_lvname(lv), fsi->mount_dir);
+
+	/*
+	 * FS extend may require mounting or unmounting, check the fsopt value
+	 * from the user, and the current mount state to decide if fs extend
+	 * can be done.
+	 */
+
+	if (is_ext_fstype) {
+		fs_extend_cmd = " resize2fs";
+
+		/*
+		 * ext* can be extended while it's mounted or unmounted.  If
+		 * the fs is unmounted, it's traditional to run fsck before
+		 * running the fs extend.
+		 *
+		 * --fs resize --fsmode nochange: don't change mount condition.
+		 * if mounted: fs_extend
+		 * if unmounted: fsck, fs_extend
+		 *
+		 * --fs resize --fsmode offline: extend offline, so unmount first if mounted.
+		 * if mounted: unmount, fsck, fs_extend
+		 * if unmounted: fsck, fs_extend
+		 *
+		 * --fs resize --fsmode manage: do any mount or unmount that's necessary,
+		 * avoiding unnecessary mounting/unmounting.
+		 * if mounted: fs_extend
+		 * if unmounted: fsck, fs_extend
+		 */
+		if (!strcmp(lp->fsopt, "resize") && !strcmp(lp->fsmode, "nochange")) {
+			if (fsi->mounted)
+				fsi->needs_extend = 1;
+			else if (fsi->unmounted) {
+				fsi->needs_fsck = 1;
+				fsi->needs_extend = 1;
+			}
+		} else if (!strcmp(lp->fsopt, "resize") && !strcmp(lp->fsmode, "offline")) {
+			if (fsi->mounted) {
+				fsi->needs_unmount = 1;
+				fsi->needs_fsck = 1;
+				fsi->needs_extend = 1;
+			} else if (fsi->unmounted) {
+				fsi->needs_fsck = 1;
+				fsi->needs_extend = 1;
+			}
+		} else if (!strcmp(lp->fsopt, "resize") && !strcmp(lp->fsmode, "manage")) {
+			if (fsi->mounted)
+				fsi->needs_extend = 1;
+			else if (fsi->unmounted) {
+				fsi->needs_fsck = 1;
+				fsi->needs_extend = 1;
+			}
+		}
+
+		if (lp->nofsck)
+			fsi->needs_fsck = 0;
+
+	} else if (!strcmp(fsi->fstype, "xfs")) {
+		fs_extend_cmd = " xfs_growfs";
+
+		/*
+		 * xfs must be mounted to extend.
+		 *
+		 * --fs resize --fsmode nochange: don't change mount condition.
+		 * if mounted: fs_extend
+		 * if unmounted: fail
+		 *
+		 * --fs resize --fsmode offline: extend offline, so unmount first if mounted.
+		 * if mounted: fail
+		 * if unmounted: fail
+		 *
+		 * --fs resize --fsmode manage: do any mount or unmount that's necessary,
+		 * avoiding unnecessary mounting/unmounting.
+		 * if mounted: fs_extend
+		 * if unmounted: mount, fs_extend
+		 */
+		if (!strcmp(lp->fsopt, "resize") && !strcmp(lp->fsmode, "nochange")) {
+			if (fsi->mounted)
+				fsi->needs_extend = 1;
+			else if (fsi->unmounted) {
+				log_error("File system must be mounted to extend (see --fsmode).");
+				return 0;
+			}
+		} else if (!strcmp(lp->fsopt, "resize") && !strcmp(lp->fsmode, "offline")) {
+			log_error("File system must be mounted to extend (see --fsmode).");
+			return 0;
+		} else if (!strcmp(lp->fsopt, "resize") && !strcmp(lp->fsmode, "manage")) {
+			if (fsi->mounted)
+				fsi->needs_extend = 1;
+			else if (fsi->unmounted) {
+				fsi->needs_mount = 1;
+				fsi->needs_extend = 1;
+			}
+		}
+
+	} else {
+		/* shouldn't reach here */
+		log_error("File system type %s not handled.", fsi->fstype);
+		return 0;
+	}
+
+	/*
+	 * Skip needs_fsck if the fs is mounted and we can extend the fs while
+	 * it's mounted.
+	 */
+	if (fsi->mounted && !fsi->needs_unmount && fsi->needs_fsck) {
+		log_print_unless_silent("File system fsck skipped for extending mounted fs.");
+		fsi->needs_fsck = 0;
+	}
+
+	if (fsi->needs_unmount)
+		log_print_unless_silent("File system unmount is needed for extend.");
+	if (fsi->needs_fsck)
+		log_print_unless_silent("File system fsck will be run before extend.");
+	if (fsi->needs_mount)
+		log_print_unless_silent("File system mount is needed for extend.");
+	if (fsi->needs_crypt)
+		log_print_unless_silent("cryptsetup resize is needed for extend.");
+
+	/*
+	 * Use a confirmation prompt when mount|unmount is needed if
+	 * the user did not give specific direction about how to handle
+	 * mounting|unmounting with --fsmode.
+	 */
+	if (!strcmp(lp->fsopt, "resize") && !lp->user_set_fsmode &&
+	    (fsi->needs_mount || fsi->needs_unmount))
+		confirm_mount_change = 1;
+
+	if (!lp->yes && confirm_mount_change) {
+		if (yes_no_prompt("Continue with %s file system extend steps:%s%s%s%s%s? [y/n]:",
+				  fsi->fstype,
+				  fsi->needs_unmount ? " unmount," : "",
+				  fsi->needs_fsck ? " fsck," : "",
+				  fsi->needs_mount ? " mount," : "",
+				  fsi->needs_crypt ? " cryptsetup," : "",
+				  fsi->needs_extend ? fs_extend_cmd : "") == 'n') {
+			log_error("File system not extended.");
+			return 0;
+		}
+	}
+
+	return 1;
+}
+
+static int _fs_reduce(struct cmd_context *cmd, struct logical_volume *lv,
+		      struct lvresize_params *lp)
+{
+	struct fs_info fsinfo;
+	struct fs_info fsinfo2;
+	uint64_t newsize_bytes_lv;
+	uint64_t newsize_bytes_fs;
+	int ret = 0;
+
+	memset(&fsinfo, 0, sizeof(fsinfo));
+	memset(&fsinfo2, 0, sizeof(fsinfo));
+
+	if (!fs_get_info(cmd, lv, &fsinfo, 1))
+		goto_out;
+
+	if (fsinfo.nofs) {
+		ret = 1;
+		goto_out;
+	}
+
+	/* extent_size units is SECTOR_SIZE (512) */
+	newsize_bytes_lv = lp->extents * lv->vg->extent_size * SECTOR_SIZE;
+	newsize_bytes_fs = newsize_bytes_lv;
+
+	/*
+	 * If needs_crypt, then newsize_bytes passed to fs_reduce_script() and
+	 * crypt_resize_script() needs to be decreased by the offset of crypt
+	 * data on the LV (usually the size of the LUKS header which is usually
+	 * 2MB for LUKS1 and 16MB for LUKS2.)
+	 */
+	if (fsinfo.needs_crypt) {
+		newsize_bytes_fs -= fsinfo.crypt_offset_bytes;
+		log_print_unless_silent("File system size %llub is adjusted for crypt data offset %ub.",
+					(unsigned long long)newsize_bytes_fs, fsinfo.crypt_offset_bytes);
+	}
+
+	/*
+	 * Based on the --fs command option, the fs type, the last block used,
+	 * and the mount state, determine if LV reduce is allowed.  If not
+	 * returns 0 and lvreduce should fail.  If allowed, returns 1 and sets
+	 * fsinfo.needs_* for any steps that are required to reduce the LV.
+	 */
+	if (!_fs_reduce_allow(cmd, lv, lp, newsize_bytes_lv, newsize_bytes_fs, &fsinfo))
+		goto_out;
+
+	/*
+	 * Uncommon special case in which the FS does not need to be shrunk,
+	 * but the crypt dev over the LV should be shrunk to correspond with
+	 * the LV size, so that the FS does not see an incorrect device size.
+	 */
+	if (!fsinfo.needs_reduce && fsinfo.needs_crypt) {
+		/* Check if the crypt device is already sufficiently reduced. */
+		if (fsinfo.crypt_dev_size_bytes <= newsize_bytes_fs) {
+			log_print_unless_silent("crypt device is already reduced to %llu bytes.",
+						(unsigned long long)fsinfo.crypt_dev_size_bytes);
+			ret = 1;
+			goto out;
+		}
+		if (!strcmp(lp->fsopt, "checksize")) {
+			log_error("crypt reduce is required (see --resizefs or cryptsetup resize.)");
+			ret = 0;
+			goto out;
+		}
+		if (test_mode()) {
+			ret = 1;
+			goto_out;
+		}
+		ret = crypt_resize_script(cmd, lv, &fsinfo, newsize_bytes_fs);
+		goto out;
+	}
+
+	/*
+	 * fs reduce is not needed to reduce the LV.
+	 */
+	if (!fsinfo.needs_reduce) {
+		ret = 1;
+		goto_out;
+	}
+
+	if (test_mode()) {
+		if (fsinfo.needs_unmount)
+			log_print_unless_silent("Skip unmount in test mode.");
+		if (fsinfo.needs_fsck)
+			log_print_unless_silent("Skip fsck in test mode.");
+		if (fsinfo.needs_mount)
+			log_print_unless_silent("Skip mount in test mode.");
+		if (fsinfo.needs_crypt)
+			log_print_unless_silent("Skip cryptsetup in test mode.");
+		log_print_unless_silent("Skip fs reduce in test mode.");
+		ret = 1;
+		goto out;
+	}
+
+	/*
+	 * mounting, unmounting, fsck, and shrink command can all take a long
+	 * time to run, and this lvm command should not block other lvm
+	 * commands from running during that time, so release the vg lock
+	 * around the long-running steps, and reacquire after.
+	 */
+	unlock_vg(cmd, lv->vg, lv->vg->name);
+
+	if (!fs_reduce_script(cmd, lv, &fsinfo, newsize_bytes_fs, lp->fsmode))
+		goto_out;
+
+	if (!lock_vol(cmd, lv->vg->name, LCK_VG_WRITE, NULL)) {
+		log_error("Failed to lock VG, cannot reduce LV.");
+		ret = 0;
+		goto out;
+	}
+
+	/*
+	 * Check that the vg wasn't changed while it was unlocked.
+	 * (can_use_one_scan: check just one mda in the vg for changes)
+	 */
+	cmd->can_use_one_scan = 1;
+	if (scan_text_mismatch(cmd, lv->vg->name, NULL)) {
+		log_print_unless_silent("VG was changed during fs operations, restarting.");
+		lp->vg_changed_error = 1;
+		ret = 0;
+		goto out;
+	}
+
+	/*
+	 * Re-check the fs last block which should now be less than the
+	 * requested (reduced) LV size.
+	 */
+	if (!fs_get_info(cmd, lv, &fsinfo2, 0))
+		goto_out;
+
+	if (fsinfo.fs_last_byte && (fsinfo2.fs_last_byte > newsize_bytes_fs)) {
+		log_error("File system last byte %llu is greater than new size %llu bytes.",
+			  (unsigned long long)fsinfo2.fs_last_byte,
+			  (unsigned long long)newsize_bytes_fs);
+		goto_out;
+	}
+
+	ret = 1;
+ out:
+	return ret;
+}
+
+static int _fs_extend(struct cmd_context *cmd, struct logical_volume *lv,
+		      struct lvresize_params *lp)
+{
+	struct fs_info fsinfo;
+	uint64_t newsize_bytes_lv;
+	uint64_t newsize_bytes_fs;
+	int ret = 0;
+
+	memset(&fsinfo, 0, sizeof(fsinfo));
+
+	if (!fs_get_info(cmd, lv, &fsinfo, 1))
+		goto_out;
+
+	if (fsinfo.nofs) {
+		ret = 1;
+		goto_out;
+	}
+
+	/*
+	 * Note: here in the case of extend, newsize_bytes_lv/newsize_bytes_fs 
+	 * are only calculated and used for log messages.  The extend commands
+	 * do not use these values, they just extend to the new LV size that
+	 * is visible to them.
+	 */
+
+	/* extent_size units is SECTOR_SIZE (512) */
+	newsize_bytes_lv = lp->extents * lv->vg->extent_size * SECTOR_SIZE;
+	newsize_bytes_fs = newsize_bytes_lv;
+	if (fsinfo.needs_crypt) {
+		newsize_bytes_fs -= fsinfo.crypt_offset_bytes;
+		log_print_unless_silent("File system size %llub is adjusted for crypt data offset %ub.",
+					(unsigned long long)newsize_bytes_fs, fsinfo.crypt_offset_bytes);
+	}
+
+	/*
+	 * Decide if fs should be extended based on the --fs option,
+	 * the fs type and the mount state.
+	 */
+	if (!_fs_extend_allow(cmd, lv, lp, &fsinfo))
+		goto_out;
+
+	/*
+	 * fs extend is not needed
+	 */
+	if (!fsinfo.needs_extend) {
+		ret = 1;
+		goto_out;
+	}
+
+	if (test_mode()) {
+		if (fsinfo.needs_unmount)
+			log_print_unless_silent("Skip unmount in test mode.");
+		if (fsinfo.needs_fsck)
+			log_print_unless_silent("Skip fsck in test mode.");
+		if (fsinfo.needs_mount)
+			log_print_unless_silent("Skip mount in test mode.");
+		if (fsinfo.needs_crypt)
+			log_print_unless_silent("Skip cryptsetup in test mode.");
+		log_print_unless_silent("Skip fs extend in test mode.");
+		ret = 1;
+		goto out;
+	}
+
+	/*
+	 * mounting, unmounting and extend command can all take a long
+	 * time to run, and this lvm command should not block other lvm
+	 * commands from running during that time, so release the vg
+	 * lock around the long-running steps.
+	 */
+	unlock_vg(cmd, lv->vg, lv->vg->name);
+
+	if (!fs_extend_script(cmd, lv, &fsinfo, newsize_bytes_fs, lp->fsmode))
+		goto_out;
+
+	ret = 1;
+ out:
+	return ret;
+}
+
+int lv_resize(struct cmd_context *cmd, struct logical_volume *lv,
+	      struct lvresize_params *lp)
+{
+	struct lvresize_params lp_meta;
+	struct volume_group *vg = lv->vg;
+	struct lv_segment *seg = first_seg(lv);
+	struct logical_volume *lv_top = NULL;
+	struct logical_volume *lv_main = NULL;
+	struct logical_volume *lv_meta = NULL;
+	struct logical_volume *lv_main_layer = NULL;
+	struct logical_volume *lv_meta_layer = NULL;
+	int main_size_matches = 0;
+	int meta_size_matches = 0;
+	int is_extend = (lp->resize == LV_EXTEND);
+	int is_reduce = (lp->resize == LV_REDUCE);
+	int is_active = 0;
+	int activated = 0;
+	int activated_checksize = 0;
+	int status;
+	int ret = 0;
+
+	memset(&lp_meta, 0, sizeof(lp_meta));
+
+	/*
+	 * Some checks apply to the LV command arg (don't require top/bottom
+	 * LVs in a stack), and don't require knowing if the command is doing
+	 * extend or reduce (determined later).
+	 */
+
+	if (lp->stripe_size && !_validate_stripesize(vg, lp))
+		return_0;
+
+	/*
+	 * The only types of !visible/internal/non-top LVs that can be directly
+	 * resized via the command arg.  Other internal LVs are resized
+	 * indirectly when resizing a top LV.
+	 */
+	if (!lv_is_visible(lv) &&
+	    !lv_is_thin_pool_data(lv) &&
+	    !lv_is_thin_pool_metadata(lv) &&
+	    !lv_is_vdo_pool_data(lv) &&
+	    !lv_is_lockd_sanlock_lv(lv)) {
+		log_error("Can't resize internal logical volume %s.", display_lvname(lv));
+		return 0;
+	}
+
+	/*
+	 * Figure out which LVs are going to be extended, and set params
+	 * to the requested extents/size for each.  Some LVs are extended
+	 * only by extending an underlying LV.  Extending some top level
+	 * LVs results in extending multiple underlying LVs.
+	 *
+	 * lv_top is the top level LV in stack.
+	 * lv_main is the main LV to be resized.
+	 * lv_meta is always a thin pool metadata LV.
+	 *
+	 * lv_main_layer/lv_meta_layer may be LV types (like cache) that are
+	 * layered over the main/meta LVs.  These layer LVs are skipped over
+	 * by get_resizable_layer_lv() which finds the bottom-most layer
+	 * which is originally resized.  The layer LVs are resized indirectly
+	 * as a result of the lower data-holding LVs being resized.
+	 *
+	 * In the simplest case there is no layering/stacking, and
+	 * lv == lv_main == lv_main_layer == lv_top
+	 */
+
+	if (cmd->command_enum == lvextend_policy_CMD) {
+		/* lvextend --use-policies may extend main or meta or both */
+		lv_top = lv;
+		if (lv_is_thin_pool(lv)) {
+			if (lp->policy_percent_main) {
+				lv_main = seg_lv(first_seg(lv), 0); /* thin pool data */
+				lp->percent_value = lp->policy_percent_main;
+			}
+			if (lp->policy_percent_meta) {
+				lv_meta = first_seg(lv)->metadata_lv; /* thin pool metadata */
+				_setup_params_for_extend_metadata(lv_meta, &lp_meta);
+				/* override setup function which isn't right for policy use */
+				lp_meta.percent = PERCENT_LV;
+				lp_meta.sign = SIGN_PLUS;
+				lp_meta.percent_value = lp->policy_percent_meta;
+				lp_meta.pvh = lp->pvh;
+			}
+		} else if (lv_is_vdo_pool(lv)) {
+			lv_main = seg_lv(first_seg(lv), 0); /* vdo pool data */
+			lp->percent_value = lp->policy_percent_main;
+		} else if (lv_is_cow(lv)) {
+			lv_main = lv;
+			lp->percent_value = lp->policy_percent_main;
+		} else
 			return_0;
 
-		if (!lp->extents) {
-			if (!aux_lp.extents)
-				return 1;  /* Nothing to do */
-			/* Resize thin-pool metadata as mainlv */
-			lv = seg->metadata_lv; /* metadata LV */
-			lp->extents = aux_lp.extents;
-		} else if (aux_lp.extents) {
-			/* Also resize thin-pool metadata */
-			aux_lv = _lvresize_setup_aux(seg->metadata_lv, &aux_lp);
-		}
-	} else if (lp->poolmetadata_size) {
-		/* Validate --poolmetadata_size supported volumes here */
-		if (!lv_is_thin_pool(lv) && !lv_is_thin_pool_metadata(lv)) {
+	} else if ((cmd->command_enum == lvextend_pool_metadata_CMD) ||
+	           (cmd->command_enum == lvresize_pool_metadata_CMD)) {
+		/* lvresize|lvextend --poolmetadatasize, extends only thin pool metadata */
+		if (lv_is_thin_pool(lv)) {
+			lv_top = lv;
+			lv_meta = first_seg(lv)->metadata_lv; /* thin pool metadata */
+		} else if (lv_is_thin_pool_metadata(lv)) {
+			lv_top = _get_top_layer_lv(lv); /* thin pool LV */
+			lv_meta = lv;
+		} else {
 			log_error("--poolmetadatasize can be used only with thin pools.");
 			return 0;
 		}
-		if (!lp->extents && !lp->size) {
-			/* When only --poolmetadatasize given and any size option
-			 * switch directly to resize metadata LV */
-			if (lv_is_thin_pool(lv))
-				lv = seg->metadata_lv;
-			lp->size = lp->poolmetadata_size;
-			lp->sign = lp->poolmetadata_sign;
+		lp_meta = *lp;
+		_setup_params_for_extend_metadata(lv_meta, &lp_meta);
+		lp_meta.size = lp->poolmetadata_size;
+		lp_meta.sign = lp->poolmetadata_sign;
+		lp->poolmetadata_size = 0;
+		lp->poolmetadata_sign = 0;
+
+	} else if (lv_is_thin_pool(lv) && lp->poolmetadata_size) {
+		/* extend both thin pool data and metadata */
+		lv_top = lv;
+		lv_main = seg_lv(first_seg(lv), 0); /* thin pool data */
+		lv_meta = first_seg(lv)->metadata_lv; /* thin pool metadata */
+		lp_meta = *lp;
+		_setup_params_for_extend_metadata(lv_meta, &lp_meta);
+		lp_meta.size = lp->poolmetadata_size;
+		lp_meta.sign = lp->poolmetadata_sign;
+		lp->poolmetadata_size = 0;
+		lp->poolmetadata_sign = 0;
+
+	} else if (lv_is_thin_pool_metadata(lv)) {
+		/* extend only thin pool metadata */
+		lv_top = _get_top_layer_lv(lv); /* thin pool LV */
+		lv_meta = lv;
+		lp_meta = *lp;
+		_setup_params_for_extend_metadata(lv_meta, &lp_meta);
+		if (lp->poolmetadata_size) {
+			lp_meta.size = lp->poolmetadata_size;
+			lp_meta.size = lp->poolmetadata_sign;
 			lp->poolmetadata_size = 0;
-		} else if (lv_is_thin_pool(lv)) {
-			aux_lp = *lp;
-			aux_lv = _lvresize_setup_aux(seg->metadata_lv, &aux_lp);
-			aux_lp.size = lp->poolmetadata_size;
-			aux_lp.sign = lp->poolmetadata_sign;
-		} else {
-			log_error("--poolmetadatasize for thin-pool metadata cannot be used with size.");
-			return 0;
+			lp->poolmetadata_sign = 0;
+		}
+		/* else lp_meta.extents|size from lp->extents|size above */
+
+	} else if (lv_is_thin_pool(lv)) {
+		/* extend thin pool data and possibly metadata */
+		lv_top = lv;
+		lv_main = seg_lv(first_seg(lv), 0);
+		/* Do not set lv_meta to the thin pool metadata here.
+		   See below "Possibly enable lv_meta extend". */
+	}
+
+	/*
+	 * None of the special cases above (selecting which LVs to extend
+	 * depending on options set and type of LV) have applied, so this
+	 * is the standard case.
+	 */
+	if (!lv_main && !lv_meta) {
+		lv_top = _get_top_layer_lv(lv);
+		lv_main_layer = lv;
+		lv_main = _get_resizable_layer_lv(lv_main_layer);
+	} else {
+		lv_main_layer = lv_main;
+		lv_meta_layer = lv_meta;
+		if (lv_main)
+			lv_main = _get_resizable_layer_lv(lv_main_layer);
+		if (lv_meta)
+			lv_meta = _get_resizable_layer_lv(lv_meta_layer);
+	}
+	/* Clear layer variables if no layer exists. */
+	if (lv_main_layer == lv_main)
+		lv_main_layer = NULL;
+	if (lv_meta_layer == lv_meta)
+		lv_meta_layer = NULL;
+
+	/*
+	 * LVs to work with are now determined:
+	 * lv_top is always set, it is not used to resize, but is used
+	 * to reload dm devices for the lv.
+	 * If lv_main is set, it is resized.
+	 * If lv_meta is set, it is resized.
+	 * If lv_meta is not set, it may be set below and resized.
+	 */
+
+	if (!_lv_resize_check_used(lv_top))
+		return_0;
+	if (lv_main && (lv_main != lv_top) && !_lv_resize_check_used(lv_main))
+		return_0;
+
+	/*
+	 * Set a new size for lv_main.
+	 */
+	if (lv_main) {
+		/* sets lp extents and lp resize */
+		if (!_lv_resize_adjust_size(lv_main, lp, &main_size_matches))
+			return_0;
+		/* sanity check the result of adjust_size */
+		if (lp->extents == 0)
+			return_0;
+		/* adjust_size resolves LV_ANY to EXTEND|REDUCE */
+		if (lp->resize == LV_ANY)
+			return_0;
+		if (is_extend && (lp->resize != LV_EXTEND))
+			return_0;
+		if (is_reduce && (lp->resize != LV_REDUCE))
+			return_0;
+		is_extend = (lp->resize == LV_EXTEND);
+		is_reduce = (lp->resize == LV_REDUCE);
+
+		if (!_lv_resize_check_type(lv_main, lp))
+			return_0;
+	}
+
+	/*
+	 * Possibly enable lv_meta extend if not already enabled.  If lv_meta
+	 * for a thin pool is not already being extended, and user requested
+	 * extending the thin pool, then we may need to automatically include
+	 * extending lv_meta in addition to lv_main (data), so that the
+	 * metadata size is sufficient for the extended data size.
+	 *
+	 * If specific PVs were named to extend, this is taken to mean that
+	 * only the thin pool data should be extended (using those PVs), and
+	 * the thin pool metadata should not be automatically extended (since
+	 * it would likely want to be extended using different PVs.)
+	 */
+	if (lv_is_thin_pool(lv_top) && is_extend && lv_main && !lv_meta && (&vg->pvs == lp->pvh)) {
+		struct lv_segment *tpseg = first_seg(lv_top);
+		uint64_t meta_size = estimate_thin_pool_metadata_size(lp->extents, vg->extent_size, tpseg->chunk_size);
+		if (meta_size > tpseg->metadata_lv->size) {
+			log_verbose("Extending thin pool metadata to %llu for larger data", (unsigned long long)meta_size);
+			lv_meta = tpseg->metadata_lv;
+			lp_meta = *lp;
+			_setup_params_for_extend_metadata(lv_meta, &lp_meta);
+			lp_meta.size = meta_size;
+			lp_meta.sign = SIGN_NONE;
+			/* meta may have a layer over it */
+			lv_meta_layer = lv_meta;
+			lv_meta = _get_resizable_layer_lv(lv_meta_layer);
+			if (lv_meta == lv_meta_layer)
+				lv_meta_layer = NULL;
 		}
 	}
 
-	resizable_layer_lv = _get_resizable_layer_lv(lv);
-	if (!(lv = _get_top_layer_lv(lv)))
-		return_0;
-
-	if (!_lvresize_check(lv, lp))
-		return_0;
-
-	/* Always should have lp->size or lp->extents */
-	if (!_lvresize_prepare(resizable_layer_lv, lp, pvh))
-		return_0;
-
-	if ((lp->resize != LV_REDUCE) && !aux_lv && !lp->poolmetadata_size &&
-	    (&vg->pvs == pvh) && lv_is_thin_pool(lv)) {
-		/* When thin-pool data part is extended, automatically extend also metadata part
-		 * to have the metadata chunks for adressing all data blocks
-		 * Do this only when PV list is not defined and --poolmetadatasize is unspecified */
-		aux_lp = *lp;
-		seg = first_seg(lv);
-		aux_lp.size = estimate_thin_pool_metadata_size(lp->extents, vg->extent_size, seg->chunk_size);
-		if (aux_lp.size > seg->metadata_lv->size) {
-			log_verbose("Also going to resize thin-pool metadata to match bigger data.");
-			aux_lv = _lvresize_setup_aux(seg->metadata_lv, &aux_lp);
-			aux_lp.sign = SIGN_NONE;
-		} else
-			aux_lp.size = 0;
+	/*
+	 * Set a new size for lv_meta (extend only.)
+	 */
+	if (lv_meta) {
+		/* sets lp extents and lp resize */
+		if (!_lv_resize_adjust_size(lv_meta, &lp_meta, &meta_size_matches))
+			return_0;
+		/* sanity check the result of adjust_size */
+		if (lp_meta.extents == 0)
+			return_0;
+		/* adjust_size resolves lp_meta.resize to EXTEND|REDUCE */
+		/* _lv_resize_check_type errors if resize is EXTEND for thin meta */
+		if (!_lv_resize_check_type(lv_meta, &lp_meta))
+			return_0;
 	}
 
-	if (aux_lv && (aux_lv = _get_resizable_layer_lv(aux_lv)) &&
-	    !_lvresize_prepare(aux_lv, &aux_lp, pvh))
-		return_0;
-
-	if (((lp->resize == LV_REDUCE) ||
-	     (aux_lv && aux_lp.resize == LV_REDUCE)) &&
-	    (pvh != &vg->pvs))
-		log_print_unless_silent("Ignoring PVs on command line when reducing.");
-
-	/* Request confirmation before operations that are often mistakes. */
-	/* aux_lv never resize fs */
-	if ((lp->resizefs || (lp->resize == LV_REDUCE)) &&
-	    !_request_confirmation(lv, lp))
-		return_0;
-
-	if (lp->resizefs) {
-		if (!lp->nofsck &&
-		    !_fsadm_cmd(FSADM_CMD_CHECK, lv, 0, lp->yes, lp->force, &status)) {
-			if (status != FSADM_CHECK_FAILS_FOR_MOUNTED) {
-				log_error("Filesystem check failed.");
-				return 0;
-			}
-			/* some filesystems support online resize */
-		}
-
-		/* FIXME forks here */
-		if ((lp->resize == LV_REDUCE) &&
-		    !_fsadm_cmd(FSADM_CMD_RESIZE, lv, lp->extents, lp->yes, lp->force, NULL)) {
-			log_error("Filesystem resize failed.");
-			return 0;
-		}
+	/*
+	 * No resizing is needed.
+	 */
+	if ((main_size_matches && meta_size_matches) ||
+	    (main_size_matches && !lv_meta) ||
+	    (meta_size_matches && !lv_main)) {
+		log_error("No size change.");
+		return 0;
 	}
 
-	if (!lp->extents && (!aux_lv || !aux_lp.extents)) {
-		lp->extents = lv->le_count;
-		goto out; /* Nothing to do */
-	}
+	/*
+	 * If the LV is locked due to being active, this lock call is a no-op.
+	 * Otherwise, this acquires a transient lock on the lv (not PERSISTENT)
+	 */
+	if (!lockd_lv_resize(cmd, lv_top, "ex", 0, lp))
+		return_0;
 
-	if (lv_is_thin_pool(lock_lv) &&  /* Lock holder is thin-pool */
-	    !lv_is_active(lock_lv)) {
-
-		if (!activation()) {
-			log_error("Cannot resize %s without using "
-				  "device-mapper kernel driver.",
-				  display_lvname(lock_lv));
+	/*
+	 * Active 'hidden' -tpool can be waiting for resize, but the pool LV
+	 * itself might be inactive.  Here plain suspend/resume would not work.
+	 * So active temporarily pool LV (with on disk metadata) then use
+	 * suspend and resume and deactivate pool LV, instead of searching for
+	 * an active thin volume.
+	 *
+	 * FIXME: why are thin pools activated where other LV types return
+	 * error if inactive?
+	 */
+	if (lv_is_thin_pool(lv_top) && !lv_is_active(lv_top)) {
+	       	if (!activation()) {
+			log_error("Cannot activate to resize %s without using device-mapper kernel driver.",
+				  display_lvname(lv_top));
 			return 0;
 		}
-		/*
-		 * Active 'hidden' -tpool can be waiting for resize, but the
-		 * pool LV itself might be inactive.
-		 * Here plain suspend/resume would not work.
-		 * So active temporarily pool LV (with on disk metadata)
-		 * then use suspend and resume and deactivate pool LV,
-		 * instead of searching for an active thin volume.
-		 */
-		if (!activate_lv(cmd, lock_lv)) {
-			log_error("Failed to activate %s.", display_lvname(lock_lv));
+		if (!activate_lv(cmd, lv_top)) {
+			log_error("Failed to activate %s.", display_lvname(lv_top));
 			return 0;
 		}
-
+		if (!sync_local_dev_names(cmd))
+			stack;
 		activated = 1;
 	}
 
-	/* Send DISCARD/TRIM to reduced area of VDO volumes
-	 * TODO: enable thin and provide
-	 * TODO2: we need polling method */
-	if ((lp->resize == LV_REDUCE) && lv_is_vdo(lv)) {
-		if (dm_snprintf(name, sizeof(name), "%s%s/%s", lv->vg->cmd->dev_dir,
-				lv->vg->name, lv->name) < 0) {
-			log_error("Name too long - device not discarded (%s)", lv->name);
-			return 0;
-		}
-
-		if (!(dev = dev_cache_get(lv->vg->cmd, name, NULL))) {
-			log_error("%s: not found: device not discarded.", name);
-			return 0;
-		}
-
-		if (!dev_discard_max_bytes(cmd->dev_types, dev) ||
-		    !dev_discard_granularity(cmd->dev_types, dev)) {
-			log_error("%s: max bytes and granularity query fails.", name);
-			dev_destroy_file(dev);
-			return 0;
-		}
-
-		log_warn("WARNING: %s: Discarding %s at offset " FMTu64 ", please wait...",
-			 name, display_size(cmd, (uint64_t)(lv->le_count - lp->extents) * vg->extent_size),
-			 ((uint64_t)lp->extents * vg->extent_size) << SECTOR_SHIFT);
-
-		if (!dev_discard_blocks(dev, ((uint64_t)lp->extents * vg->extent_size) << SECTOR_SHIFT,
-					((uint64_t)(lv->le_count - lp->extents) * vg->extent_size) << SECTOR_SHIFT)) {
-			log_error("%s: discarding failed.", name);
-			dev_destroy_file(dev);
-			return 0;
-		}
-
-		dev_destroy_file(dev);
-	}
 	/*
-	 * If the LV is locked from activation, this lock call is a no-op.
-	 * Otherwise, this acquires a transient lock on the lv (not PERSISTENT).
+	 * Disable fsopt checksize for lvextend.
 	 */
-	if (!lockd_lv_resize(cmd, lock_lv, "ex", 0, lp))
-		return_0;
+	if (is_extend && !strcmp(lp->fsopt, "checksize"))
+		lp->fsopt[0] = '\0';
 
-	/* Remove any striped raid reshape space for LV resizing */
-	if (aux_lv && first_seg(aux_lv)->reshape_len)
-		if (!lv_raid_free_reshape_space(aux_lv))
-			return_0;
-	if (first_seg(resizable_layer_lv)->reshape_len)
-		if (!lv_raid_free_reshape_space(resizable_layer_lv))
-			return_0;
-
-	if (aux_lv) {
-		if (!_lvresize_volume(aux_lv, &aux_lp, pvh))
-			goto_bad;
-
-		/* store vg on disk(s) */
-		if (aux_lp.size_changed && !lv_update_and_reload(lock_lv))
-			goto_bad;
+	/*
+	 * Disable fsopt if LV type cannot hold a file system.
+	 */
+	if (lp->fsopt[0] &&
+	    !(lv_is_linear(lv) || lv_is_striped(lv) || lv_is_raid(lv) ||
+	      lv_is_mirror(lv) || lv_is_thin_volume(lv) || lv_is_vdo(lv) ||
+	      lv_is_cache(lv) || lv_is_writecache(lv))) {
+		log_print_unless_silent("Ignoring fs resizing options for LV type %s.",
+					seg ? seg->segtype->name : "unknown");
+		lp->fsopt[0] = '\0';
 	}
 
-	if (!_lvresize_volume(resizable_layer_lv, lp, pvh))
-		goto_bad;
+	/*
+	 * Using an option to resize the fs has always/traditionally required
+	 * the LV to already be active, so keep that behavior.  Reducing an
+	 * inactive LV will activate the LV to look for a fs that would be
+	 * damaged.
+	 */
+	is_active = lv_is_active(lv_top);
 
-	/* store vg on disk(s) */
-	if (!lp->size_changed)
-		goto out; /* No table reload needed */
-
-	if (!lv_update_and_reload(lock_lv))
-		goto_bad;
-
-	if (lv_is_cow_covering_origin(lv))
-		if (!monitor_dev_for_events(cmd, lv, 0, 0))
+	if (is_reduce && !is_active && !strcmp(lp->fsopt, "checksize")) {
+		if (!lp->user_set_fs) {
+			log_error("The LV must be active to safely reduce (see --fs options.)");
+			goto out;
+		}
+		lv_top->status |= LV_TEMPORARY;
+		if (!activate_lv(cmd, lv_top)) {
+			log_error("Failed to activate %s to check for fs.", display_lvname(lv_top));
+			goto out;
+		}
+		lv_top->status &= ~LV_TEMPORARY;
+		if (!sync_local_dev_names(cmd))
 			stack;
+		activated_checksize = 1;
 
-	if (lv_is_thin_pool(lock_lv)) {
-		/* Update lvm pool metadata (drop messages). */
-		if (!update_pool_lv(lock_lv, 1))
-			goto_bad;
+	} else if (lp->fsopt[0] && !is_active) {
+		log_error("Logical volume %s must be active for file system %s.",
+			  display_lvname(lv_top), lp->fsopt);
+		goto out;
 	}
 
-	/* Check for over provisioning when extended */
-	if ((lp->resize == LV_EXTEND) && lv_is_thin_type(lv))
-		pool_check_overprovisioning(lv);
+	/*
+	 * Return an error without resizing the LV if the user requested
+	 * a file system resize when no file system exists on the LV.
+	 * (fs checksize does not require a fs to exist.)
+	 */
+	if (lp->fsopt[0] && strcmp(lp->fsopt, "checksize") && lp->user_set_fs) {
+		char lv_path[PATH_MAX];
+		char fstype[FSTYPE_MAX];
+		int nofs = 0;
 
-out:
-	log_print_unless_silent("Logical volume %s successfully resized.",
-				display_lvname(lv));
+		if (dm_snprintf(lv_path, sizeof(lv_path), "%s%s/%s", cmd->dev_dir,
+				lv_top->vg->name, lv_top->name) < 0) {
+			log_error("Couldn't create LV path for %s.", display_lvname(lv_top));
+			goto out;
+		}
+		if (!fs_block_size_and_type(lv_path, NULL, fstype, &nofs) || nofs) {
+			log_error("File system not found for --resizefs or --fs options.");
+			goto out;
+		}
+		if (!strcmp(fstype, "crypto_LUKS") && !lv_crypt_is_active(cmd, lv_path)) {
+			log_error("LUKS dm-crypt device must be active for fs resize.");
+			goto out;
+		}
+		/* FS utils will fail if LVs were renamed while mounted. */
+		if (fs_mount_state_is_misnamed(cmd, lv_top, lv_path, fstype))
+			goto_out;
+	}
 
-	if (lp->resizefs && (lp->resize == LV_EXTEND) &&
-	    !_fsadm_cmd(FSADM_CMD_RESIZE, lv, lp->extents, lp->yes, lp->force, NULL))
-		goto_bad;
+	/*
+	 * Warn and confirm if checksize has been disabled for reduce.
+	 */
+	if (is_reduce && !lp->fsopt[0] && !_lv_reduce_confirmation(lv_top, lp))
+		goto_out;
+
+	/* Part of old approach to fs handling using fsadm.  */
+	if (!strcmp(lp->fsopt, "resize_fsadm") && !lp->nofsck &&
+	    !_fsadm_cmd(FSADM_CMD_CHECK, lv_top, 0, lp->yes, lp->force, &status)) {
+		if (status != FSADM_CHECK_FAILS_FOR_MOUNTED) {
+			log_error("Filesystem check failed.");
+			goto out;
+		}
+	}
+
+	if (is_reduce && lp->fsopt[0]) {
+		if (!strcmp(lp->fsopt, "resize_fsadm")) {
+			/* Old approach to fs handling using fsadm. */
+			if (!_fsadm_cmd(FSADM_CMD_RESIZE, lv_top, lp->extents, lp->yes, lp->force, NULL)) {
+				log_error("Filesystem resize failed.");
+				goto out;
+			}
+		} else {
+			/* New approach to fs handling using fs info. */
+			if (!_fs_reduce(cmd, lv_top, lp))
+				goto_out;
+		}
+
+		if (activated_checksize && !deactivate_lv(cmd, lv_top))
+			log_warn("Problem deactivating %s.", display_lvname(lv_top));
+	}
+
+	/*
+	 * Send DISCARD/TRIM to reduced area of VDO volumes
+	 * TODO: enable thin and provide
+	 * TODO2: we need polling method
+	 */
+	if (is_reduce && lv_is_vdo(lv_top) && !_lv_reduce_vdo_discard(cmd, lv_top, lp))
+		goto_out;
+
+	/*
+	 * Remove any striped raid reshape space for LV resizing (not common).
+	 */
+	if (lv_meta && first_seg(lv_meta)->reshape_len && !lv_raid_free_reshape_space(lv_meta))
+		goto_out;
+	if (lv_main && first_seg(lv_main)->reshape_len && !lv_raid_free_reshape_space(lv_main))
+		goto_out;
+
+	/*
+	 * The core of the actual lv resizing.
+	 * Allocate or free extents in the VG, adjust LV segments to reflect
+	 * new requested size, write VG metadata, reload the dm device stack
+	 * (reload from the top LV.)  Do lv_meta first.
+	 * When extending lv_meta, also extend (or create) the pool's spare
+	 * meta lv to match the size of lv_meta (only do this when the
+	 * command is not limited to allocating from specific PVs.)
+	 */
+
+	if (!lv_meta)
+		goto do_main;
+	if (!_lv_resize_volume(lv_meta, &lp_meta, lp->pvh))
+		goto_out;
+	if (!lp_meta.size_changed)
+		goto do_main;
+	if ((&vg->pvs == lp->pvh) && !handle_pool_metadata_spare(vg, 0, lp->pvh, 1))
+		stack;
+	if (!lv_update_and_reload(lv_top))
+		goto_out;
+	log_debug("Resized thin pool metadata %s to %u extents.", display_lvname(lv_meta), lp_meta.extents);
+
+ do_main:
+
+	if (!lv_main)
+		goto end_main;
+	if (!_lv_resize_volume(lv_main, lp, lp->pvh))
+		goto_out;
+	if (!lp->size_changed)
+		goto_out;
+	if (!lv_update_and_reload(lv_top))
+		goto_out;
+	log_debug("Resized %s to %u extents.", display_lvname(lv_main), lp->extents);
+
+ end_main:
+
+	/*
+	 * other maintenance:
+	 * - update lvm pool metadata (drop messages).
+	 * - print warnings about overprovisioning.
+	 * - stop monitoring cow snapshot larger than origin
+	 */
+	if (lv_is_thin_pool(lv_top)) {
+		if (!update_thin_pool_lv(lv_top, 1))
+			goto_out;
+	}
+	if (lv_is_thin_type(lv_top) && is_extend)
+		thin_pool_check_overprovisioning(lv_top);
+
+	if (lv_main && lv_is_cow_covering_origin(lv_main)) {
+		if (!monitor_dev_for_events(cmd, lv_main, 0, 0))
+			stack;
+	}
+
+	if (is_extend && lp->fsopt[0]) {
+		if (!strcmp(lp->fsopt, "resize_fsadm")) {
+			/* Old approach to fs handling using fsadm. */
+			if (!_fsadm_cmd(FSADM_CMD_RESIZE, lv_top, lp->extents, lp->yes, lp->force, NULL)) {
+				log_error("File system extend error.");
+				lp->extend_fs_error = 1;
+				goto out;
+			}
+		} else {
+			/* New approach to fs handling using fs info. */
+			if (!_fs_extend(cmd, lv_top, lp)) {
+				log_error("File system extend error.");
+				lp->extend_fs_error = 1;
+				goto out;
+			}
+		}
+	}
 
 	ret = 1;
-bad:
-	if (activated) {
-		if (!sync_local_dev_names(lock_lv->vg->cmd)) {
-			log_error("Failed to sync local devices before deactivating LV %s.",
-				  display_lvname(lock_lv));
-			return 0;
-		}
 
-		if (!deactivate_lv(cmd, lock_lv)) {
-			log_error("Problem deactivating %s.", display_lvname(lock_lv));
-			ret = 0;
-		}
+ out:
+	if (activated || activated_checksize) {
+		if (!sync_local_dev_names(cmd))
+			stack;
+		if (!deactivate_lv(cmd, lv_top))
+			log_warn("Problem deactivating %s.", display_lvname(lv_top));
 	}
 
 	return ret;
@@ -6742,8 +7676,8 @@ int lv_remove_single(struct cmd_context *cmd, struct logical_volume *lv,
 	}
 
 	/* Clear thin pool stacked messages */
-	if (pool_lv && pool_has_message(first_seg(pool_lv), lv, 0) &&
-	    !update_pool_lv(pool_lv, 1)) {
+	if (pool_lv && thin_pool_has_message(first_seg(pool_lv), lv, 0) &&
+	    !update_thin_pool_lv(pool_lv, 1)) {
 		if (force < DONT_PROMPT_OVERRIDE) {
 			log_error("Failed to update pool %s.", display_lvname(pool_lv));
 			return 0;
@@ -6820,9 +7754,9 @@ int lv_remove_single(struct cmd_context *cmd, struct logical_volume *lv,
 
 	/* Release unneeded blocks in thin pool */
 	/* TODO: defer when multiple LVs relased at once */
-	if (pool_lv && !update_pool_lv(pool_lv, 1)) {
+	if (pool_lv && !update_thin_pool_lv(pool_lv, 1)) {
 		if (force < DONT_PROMPT_OVERRIDE) {
-			log_error("Failed to update pool %s.", display_lvname(pool_lv));
+			log_error("Failed to update thin pool %s.", display_lvname(pool_lv));
 			return 0;
 		}
 		log_print_unless_silent("Ignoring update failure of pool %s.",
@@ -7282,7 +8216,17 @@ int move_lv_segments(struct logical_volume *lv_to,
 		     struct logical_volume *lv_from,
 		     uint64_t set_status, uint64_t reset_status)
 {
-	const uint64_t MOVE_BITS = (RAID | MIRROR | THIN_VOLUME | CACHE | LV_VDO);
+	const uint64_t MOVE_BITS = (CACHE |
+				    CACHE_POOL |
+				    INTEGRITY |
+				    LV_CACHE_VOL |
+				    LV_VDO |
+				    LV_VDO_POOL |
+				    MIRROR |
+				    RAID |
+				    THIN_POOL |
+				    THIN_VOLUME |
+				    WRITECACHE);
 	struct lv_segment *seg;
 
 	dm_list_iterate_items(seg, &lv_to->segments)
@@ -7429,7 +8373,7 @@ struct logical_volume *insert_layer_for_lv(struct cmd_context *cmd,
 					   uint64_t status,
 					   const char *layer_suffix)
 {
-	static const char _suffixes[][8] = { "_tdata", "_cdata", "_corig", "_wcorig", "_vdata" };
+	static const char _suffixes[][10] = { "_tdata", "_cdata", "_corig", "_wcorig", "_vdata", "_tpool%d" };
 	int r;
 	char name[NAME_LEN];
 	struct dm_str_list *sl;
@@ -7850,7 +8794,7 @@ int wipe_lv(struct logical_volume *lv, struct wipe_params wp)
 			    display_lvname(lv), wp.zero_value);
 
 #ifdef HAVE_BLKZEROOUT
-		if (!test_mode() && !wp.zero_value) {
+		if (!test_mode() && !wp.zero_value && (zero_sectors > 16)) {
 			/* TODO: maybe integrate with bcache_zero_set() */
 			const uint64_t end = zero_sectors << SECTOR_SHIFT;
 			uint64_t range[2] = { 0, 1024 * 1024 }; /* zeroing with 1M steps (for better ^C support) */
@@ -8299,7 +9243,7 @@ static struct logical_volume *_lv_create_an_lv(struct volume_group *vg,
 						  display_lvname(pool_lv));
 					return NULL;
 				}
-				if (!pool_below_threshold(first_seg(pool_lv))) {
+				if (!thin_pool_below_threshold(first_seg(pool_lv))) {
 					log_error("Cannot create new thin volume, free space in "
 						  "thin pool %s reached threshold.",
 						  display_lvname(pool_lv));
@@ -8361,7 +9305,7 @@ static struct logical_volume *_lv_create_an_lv(struct volume_group *vg,
 		init_mirror_in_sync(lp->nosync);
 
 		if (lp->nosync) {
-			log_warn("WARNING: New %s won't be synchronised. "
+			log_warn("WARNING: New %s won't be synchronized. "
 				 "Don't read what you didn't write!",
 				 lp->segtype->name);
 			status |= LV_NOTSYNCED;
@@ -8386,7 +9330,7 @@ static struct logical_volume *_lv_create_an_lv(struct volume_group *vg,
 			 * within the same thin pool
 			 */
 			if (first_seg(origin_lv)->pool_lv != pool_lv) {
-				if (!pool_supports_external_origin(first_seg(pool_lv), origin_lv))
+				if (!thin_pool_supports_external_origin(first_seg(pool_lv), origin_lv))
 					return_NULL;
 				if (origin_lv->status & LVM_WRITE) {
 					log_error("Cannot use writable LV as the external origin.");
@@ -8448,8 +9392,8 @@ static struct logical_volume *_lv_create_an_lv(struct volume_group *vg,
 
 	if (pool_lv && segtype_is_thin_volume(create_segtype)) {
 		/* Ensure all stacked messages are submitted */
-		if ((pool_is_active(pool_lv) || is_change_activating(lp->activate)) &&
-		    !update_pool_lv(pool_lv, 1))
+		if ((thin_pool_is_active(pool_lv) || is_change_activating(lp->activate)) &&
+		    !update_thin_pool_lv(pool_lv, 1))
 			return_NULL;
 	}
 
@@ -8526,7 +9470,8 @@ static struct logical_volume *_lv_create_an_lv(struct volume_group *vg,
 		first_seg(lv)->discards = lp->discards;
 		if ((first_seg(lv)->crop_metadata = lp->crop_metadata) == THIN_CROP_METADATA_NO)
 			lv->status |= LV_CROP_METADATA;
-		if (!recalculate_pool_chunk_size_with_dev_hints(lv, lp->thin_chunk_size_calc_policy)) {
+		if (!recalculate_pool_chunk_size_with_dev_hints(lv, seg_lv(first_seg(lv), 0),
+								lp->thin_chunk_size_calc_policy)) {
 			stack;
 			goto revert_new_lv;
 		}
@@ -8536,7 +9481,7 @@ static struct logical_volume *_lv_create_an_lv(struct volume_group *vg,
 		   (seg = first_seg(lv)) &&
 		   seg_is_thin(seg)) { /* going to be a thin volume */
 		pool_seg = first_seg(pool_lv);
-		if (!(seg->device_id = get_free_pool_device_id(pool_seg)))
+		if (!(seg->device_id = get_free_thin_pool_device_id(pool_seg)))
 			return_NULL;
 		seg->transaction_id = pool_seg->transaction_id;
 		if (origin_lv && lv_is_thin_volume(origin_lv) &&
@@ -8555,11 +9500,11 @@ static struct logical_volume *_lv_create_an_lv(struct volume_group *vg,
 				return_NULL;
 		}
 
-		if (!attach_pool_message(pool_seg, DM_THIN_MESSAGE_CREATE_THIN, lv, 0, 0))
+		if (!attach_thin_pool_message(pool_seg, DM_THIN_MESSAGE_CREATE_THIN, lv, 0, 0))
 			return_NULL;
 	}
 
-	if (!pool_check_overprovisioning(lv))
+	if (!thin_pool_check_overprovisioning(lv))
 		return_NULL;
 
 	/* FIXME Log allocation and attachment should have happened inside lv_extend. */
@@ -8677,7 +9622,7 @@ static struct logical_volume *_lv_create_an_lv(struct volume_group *vg,
 				goto revert_new_lv;
 			}
 			/* At this point remove pool messages, snapshot is active */
-			if (!update_pool_lv(pool_lv, 0)) {
+			if (!update_thin_pool_lv(pool_lv, 0)) {
 				stack;
 				goto revert_new_lv;
 			}
@@ -8699,7 +9644,7 @@ static struct logical_volume *_lv_create_an_lv(struct volume_group *vg,
 				}
 			}
 			/* Keep thin pool active until thin volume is activated */
-			if (!update_pool_lv(pool_lv, 1)) {
+			if (!update_thin_pool_lv(pool_lv, 1)) {
 				stack;
 				goto revert_new_lv;
 			}

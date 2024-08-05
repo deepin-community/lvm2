@@ -69,6 +69,8 @@ vgchange \(em Change volume group attributes
 .br
     \fB--longhelp\fP
 .br
+    \fB--majoritypvs\fP
+.br
  \fB-p\fP|\fB--maxphysicalvolumes\fP \fINumber\fP
 .br
     \fB--metadataprofile\fP \fIString\fP
@@ -97,7 +99,7 @@ vgchange \(em Change volume group attributes
 .br
     \fB--refresh\fP
 .br
-    \fB--reportformat\fP \fBbasic\fP|\fBjson\fP
+    \fB--reportformat\fP \fBbasic\fP|\fBjson\fP|\fBjson_std\fP
 .br
  \fB-x\fP|\fB--resizeable\fP \fBy\fP|\fBn\fP
 .br
@@ -184,7 +186,7 @@ required, after which the others are optional.
 .br
 [    \fB--noudevsync\fP ]
 .br
-[    \fB--reportformat\fP \fBbasic\fP|\fBjson\fP ]
+[    \fB--reportformat\fP \fBbasic\fP|\fBjson\fP|\fBjson_std\fP ]
 .br
 [ COMMON_OPTIONS ]
 .ad b
@@ -218,7 +220,7 @@ Start or stop monitoring LVs from dmeventd.
 .br
 [    \fB--noudevsync\fP ]
 .br
-[    \fB--reportformat\fP \fBbasic\fP|\fBjson\fP ]
+[    \fB--reportformat\fP \fBbasic\fP|\fBjson\fP|\fBjson_std\fP ]
 .br
 [ COMMON_OPTIONS ]
 .ad b
@@ -248,7 +250,7 @@ Start or stop processing LV conversions.
 .br
 [    \fB--noudevsync\fP ]
 .br
-[    \fB--reportformat\fP \fBbasic\fP|\fBjson\fP ]
+[    \fB--reportformat\fP \fBbasic\fP|\fBjson\fP|\fBjson_std\fP ]
 .br
 [ COMMON_OPTIONS ]
 .ad b
@@ -294,7 +296,7 @@ Activate or deactivate LVs.
 .br
 [    \fB--noudevsync\fP ]
 .br
-[    \fB--reportformat\fP \fBbasic\fP|\fBjson\fP ]
+[    \fB--reportformat\fP \fBbasic\fP|\fBjson\fP|\fBjson_std\fP ]
 .br
 [ COMMON_OPTIONS ]
 .ad b
@@ -328,7 +330,7 @@ Reactivate LVs using the latest metadata.
 .br
 [    \fB--noudevsync\fP ]
 .br
-[    \fB--reportformat\fP \fBbasic\fP|\fBjson\fP ]
+[    \fB--reportformat\fP \fBbasic\fP|\fBjson\fP|\fBjson_std\fP ]
 .br
 [ COMMON_OPTIONS ]
 .ad b
@@ -342,10 +344,14 @@ Reactivate LVs using the latest metadata.
 Change the system ID of a VG.
 .br
 .P
-\fBvgchange\fP \fB--systemid\fP \fIString\fP \fIVG\fP
+\fBvgchange\fP \fB--systemid\fP \fIString\fP \fIVG\fP|\fITag\fP|\fISelect\fP
 .br
 .RS 4
 .ad l
+[ \fB-S\fP|\fB--select\fP \fIString\fP ]
+.br
+[    \fB--majoritypvs\fP ]
+.br
 [ COMMON_OPTIONS ]
 .ad b
 .RE
@@ -664,6 +670,12 @@ Sets the maximum number of LVs allowed in a VG.
 Display long help text.
 .
 .HP
+\fB--majoritypvs\fP
+.br
+Change the VG system ID if the majority of PVs in the VG
+are present (one more than half).
+.
+.HP
 \fB-p\fP|\fB--maxphysicalvolumes\fP \fINumber\fP
 .br
 Sets the maximum number of PVs that can belong to the VG.
@@ -682,7 +694,7 @@ See \fBlvm.conf\fP(5) for more information about profiles.
 .br
 Start (yes) or stop (no) monitoring an LV with dmeventd.
 dmeventd monitors kernel events for an LV, and performs
-automated maintenance for the LV in reponse to specific events.
+automated maintenance for the LV in response to specific events.
 See \fBdmeventd\fP(8) for more information.
 .
 .HP
@@ -701,7 +713,7 @@ incorrect results.
 .HP
 \fB--noudevsync\fP
 .br
-Disables udev synchronisation. The process will not wait for notification
+Disables udev synchronization. The process will not wait for notification
 from udev. It will continue irrespective of any possible udev processing
 in the background. Only use this if udev is not running or has rules that
 ignore the devices LVM creates.
@@ -720,7 +732,7 @@ Metadata may not be changed with this option.
 Sets the physical extent size of PVs in the VG.
 The value must be either a power of 2 of at least 1 sector
 (where the sector size is the largest sector size of the PVs
-currently used in the VG), or at least 128KiB.
+currently used in the VG), or at least 128 KiB.
 Once this value has been set, it is difficult to change
 without recreating the VG, unless no extents need moving.
 Before increasing the physical extent size, you might need to use lvresize,
@@ -780,14 +792,16 @@ if something has gone wrong, or if some form of manual LV
 sharing is being used.
 .
 .HP
-\fB--reportformat\fP \fBbasic\fP|\fBjson\fP
+\fB--reportformat\fP \fBbasic\fP|\fBjson\fP|\fBjson_std\fP
 .br
 Overrides current output format for reports which is defined globally by
 the report/output_format setting in \fBlvm.conf\fP(5).
 \fBbasic\fP is the original format with columns and rows.
 If there is more than one report per command, each report is prefixed
 with the report name for identification. \fBjson\fP produces report
-output in JSON format. See \fBlvmreport\fP(7) for more information.
+output in JSON format. \fBjson_std\fP produces report output in
+JSON format which is more compliant with JSON standard.
+See \fBlvmreport\fP(7) for more information.
 .
 .HP
 \fB-x\fP|\fB--resizeable\fP \fBy\fP|\fBn\fP

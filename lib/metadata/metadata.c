@@ -119,6 +119,7 @@ int get_default_pvmetadatasize_sectors(void)
 	 * pagesizes:
 	 * 4096 = 8 sectors.
 	 * 8192 = 16 sectors.
+	 * 16384 = 32 sectors.
 	 * 65536 = 128 sectors.
 	 */
 
@@ -127,6 +128,8 @@ int get_default_pvmetadatasize_sectors(void)
 		return 2040;
 	case 8192:
 		return 2032;
+	case 16384:
+		return 2016;
 	case 65536:
 		return 1920;
 	}
@@ -928,7 +931,7 @@ int validate_major_minor(const struct cmd_context *cmd,
 	} else {
 		/* 12 bits for major number */
 		if ((major != -1) &&
-		    (major != cmd->dev_types->device_mapper_major)) {
+		    (major != (int)cmd->dev_types->device_mapper_major)) {
 			/* User supplied some major number */
 			if (major < 0 || major > 4095) {
 				log_error("Major number %d outside range 0-4095.", major);
@@ -2639,8 +2642,8 @@ int vg_validate(struct volume_group *vg)
 
 				if (!strcmp(vg->lock_type, "sanlock")) {
 					if (dm_hash_lookup(vhash.lv_lock_args, lvl->lv->lock_args)) {
-						log_error(INTERNAL_ERROR "LV %s/%s has duplicate lock_args %s.",
-							  vg->name, lvl->lv->name, lvl->lv->lock_args);
+						log_error(INTERNAL_ERROR "LV %s has duplicate lock_args %s.",
+							  display_lvname(lvl->lv), lvl->lv->lock_args);
 						r = 0;
 					}
 
@@ -2654,15 +2657,15 @@ int vg_validate(struct volume_group *vg)
 				if (lv_is_cache_vol(lvl->lv)) {
 					log_debug("lock_args will be ignored on cache vol");
 				} else if (lvl->lv->lock_args) {
-					log_error(INTERNAL_ERROR "LV %s/%s shouldn't have lock_args",
-						  vg->name, lvl->lv->name);
+					log_error(INTERNAL_ERROR "LV %s shouldn't have lock_args %s.",
+						  display_lvname(lvl->lv), lvl->lv->lock_args);
 					r = 0;
 				}
 			}
 		} else {
 			if (lvl->lv->lock_args) {
-				log_error(INTERNAL_ERROR "LV %s/%s with no lock_type has lock_args %s",
-					  vg->name, lvl->lv->name, lvl->lv->lock_args);
+				log_error(INTERNAL_ERROR "LV %s with no lock_type has lock_args %s.",
+					  display_lvname(lvl->lv), lvl->lv->lock_args);
 				r = 0;
 			}
 		}
@@ -3570,12 +3573,6 @@ static void _set_pv_device(struct format_instance *fid,
 	 */
 	if (!pv->dev)
 		pv->status |= MISSING_PV;
-
-	/* is this correct? */
-	if ((pv->status & MISSING_PV) && pv->dev && (pv_mda_used_count(pv) == 0)) {
-		pv->status &= ~MISSING_PV;
-		log_info("Found a previously MISSING PV %s with no MDAs.", pv_dev_name(pv));
-	}
 
 	/* Fix up pv size if missing or impossibly large */
 	if ((!pv->size || pv->size > (1ULL << 62)) && pv->dev) {
@@ -4533,7 +4530,7 @@ void vg_write_commit_bad_mdas(struct cmd_context *cmd, struct volume_group *vg)
  * reread metadata.
  */
 
-static bool _scan_text_mismatch(struct cmd_context *cmd, const char *vgname, const char *vgid)
+bool scan_text_mismatch(struct cmd_context *cmd, const char *vgname, const char *vgid)
 {
 	DM_LIST_INIT(mda_list);
 	struct mda_list *mdal, *safe;
@@ -4643,11 +4640,9 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 	struct volume_group *vg, *vg_ret = NULL;
 	struct metadata_area *mda, *mda2;
 	unsigned use_precommitted = precommitted;
-	struct device *mda_dev, *dev_ret = NULL, *dev;
+	struct device *mda_dev, *dev_ret = NULL;
 	struct cached_vg_fmtdata *vg_fmtdata = NULL;	/* Additional format-specific data about the vg */
-	struct pv_list *pvl;
 	int found_old_metadata = 0;
-	int found_md_component = 0;
 	unsigned use_previous_vg;
 
 	log_debug_metadata("Reading VG %s %s", vgname ?: "<no name>", vgid ?: "<no vgid>");
@@ -4706,7 +4701,7 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 	 * probably unnecessary; all commands could likely just check a single mda.
 	 */
 
-	if (lvmcache_scan_mismatch(cmd, vgname, vgid) || _scan_text_mismatch(cmd, vgname, vgid)) {
+	if (lvmcache_scan_mismatch(cmd, vgname, vgid) || scan_text_mismatch(cmd, vgname, vgid)) {
 		log_debug_metadata("Rescanning devices for %s %s", vgname, writing ? "rw" : "");
 		if (writing)
 			lvmcache_label_rescan_vg_rw(cmd, vgname, vgid);
@@ -4864,46 +4859,6 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 	if (!vg_ret) {
 		_destroy_fid(&fid);
 		goto_out;
-	}
-
-	/*
-	 * Usually md components are eliminated during label scan, or duplicate
-	 * resolution, but sometimes an md component can get through and be
-	 * detected in set_pv_device() (which will do an md component check if
-	 * the device/PV sizes don't match.)  In this case we need to fix up
-	 * lvmcache to drop the component dev and fix up metadata_areas_in_use
-	 * to drop it also.
-	 */
-	if (found_md_component) {
-		dm_list_iterate_items(pvl, &vg_ret->pvs) {
-			if (!(dev = lvmcache_device_from_pv_id(cmd, &pvl->pv->id, NULL)))
-				continue;
-
-			/* dev_is_md_component set this flag if it was found */
-			if (!(dev->flags & DEV_IS_MD_COMPONENT))
-				continue;
-
-			log_debug_metadata("Drop dev for MD component from cache %s.", dev_name(dev));
-			lvmcache_del_dev(dev);
-
-			dm_list_iterate_items(mda, &fid->metadata_areas_in_use)
-				if (mda_get_device(mda) == dev) {
-					log_debug_metadata("Drop mda from MD component from mda list %s.", dev_name(dev));
-					dm_list_del(&mda->list);
-					break;
-				}
-		}
-	}
-
-	/*
-	 * After dropping MD components there may be no remaining legitimate
-	 * devices for this VG.
-	 */
-	if (!lvmcache_vginfo_from_vgid(vgid)) {
-		log_debug_metadata("VG %s not found on any remaining devices.", vgname);
-		release_vg(vg_ret);
-		vg_ret = NULL;
-		goto out;
 	}
 
 	/*
@@ -5300,5 +5255,17 @@ int get_visible_lvs_using_pv(struct cmd_context *cmd, struct volume_group *vg, s
 	}
 
 	return 1;
+}
+
+int lv_is_linear(struct logical_volume *lv)
+{
+	struct lv_segment *seg = first_seg(lv);
+	return segtype_is_linear(seg->segtype);
+}
+
+int lv_is_striped(struct logical_volume *lv)
+{
+	struct lv_segment *seg = first_seg(lv);
+	return segtype_is_striped(seg->segtype);
 }
 

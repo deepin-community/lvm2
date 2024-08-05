@@ -52,6 +52,9 @@ arg(deldev_ARG, '\0', "deldev", string_VAL, 0, 0,
     "When used alone, --deldev specifies a device name.\n"
     "When used with --deviceidtype, --deldev specifies a device id.\n")
 
+arg(delnotfound_ARG, '\0', "delnotfound", 0, 0, 0,
+    "Remove devices file entries with no matching device.\n")
+
 arg(addpvid_ARG, '\0', "addpvid", string_VAL, 0, 0,
     "Find a device with the PVID and add the device to the devices file.\n")
 arg(delpvid_ARG, '\0', "delpvid", string_VAL, 0, 0,
@@ -301,6 +304,32 @@ arg(foreign_ARG, '\0', "foreign", 0, 0, 0,
     "Report/display foreign VGs that would otherwise be skipped.\n"
     "See \\fBlvmsystemid\\fP(7) for more information about foreign VGs.\n")
 
+arg(fs_ARG, '\0', "fs", string_VAL, 0, 0,
+    "Control file system resizing when resizing an LV.\n"
+    "\\fBchecksize\\fP: Check the fs size and reduce the LV if the fs is not\n"
+    "using the reduced space (fs reduce is not needed.) If the reduced space\n"
+    "is used by the fs, then do not resize the fs or LV, and return an error.\n"
+    "(checksize only applies when reducing, and does nothing for extend.)\n"
+    "\\fBresize\\fP: Resize the fs by calling the fs-specific resize command.\n"
+    "This may also include mounting, unmounting, or running fsck. See --fsmode to\n"
+    "control mounting behavior, and --nofsck to disable fsck.\n"
+    "\\fBresize_fsadm\\fP: Use the old method of calling fsadm to handle the fs\n"
+    "(deprecated.) Warning: this option does not prevent lvreduce from destroying\n"
+    "file systems that are unmounted (or mounted if prompts are skipped.)\n"
+    "\\fBignore\\fP: Resize the LV without checking for or handling a file system.\n"
+    "Warning: using ignore when reducing the LV size may destroy the file system.\n")
+
+arg(fsmode_ARG, '\0', "fsmode", string_VAL, 0, 0,
+    "Control file system mounting behavior for fs resize.\n"
+    "\\fBmanage\\fP: Mount or unmount the fs as needed to resize the fs,\n"
+    "and attempt to restore the original mount state at the end.\n"
+    "\\fBnochange\\fP: Do not mount or unmount the fs. If mounting or unmounting\n"
+    "is required to resize the fs, then do not resize the fs or the LV and fail\n"
+    "the command.\n"
+    "\\fBoffline\\fP: Unmount the fs if it is mounted, and resize the fs while it\n"
+    "is unmounted. If mounting is required to resize the fs, then do not resize\n"
+    "the fs or the LV and fail the command.\n")
+
 arg(handlemissingpvs_ARG, '\0', "handlemissingpvs", 0, 0, 0,
     "Allows a polling operation to continue when PVs are missing,\n"
     "e.g. for repairs due to faulty devices.\n")
@@ -389,6 +418,10 @@ arg(logonly_ARG, '\0', "logonly", 0, 0, 0,
 
 arg(longhelp_ARG, '\0', "longhelp", 0, 0, 0,
     "Display long help text.\n")
+
+arg(majoritypvs_ARG, '\0', "majoritypvs", 0, 0, 0,
+    "Change the VG system ID if the majority of PVs in the VG\n"
+    "are present (one more than half).\n")
 
 arg(maxrecoveryrate_ARG, '\0', "maxrecoveryrate", sizekb_VAL, 0, 0,
     "Sets the maximum recovery rate for a RAID LV.  The rate value\n"
@@ -481,7 +514,7 @@ arg(mknodes_ARG, '\0', "mknodes", 0, 0, 0,
 arg(monitor_ARG, '\0', "monitor", bool_VAL, 0, 0,
     "Start (yes) or stop (no) monitoring an LV with dmeventd.\n"
     "dmeventd monitors kernel events for an LV, and performs\n"
-    "automated maintenance for the LV in reponse to specific events.\n"
+    "automated maintenance for the LV in response to specific events.\n"
     "See \\fBdmeventd\\fP(8) for more information.\n")
 
 arg(nameprefixes_ARG, '\0', "nameprefixes", 0, 0, 0,
@@ -535,7 +568,7 @@ arg(notifydbus_ARG, '\0', "notifydbus", 0, 0, 0,
     "notify_dbus config setting is disabled.\n")
 
 arg(noudevsync_ARG, '\0', "noudevsync", 0, 0, 0,
-    "Disables udev synchronisation. The process will not wait for notification\n"
+    "Disables udev synchronization. The process will not wait for notification\n"
     "from udev. It will continue irrespective of any possible udev processing\n"
     "in the background. Only use this if udev is not running or has rules that\n"
     "ignore the devices LVM creates.\n")
@@ -671,13 +704,15 @@ arg(replace_ARG, '\0', "replace", pv_VAL, ARG_GROUPABLE, 0,
     "Multiple PVs can be replaced by repeating this option.\n"
     "See \\fBlvmraid\\fP(7) for more information.\n")
 
-arg(reportformat_ARG, '\0', "reportformat", reportformat_VAL, 0, 0,
+arg(reportformat_ARG, '\0', "reportformat", reportformat_VAL, ARG_NONINTERACTIVE, 0,
     "Overrides current output format for reports which is defined globally by\n"
     "the report/output_format setting in \\fBlvm.conf\\fP(5).\n"
     "\\fBbasic\\fP is the original format with columns and rows.\n"
     "If there is more than one report per command, each report is prefixed\n"
     "with the report name for identification. \\fBjson\\fP produces report\n"
-    "output in JSON format. See \\fBlvmreport\\fP(7) for more information.\n")
+    "output in JSON format. \\fBjson_std\\fP produces report output in\n"
+    "JSON format which is more compliant with JSON standard.\n"
+    "See \\fBlvmreport\\fP(7) for more information.\n")
 
 arg(restorefile_ARG, '\0', "restorefile", string_VAL, 0, 0,
     "In conjunction with --uuid, this reads the file (produced by\n"
@@ -903,6 +938,9 @@ arg(validate_ARG, '\0', "validate", 0, 0, 0,
     "merged configuration tree, also use --mergedconfig.\n"
     "The validation is done even if \\fBlvm.conf\\fP(5) \\fBconfig/checks\\fP is disabled.\n")
 
+arg(valuesonly_ARG, '\0', "valuesonly", 0, 0, 0,
+    "When printing config settings, print only values without keys.\n")
+
 arg(vdo_ARG, '\0', "vdo", 0, 0, 0,
     "Specifies the command is handling VDO LV.\n"
     "See --type vdo.\n"
@@ -1103,14 +1141,14 @@ arg(blockdevice_ARG, 'b', "blockdevice", 0, 0, 0,
 
 arg(chunksize_ARG, 'c', "chunksize", sizekb_VAL, 0, 0,
     "The size of chunks in a snapshot, cache pool or thin pool.\n"
-    "For snapshots, the value must be a power of 2 between 4KiB and 512KiB\n"
+    "For snapshots, the value must be a power of 2 between 4 KiB and 512 KiB\n"
     "and the default value is 4.\n"
-    "For a cache pool the value must be between 32KiB and 1GiB\n"
+    "For a cache pool the value must be between 32 KiB and 1 GiB\n"
     "and the default value is 64.\n"
-    "For a thin pool the value must be between 64KiB and 1GiB\n"
+    "For a thin pool the value must be between 64 KiB and 1 GiB\n"
     "and the default value starts with 64 and scales up to fit the\n"
-    "pool metadata size within 128MiB, if the pool metadata size is not specified.\n"
-    "The value must be a multiple of 64KiB.\n"
+    "pool metadata size within 128 MiB, if the pool metadata size is not specified.\n"
+    "The value must be a multiple of 64 KiB.\n"
     "See \\fBlvmthin\\fP(7) and \\fBlvmcache\\fP(7) for more information.\n")
 
 arg(clustered_ARG, 'c', "clustered", bool_VAL, 0, 0,
@@ -1379,9 +1417,7 @@ arg(name_ARG, 'n', "name", string_VAL, 0, 0,
     "Move only PVs used by the named LV.\n")
 
 arg(nofsck_ARG, 'n', "nofsck", 0, 0, 0,
-    "Do not perform fsck before resizing filesystem when filesystem\n"
-    "requires it. You may need to use --force to proceed with\n"
-    "this option.\n")
+    "Do not perform fsck when resizing the file system with --resizefs.\n")
 
 arg(novolumegroup_ARG, 'n', "novolumegroup", 0, 0, 0,
     "Only show PVs not belonging to any VG.\n")
@@ -1447,7 +1483,10 @@ arg(readahead_ARG, 'r', "readahead", readahead_VAL, 0, 0,
     "\\fBnone\\fP is equivalent to zero.\n")
 
 arg(resizefs_ARG, 'r', "resizefs", 0, 0, 0,
-    "Resize underlying filesystem together with the LV using \\fBfsadm\\fP(8).\n")
+    "Resize the fs using the fs-specific resize command.\n"
+    "May include mounting, unmounting, or running fsck. See --fsmode to control\n"
+    "mounting behavior, and --nofsck to disable fsck. See --fs for more options\n"
+    "(--resizefs is equivalent to --fs resize.)\n")
 
 /* Not used */
 arg(reset_ARG, 'R', "reset", 0, 0, 0, NULL)
@@ -1462,14 +1501,14 @@ arg(physicalextentsize_ARG, 's', "physicalextentsize", sizemb_VAL, 0, 0,
     "Sets the physical extent size of PVs in the VG.\n"
     "The value must be either a power of 2 of at least 1 sector\n"
     "(where the sector size is the largest sector size of the PVs\n"
-    "currently used in the VG), or at least 128KiB.\n"
+    "currently used in the VG), or at least 128 KiB.\n"
     "Once this value has been set, it is difficult to change\n"
     "without recreating the VG, unless no extents need moving.\n"
     "#vgchange\n"
     "Sets the physical extent size of PVs in the VG.\n"
     "The value must be either a power of 2 of at least 1 sector\n"
     "(where the sector size is the largest sector size of the PVs\n"
-    "currently used in the VG), or at least 128KiB.\n"
+    "currently used in the VG), or at least 128 KiB.\n"
     "Once this value has been set, it is difficult to change\n"
     "without recreating the VG, unless no extents need moving.\n"
     "Before increasing the physical extent size, you might need to use lvresize,\n"
@@ -1626,12 +1665,12 @@ arg(zero_ARG, 'Z', "zero", bool_VAL, 0, 0,
     "Set zeroing mode for thin pool. Note: already provisioned blocks from pool\n"
     "in non-zero mode are not cleared in unwritten parts when setting --zero y.\n"
     "#lvconvert\n"
-    "For snapshots, this controls zeroing of the first 4KiB of data in the\n"
+    "For snapshots, this controls zeroing of the first 4 KiB of data in the\n"
     "snapshot. If the LV is read-only, the snapshot will not be zeroed.\n"
     "For thin pools, this controls zeroing of provisioned blocks.\n"
     "Provisioning of large zeroed chunks negatively impacts performance.\n"
     "#lvcreate\n"
-    "Controls zeroing of the first 4KiB of data in the new LV.\n"
+    "Controls zeroing of the first 4 KiB of data in the new LV.\n"
     "Default is \\fBy\\fP.\n"
     "Snapshot COW volumes are always zeroed.\n"
     "For thin pools, this controls zeroing of provisioned blocks.\n"

@@ -24,10 +24,38 @@
 #include "lib/cache/lvmcache.h"
 #include "lib/device/device-types.h"
 #include "lib/datastruct/str_list.h"
+#include "lib/locking/lvmlockd.h"
 
 #include <stddef.h> /* offsetof() */
 #include <float.h> /* DBL_MAX */
 #include <time.h>
+
+/*
+ * !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+ * IMPORTANT NOTE ABOUT ADDING A NEW VALUE FOR REPORTING
+ * !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+ *
+ * When adding a new string value to report, try to keep it
+ * self-descriptive so when it's printed even without the header,
+ * we can still deduce what it is actually reporting.
+ *
+ * If you need more than one descriptive string to mean the same value,
+ * please define them as reserved values in values.h.
+ *
+ * The first reserved value is the one that is printed in reports (unless
+ * it's a binary value and we have report/binary_values_as_numeric=1 config
+ * option used OR --binary command line option is used OR we're using an
+ * output format which must always print binary values in numeric way,
+ * like json_std output format.
+ *
+ * All the other (2nd and further) listed reserved names are synonyms which
+ * may be also used in selection (-S|--select).
+ *
+ * Also, always use proper *_disp functions to display each type of value
+ * properly. For example, in case of binary values, you should use
+ * _binary_disp so that we can always switch between numerical (0/1/-1) and
+ * string representation while reporting the value.
+ */
 
 struct lvm_report_object {
 	struct volume_group *vg;
@@ -1256,7 +1284,7 @@ static int _binary_disp(struct dm_report *rh, struct dm_pool *mem __attribute__(
 {
 	const struct cmd_context *cmd = (const struct cmd_context *) private;
 
-	if (cmd->report_binary_values_as_numeric)
+	if (cmd->report_strict_type_mode || cmd->report_binary_values_as_numeric)
 		/* "0"/"1" */
 		return _field_set_value(field, bin_value ? _str_one : _str_zero, bin_value ? &_one64 : &_zero64);
 
@@ -1269,7 +1297,7 @@ static int _binary_undef_disp(struct dm_report *rh, struct dm_pool *mem __attrib
 {
 	const struct cmd_context *cmd = (const struct cmd_context *) private;
 
-	if (cmd->report_binary_values_as_numeric)
+	if (cmd->report_strict_type_mode || cmd->report_binary_values_as_numeric)
 		return _field_set_value(field, GET_FIRST_RESERVED_NAME(num_undef_64), &GET_TYPE_RESERVED_VALUE(num_undef_64));
 
 	return _field_set_value(field, _str_unknown, &GET_TYPE_RESERVED_VALUE(num_undef_64));
@@ -2008,7 +2036,7 @@ static int _find_ancestors(struct _str_list_append_baton *ancestors,
 	struct lv_segment *seg;
 	void *orig_p = glv.live;
 	const char *ancestor_str;
-	char buf[NAME_LEN + strlen(HISTORICAL_LV_PREFIX) + 1];
+	char buf[NAME_LEN + sizeof(HISTORICAL_LV_PREFIX)];
 
 	if (glv.is_historical) {
 		if (full && glv.historical->indirect_origin)
@@ -3041,10 +3069,11 @@ static int _vgmdacopies_disp(struct dm_report *rh, struct dm_pool *mem,
 				   struct dm_report_field *field,
 				   const void *data, void *private)
 {
+	struct cmd_context *cmd = (struct cmd_context *) private;
 	const struct volume_group *vg = (const struct volume_group *) data;
 	uint32_t count = vg_mda_copies(vg);
 
-	if (count == VGMETADATACOPIES_UNMANAGED)
+	if (count == VGMETADATACOPIES_UNMANAGED && !cmd->report_strict_type_mode)
 		return _field_set_value(field, GET_FIRST_RESERVED_NAME(vg_mda_copies_unmanaged),
 					GET_FIELD_RESERVED_VALUE(vg_mda_copies_unmanaged));
 
@@ -3780,14 +3809,15 @@ static int _lvactive_disp(struct dm_report *rh, struct dm_pool *mem,
 			     struct dm_report_field *field,
 			     const void *data, void *private)
 {
-	char *repstr;
+	const struct logical_volume *lv = (const struct logical_volume *) data;
+	int active;
 
-	if (!(repstr = lv_active_dup(mem, (const struct logical_volume *) data))) {
-		log_error("Failed to allocate buffer for active.");
-		return 0;
-	}
+	if (!activation())
+		return _binary_undef_disp(rh, mem, field, private);
 
-	return _field_set_value(field, repstr, NULL);
+	active = lv_is_active(lv);
+
+	return _binary_disp(rh, mem, field, active, GET_FIRST_RESERVED_NAME(lv_active_y), private);
 }
 
 static int _lvactivelocally_disp(struct dm_report *rh, struct dm_pool *mem,
@@ -3809,9 +3839,10 @@ static int _lvactiveremotely_disp(struct dm_report *rh, struct dm_pool *mem,
 				  struct dm_report_field *field,
 				  const void *data, void *private)
 {
+	const struct logical_volume *lv = (const struct logical_volume *) data;
 	int active_remotely;
 
-	if (!activation())
+	if (!activation() || vg_is_shared(lv->vg))
 		return _binary_undef_disp(rh, mem, field, private);
 
 	active_remotely = 0;
@@ -3824,14 +3855,20 @@ static int _lvactiveexclusively_disp(struct dm_report *rh, struct dm_pool *mem,
 				     const void *data, void *private)
 {
 	const struct logical_volume *lv = (const struct logical_volume *) data;
-	int active_exclusively;
+	int ex = 0, sh = 0;
 
 	if (!activation())
 		return _binary_undef_disp(rh, mem, field, private);
 
-	active_exclusively = lv_is_active(lv);
+	ex = lv_is_active(lv);
 
-	return _binary_disp(rh, mem, field, active_exclusively, GET_FIRST_RESERVED_NAME(lv_active_exclusively_y), private);
+	if (ex && vg_is_shared(lv->vg)) {
+		ex = 0;
+		if (!lockd_query_lv(lv->vg->cmd, (struct logical_volume *)lv, &ex, &sh))
+			return _binary_undef_disp(rh, mem, field, private);
+	}
+
+	return _binary_disp(rh, mem, field, ex, GET_FIRST_RESERVED_NAME(lv_active_exclusively_y), private);
 }
 
 static int _lvmergefailed_disp(struct dm_report *rh, struct dm_pool *mem,

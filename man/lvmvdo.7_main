@@ -12,7 +12,7 @@ for primary storage.
 .P
 Deduplication is a technique for reducing the consumption of storage
 resources by eliminating multiple copies of duplicate blocks. Compression
-takes the individual unique blocks and shrinks them. 
+takes the individual unique blocks and shrinks them.
 These reduced blocks are then efficiently packed together into
 physical blocks. Thin provisioning manages the mapping from logical blocks
 presented by VDO to where the data has actually been physically stored,
@@ -165,7 +165,6 @@ vdo_use_metadata_hints=1
 vdo_minimum_io_size=4096
 vdo_block_map_cache_size_mb=128
 vdo_block_map_period=16380
-vdo_check_point_frequency=0
 vdo_use_sparse_index=0
 vdo_index_memory_size_mb=256
 vdo_slab_size_mb=2048
@@ -301,7 +300,20 @@ be activated. You have to deactivate the VDODataLV first to continue to use the 
 .SS \n[step]. Stacking VDO
 .
 You can convert or stack a VDOPooLV with these currently supported
-volume types: linear, stripe, raid, and cache with cachepool.
+volume types: linear, stripe, raid and cache with cachepool.
+.
+.SS \n[step]. Using multiple volumes using same VDOPoolLV
+.
+You can convert existing VDO LV into a thin volume. After this conversion
+you can create a thin snapshot or you can add more thin volumes
+with thin-pool named after orignal LV name LV_tpool0.
+.P
+.I Example
+.nf
+# lvcreate --type vdo -L 5G -V 10G -n vdo1 vg/vdopool
+# lvconvert --type thin vg/vdo1
+# lvcreate -V20 vg/vdo1_tpool0
+.fi
 .
 .SS \n+[step]. VDOPoolLV on top of raid
 .
@@ -358,8 +370,17 @@ take otherwise as device is already expected to be empty.
 .
 .SS \n+[step]. Memory usage
 .
-The VDO target requires 370 MiB of RAM plus an additional 268 MiB
-per each 1 TiB of physical storage managed by the volume.
+The VDO target requires 38 MiB of RAM and several variable amounts:
+.IP \(bu 2
+1.15 MiB of RAM for each 1 MiB of configured block map cache size.
+The block map cache requires a minimum of 150 MiB RAM.
+.br
+.IP \(bu
+1.6 MiB of RAM for each 1 TiB of logical space.
+.br
+.IP \(bu
+268 MiB of RAM for each 1 TiB of physical storage managed by the volume.
+.br
 .P
 UDS requires a minimum of 250 MiB of RAM,
 which is also the default amount that deduplication uses.

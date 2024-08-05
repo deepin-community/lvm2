@@ -138,7 +138,6 @@ static char *_align(char *ptr, unsigned int a)
 	return (char *) (((unsigned long) ptr + agn) & ~agn);
 }
 
-#ifdef DM_IOCTLS
 static unsigned _kernel_major = 0;
 static unsigned _kernel_minor = 0;
 static unsigned _kernel_release = 0;
@@ -181,6 +180,9 @@ int get_uname_version(unsigned *major, unsigned *minor, unsigned *release)
 
 	return 1;
 }
+
+#ifdef DM_IOCTLS
+
 /*
  * Set number to NULL to populate _dm_bitset - otherwise first
  * match is returned.
@@ -309,8 +311,13 @@ static int _create_control(const char *control, uint32_t major, uint32_t minor)
 	old_umask = umask(DM_CONTROL_NODE_UMASK);
 	if (mknod(control, S_IFCHR | S_IRUSR | S_IWUSR,
 		  MKDEV(major, minor)) < 0)  {
-		log_sys_error("mknod", control);
-		ret = 0;
+		if (errno != EEXIST) {
+			log_sys_error("mknod", control);
+			ret = 0;
+		} else if (_control_exists(control, major, minor) != 1) {
+			stack; /* Invalid control node created by parallel command ? */
+			ret = 0;
+		}
 	}
 	umask(old_umask);
 	(void) dm_prepare_selinux_context(NULL, 0);
@@ -1897,7 +1904,7 @@ static struct dm_ioctl *_do_dm_ioctl(struct dm_task *dmt, unsigned command,
 		/*
 		 * Prevent udev vs. libdevmapper race when processing nodes
 		 * and symlinks. This can happen when the udev rules are
-		 * installed and udev synchronisation code is enabled in
+		 * installed and udev synchronization code is enabled in
 		 * libdevmapper but the software using libdevmapper does not
 		 * make use of it (by not calling dm_task_set_cookie before).
 		 * We need to instruct the udev rules not to be applied at
@@ -1907,7 +1914,7 @@ static struct dm_ioctl *_do_dm_ioctl(struct dm_task *dmt, unsigned command,
 		if (!dmt->cookie_set && dm_udev_get_sync_support()) {
 			log_debug_activation("Cookie value is not set while trying to call %s "
 					     "ioctl. Please, consider using libdevmapper's udev "
-					     "synchronisation interface or disable it explicitly "
+					     "synchronization interface or disable it explicitly "
 					     "by calling dm_udev_set_sync_support(0).",
 					     dmt->type == DM_DEVICE_RESUME ? "DM_DEVICE_RESUME" :
 					     dmt->type == DM_DEVICE_REMOVE ? "DM_DEVICE_REMOVE" :

@@ -12,6 +12,8 @@
 
 test_description='devices file with devnames'
 
+SKIP_WITH_LVMPOLLD=1
+
 . lib/inittest
 
 aux prepare_devs 7
@@ -550,6 +552,19 @@ vgchange -an $vg2
 vgremove -ff $vg1
 vgremove -ff $vg2
 
+# bz 2119473
+
+aux lvmconf "devices/search_for_devnames = \"none\""
+sed -e "s|DEVNAME=$dev1|DEVNAME=.|" "$ORIG" > tmp1.devices
+sed -e "s|IDNAME=$dev1|IDNAME=.|" tmp1.devices > "$DF"
+pvs
+lvmdevices
+pvcreate -ff --yes --uuid "$PVID1" --norestorefile $dev1
+grep "$PVID1" "$DF" |tee out
+grep "DEVNAME=$dev1" out
+grep "IDNAME=$dev1" out
+aux lvmconf "devices/search_for_devnames = \"auto\""
+
 # devnames change so the new devname now refers to a filtered device,
 # e.g. an mpath or md component, which is not scanned
 
@@ -568,13 +583,7 @@ wait_md_create() {
         echo "$md" > WAIT_MD_DEV
 }
 
-aux wipefs_a "$dev1"
-aux wipefs_a "$dev2"
-aux wipefs_a "$dev3"
-aux wipefs_a "$dev4"
-
-mddev="/dev/md33"
-not grep $mddev /proc/mdstat || skip
+aux wipefs_a "$dev1" "$dev2" "$dev3" "$dev4"
 
 rm "$DF"
 touch "$DF"
@@ -590,7 +599,9 @@ OPVID2=`pvs "$dev2" --noheading -o uuid | awk '{print $1}'`
 PVID1=`pvs "$dev1" --noheading -o uuid | tr -d - | awk '{print $1}'`
 PVID2=`pvs "$dev2" --noheading -o uuid | tr -d - | awk '{print $1}'`
 
-mdadm --create --metadata=1.0 "$mddev" --level 1 --raid-devices=2 "$dev3" "$dev4"
+aux mdadm_create --metadata=1.0 --level 1 --raid-devices=2 "$dev3" "$dev4"
+mddev=$(< MD_DEV)
+
 wait_md_create "$mddev"
 
 sed -e "s|DEVNAME=$dev1|DEVNAME=$dev3|" "$ORIG" > tmp1.devices

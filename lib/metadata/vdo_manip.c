@@ -23,6 +23,9 @@
 #include "lib/config/defaults.h"
 #include "lib/misc/lvm-exec.h"
 
+#include <sys/sysinfo.h> // sysinfo
+#include <stdarg.h>
+
 const char *get_vdo_compression_state_name(enum dm_vdo_compression_state state)
 {
 	switch (state) {
@@ -125,6 +128,20 @@ int update_vdo_pool_virtual_size(struct lv_segment *vdo_pool_seg)
 	return 1;
 }
 
+uint32_t get_vdo_pool_max_extents(const struct dm_vdo_target_params *vtp,
+				  uint32_t extent_size)
+{
+	uint64_t max_extents = (DM_VDO_PHYSICAL_SIZE_MAXIMUM + extent_size - 1) / extent_size;
+	uint64_t max_slab_extents = ((extent_size - 1 + DM_VDO_SLABS_MAXIMUM *
+				      ((uint64_t)vtp->slab_size_mb << (20 - SECTOR_SHIFT))) /
+				     extent_size);
+
+	max_extents = (max_slab_extents < max_extents) ? max_slab_extents : max_extents;
+
+	return (max_extents > UINT32_MAX) ? UINT32_MAX : (uint32_t)max_extents;
+}
+
+
 static int _sysfs_get_kvdo_value(const char *dm_name, const struct dm_info *dminfo,
 				 const char *vdo_param, uint64_t *value)
 {
@@ -132,7 +149,7 @@ static int _sysfs_get_kvdo_value(const char *dm_name, const struct dm_info *dmin
 	char temp[64];
 	int fd, size, r = 0;
 
-	if (dm_snprintf(path, sizeof(path), "%s/block/dm-%d/vdo/%s",
+	if (dm_snprintf(path, sizeof(path), "%sblock/dm-%d/vdo/%s",
 			dm_sysfs_dir(), dminfo->minor, vdo_param) < 0) {
 		log_debug("Failed to build kvdo path.");
 		return 0;
@@ -225,88 +242,56 @@ static int _format_vdo_pool_data_lv(struct logical_volume *data_lv,
 				    const struct dm_vdo_target_params *vtp,
 				    uint64_t *logical_size)
 {
-	char *dpath;
-	const struct dm_config_node *cn;
-	const struct dm_config_value *cv;
+	char *dpath, *c;
 	struct pipe_data pdata;
+	uint64_t logical_size_aligned = 1;
 	FILE *f;
 	uint64_t lb;
 	unsigned slabbits;
-	int args = 1;
-	char buf_args[5][128];
+	unsigned reformatting = 0;
+	int args = 0;
 	char buf[256]; /* buffer for short disk header (64B) */
-	const char *argv[19] = { /* Max supported args */
+	char *buf_pos = buf;
+	const char *argv[DEFAULT_MAX_EXEC_ARGS + 9] = { /* Max supported args */
 		find_config_tree_str_allow_empty(data_lv->vg->cmd, global_vdo_format_executable_CFG, NULL)
 	};
 
+	if (!prepare_exec_args(data_lv->vg->cmd, argv, &args, global_vdo_format_options_CFG))
+		return_0;
+
 	if (!(dpath = lv_path_dup(data_lv->vg->cmd->mem, data_lv))) {
-		log_error("Failed to build device path for VDO formating of data volume %s.",
+		log_error("Failed to build device path for VDO formatting of data volume %s.",
 			  display_lvname(data_lv));
 		return 0;
 	}
 
 	if (*logical_size) {
-		if (dm_snprintf(buf_args[args], sizeof(buf_args[0]), "--logical-size=" FMTu64 "K",
-			       (*logical_size / 2)) < 0)
-			return_0;
+		logical_size_aligned = 0;
 
-		argv[args] = buf_args[args];
-		args++;
+		argv[++args] = buf_pos;
+		buf_pos += 1 + dm_snprintf(buf_pos, 30, "--logical-size=" FMTu64 "K",
+					   (*logical_size / 2));
 	}
 
 	slabbits = 31 - clz(vtp->slab_size_mb / DM_VDO_BLOCK_SIZE * 2 * 1024);  /* to KiB / block_size */
 	log_debug("Slab size %s converted to %u bits.",
 		  display_size(data_lv->vg->cmd, vtp->slab_size_mb * UINT64_C(2 * 1024)), slabbits);
-	if (dm_snprintf(buf_args[args], sizeof(buf_args[0]), "--slab-bits=%u", slabbits) < 0)
-		return_0;
 
-	argv[args] = buf_args[args];
-	args++;
-
-	if (vtp->check_point_frequency) {
-		if (dm_snprintf(buf_args[args], sizeof(buf_args[0]), "--uds-checkpoint-frequency=%u",
-				vtp->check_point_frequency) < 0)
-			return_0;
-		argv[args] = buf_args[args];
-		args++;
-	}
+	argv[++args] = buf_pos;
+	buf_pos += 1 + dm_snprintf(buf_pos, 30, "--slab-bits=%u", slabbits);
 
 	/* Convert size to GiB units or one of these strings: 0.25, 0.50, 0.75 */
-	if (vtp->index_memory_size_mb >= 1024) {
-		if (dm_snprintf(buf_args[args], sizeof(buf_args[0]), "--uds-memory-size=%u",
-				vtp->index_memory_size_mb / 1024) < 0)
-			return_0;
-	} else if (dm_snprintf(buf_args[args], sizeof(buf_args[0]), "--uds-memory-size=0.%u",
-			       (vtp->index_memory_size_mb < 512) ? 25 :
-			       (vtp->index_memory_size_mb < 768) ? 50 : 75) < 0)
-		   return_0;
+	argv[++args] = buf_pos;
+	if (vtp->index_memory_size_mb >= 1024)
+		buf_pos += 1 + dm_snprintf(buf_pos, 30, "--uds-memory-size=%u",
+					   vtp->index_memory_size_mb / 1024);
+	else
+		buf_pos += 1 + dm_snprintf(buf_pos, 30, "--uds-memory-size=0.%2u",
+					   (vtp->index_memory_size_mb < 512) ? 25 :
+					   (vtp->index_memory_size_mb < 768) ? 50 : 75);
 
-	argv[args] = buf_args[args];
-	args++;
-
-	if (vtp->use_sparse_index)  {
-		if (dm_snprintf(buf_args[args], sizeof(buf_args[0]), "--uds-sparse") < 0)
-			return_0;
-
-		argv[args] = buf_args[args];
-		args++;
-	}
-
-	/* Any other user opts add here */
-	if (!(cn = find_config_tree_array(data_lv->vg->cmd, global_vdo_format_options_CFG, NULL))) {
-		log_error(INTERNAL_ERROR "Unable to find configuration for vdoformat command options.");
-		return 0;
-	}
-
-	for (cv = cn->v; cv && args < 16; cv = cv->next) {
-		if (cv->type != DM_CFG_STRING) {
-			log_error("Invalid string in config file: "
-				  "global/vdoformat_options.");
-			return 0;
-		}
-		if (cv->v.str[0])
-			argv[++args] = cv->v.str;
-	}
+	if (vtp->use_sparse_index)
+		argv[++args] = "--uds-sparse";
 
 	/* Only unused VDO data LV could be activated and wiped */
 	if (!dm_list_empty(&data_lv->segs_using_this_lv)) {
@@ -330,10 +315,14 @@ static int _format_vdo_pool_data_lv(struct logical_volume *data_lv,
 				log_verbose("Available VDO logical blocks " FMTu64 " (%s).",
 					    lb, display_size(data_lv->vg->cmd, *logical_size));
 			}
-		if ((dpath = strchr(buf, '\n')))
-			*dpath = 0; /* cut last '\n' away */
-		if (buf[0])
-			log_print("  %s", buf); /* Print vdo_format messages */
+		if ((c = strchr(buf, '\n')))
+			*c = 0; /* cut last '\n' away */
+		if (buf[0]) {
+			if (reformatting)
+				log_verbose("  %s", buf); /* Print vdo_format messages */
+			else
+				log_print_unless_silent("  %s", buf); /* Print vdo_format messages */
+		}
 	}
 
 	if (!pipe_close(&pdata)) {
@@ -344,6 +333,15 @@ static int _format_vdo_pool_data_lv(struct logical_volume *data_lv,
 	if (!*logical_size) {
 		log_error("Number of VDO logical blocks was not provided by vdo_format output.");
 		return 0;
+	}
+
+	if (logical_size_aligned) {
+		// align obtained size to extent size
+		logical_size_aligned = *logical_size / data_lv->vg->extent_size * data_lv->vg->extent_size;
+		if (*logical_size != logical_size_aligned) {
+			log_debug("Using bigger VDO virtual size unaligned on extent size by %s.",
+				  display_size(data_lv->vg->cmd, *logical_size - logical_size_aligned));
+		}
 	}
 
 	return 1;
@@ -392,19 +390,21 @@ struct logical_volume *convert_vdo_pool_lv(struct logical_volume *data_lv,
 
 	/* Format data LV as VDO volume */
 	if (format) {
-		if (!_format_vdo_pool_data_lv(data_lv, vtp, &vdo_logical_size)) {
+		if (test_mode()) {
+			log_verbose("Test mode: Skipping formatting of VDO pool volume.");
+		} else if (!_format_vdo_pool_data_lv(data_lv, vtp, &vdo_logical_size)) {
 			log_error("Cannot format VDO pool volume %s.", display_lvname(data_lv));
 			return NULL;
 		}
 	} else {
-		log_verbose("Skiping VDO formating %s.", display_lvname(data_lv));
+		log_verbose("Skipping VDO formatting %s.", display_lvname(data_lv));
 		/* TODO: parse existing VDO data and retrieve vdo_logical_size */
 		if (!*virtual_extents)
 			vdo_logical_size = data_lv->size;
 	}
 
 	if (!deactivate_lv(data_lv->vg->cmd, data_lv)) {
-		log_error("Cannot deactivate formated VDO pool volume %s.",
+		log_error("Cannot deactivate formatted VDO pool volume %s.",
 			  display_lvname(data_lv));
 		return NULL;
 	}
@@ -481,8 +481,6 @@ int fill_vdo_target_params(struct cmd_context *cmd,
 		find_config_tree_int64(cmd, allocation_vdo_block_map_cache_size_mb_CFG, profile);
 	vtp->block_map_era_length =
 		find_config_tree_int(cmd, allocation_vdo_block_map_era_length_CFG, profile);
-	vtp->check_point_frequency =
-		find_config_tree_int(cmd, allocation_vdo_check_point_frequency_CFG, profile);
 	vtp->use_sparse_index =
 		find_config_tree_int(cmd, allocation_vdo_use_sparse_index_CFG, profile);
 	vtp->index_memory_size_mb =
@@ -511,6 +509,187 @@ int fill_vdo_target_params(struct cmd_context *cmd,
 		return_0;
 
 	*vdo_pool_header_size = 2 * find_config_tree_int64(cmd, allocation_vdo_pool_header_size_CFG, profile);
+
+	return 1;
+}
+
+static int _get_sysinfo_memory(uint64_t *total_mb, uint64_t *available_mb)
+{
+	struct sysinfo si = { 0 };
+
+	*total_mb = *available_mb = UINT64_MAX;
+
+	if (sysinfo(&si) != 0)
+		return 0;
+
+	log_debug("Sysinfo free:%lu  bufferram:%lu  sharedram:%lu  freehigh:%lu  unit:%u.",
+		  si.freeram >> 20, si.bufferram >> 20, si.sharedram >> 20,
+		  si.freehigh >> 20, si.mem_unit);
+
+	*available_mb = ((uint64_t)(si.freeram + si.bufferram) * si.mem_unit) >> 30;
+	*total_mb = si.totalram >> 30;
+
+	return 1;
+}
+
+typedef struct mem_table_s {
+	const char *name;
+	uint64_t *value;
+} mem_table_t;
+
+static int _compare_mem_table_s(const void *a, const void *b){
+	return strcmp(((const mem_table_t*)a)->name, ((const mem_table_t*)b)->name);
+}
+
+static int _get_memory_info(uint64_t *total_mb, uint64_t *available_mb)
+{
+	uint64_t anon_pages, mem_available, mem_free, mem_total, shmem, swap_free;
+	uint64_t can_swap;
+	mem_table_t mt[] = {
+		{ "AnonPages",    &anon_pages },
+		{ "MemAvailable", &mem_available },
+		{ "MemFree",	  &mem_free },
+		{ "MemTotal",	  &mem_total },
+		{ "Shmem",	  &shmem },
+		{ "SwapFree",	  &swap_free },
+	};
+
+	char line[128], namebuf[32], *e, *tail;
+	FILE *fp;
+	mem_table_t findme = { namebuf, NULL };
+	mem_table_t *found;
+
+	if (!(fp = fopen("/proc/meminfo", "r")))
+		return _get_sysinfo_memory(total_mb, available_mb);
+
+	while (fgets(line, sizeof(line), fp)) {
+		if (!(e = strchr(line, ':')))
+			break;
+
+		if ((unsigned)(++e - line) > sizeof(namebuf))
+			continue; // something too long
+
+		(void)dm_strncpy((char*)findme.name, line, e - line);
+
+		found = bsearch(&findme, mt, DM_ARRAY_SIZE(mt), sizeof(mem_table_t),
+				_compare_mem_table_s);
+		if (!found)
+			continue; // not interesting
+
+		errno = 0;
+		*(found->value) = (uint64_t) strtoull(e, &tail, 10);
+
+		if ((e == tail) || errno)
+			log_debug("Failing to parse value from %s.", line);
+		else
+			log_debug("Parsed %s = " FMTu64 " KiB.", found->name, *(found->value));
+	}
+	(void)fclose(fp);
+
+	// use at most 2/3 of swap space to keep machine usable
+	can_swap = (anon_pages + shmem) * 2 / 3;
+	swap_free = swap_free * 2 / 3;
+
+	if (can_swap > swap_free)
+		can_swap = swap_free;
+
+	// TODO: add more constrains, i.e. 3/4 of physical RAM...
+
+	*total_mb = mem_total >> 10;
+	*available_mb = (mem_available + can_swap) >> 10;
+
+	return 1;
+}
+
+static uint64_t _round_1024(uint64_t s)
+{
+	return (s + ((1 << 10) - 1)) >> 10;
+}
+
+static uint64_t _round_sectors_to_tib(uint64_t s)
+{
+	return  (s + ((UINT64_C(1) << (40 - SECTOR_SHIFT)) - 1)) >> (40 - SECTOR_SHIFT);
+}
+
+__attribute__ ((format(printf, 3, 4)))
+static int _vdo_snprintf(char **buf, size_t *bufsize, const char *format, ...)
+{
+	int n;
+	va_list ap;
+
+	va_start(ap, format);
+	n = vsnprintf(*buf, *bufsize, format, ap);
+	va_end(ap);
+
+	if (n < 0 || ((unsigned) n >= *bufsize))
+		return -1;
+
+	*buf += n;
+	*bufsize -= n;
+
+	return n;
+}
+
+int check_vdo_constrains(struct cmd_context *cmd, const struct vdo_pool_size_config *cfg)
+{
+	static const char *_split[] = { "", " and", ",", "," };
+	uint64_t req_mb, total_mb, available_mb;
+	uint64_t phy_mb = _round_sectors_to_tib(UINT64_C(268) * cfg->physical_size); // 268 MiB per 1 TiB of physical size
+	uint64_t virt_mb = _round_1024(UINT64_C(1638) * _round_sectors_to_tib(cfg->virtual_size)); // 1.6 MiB per 1 TiB
+	uint64_t cache_mb = _round_1024(UINT64_C(1177) * cfg->block_map_cache_size_mb); // 1.15 MiB per 1 MiB cache size
+	char msg[512];
+	size_t mlen = sizeof(msg);
+	char *pmsg = msg;
+	int cnt, has_cnt;
+
+	if (cfg->block_map_cache_size_mb && (cache_mb < 150))
+		cache_mb = 150; // always at least 150 MiB for block map
+
+	// total required memory for VDO target
+	req_mb = 38 + cfg->index_memory_size_mb + virt_mb + phy_mb + cache_mb;
+
+	_get_memory_info(&total_mb, &available_mb);
+
+	has_cnt = cnt = (phy_mb ? 1 : 0) +
+			 (virt_mb ? 1 : 0) +
+			 (cfg->block_map_cache_size_mb ? 1 : 0) +
+			 (cfg->index_memory_size_mb ? 1 : 0);
+
+	if (phy_mb)
+		(void)_vdo_snprintf(&pmsg, &mlen, " %s RAM for physical volume size %s%s",
+				    display_size(cmd, phy_mb << (20 - SECTOR_SHIFT)),
+				    display_size(cmd, cfg->physical_size), _split[--cnt]);
+
+	if (virt_mb)
+		(void)_vdo_snprintf(&pmsg, &mlen, " %s RAM for virtual volume size %s%s",
+				    display_size(cmd, virt_mb << (20 - SECTOR_SHIFT)),
+				    display_size(cmd, cfg->virtual_size), _split[--cnt]);
+
+	if (cfg->block_map_cache_size_mb)
+		(void)_vdo_snprintf(&pmsg, &mlen, " %s RAM for block map cache size %s%s",
+				    display_size(cmd, cache_mb << (20 - SECTOR_SHIFT)),
+				    display_size(cmd, ((uint64_t)cfg->block_map_cache_size_mb) << (20 - SECTOR_SHIFT)),
+				    _split[--cnt]);
+
+	if (cfg->index_memory_size_mb)
+		(void)_vdo_snprintf(&pmsg, &mlen, " %s RAM for index memory",
+				    display_size(cmd, ((uint64_t)cfg->index_memory_size_mb) << (20 - SECTOR_SHIFT)));
+
+	if (req_mb > available_mb) {
+		log_error("Not enough free memory for VDO target. %s RAM is required, but only %s RAM is available.",
+			  display_size(cmd, req_mb << (20 - SECTOR_SHIFT)),
+			  display_size(cmd, available_mb << (20 - SECTOR_SHIFT)));
+		if (has_cnt)
+			log_print_unless_silent("VDO configuration needs%s.", msg);
+		return 0;
+	}
+
+	log_debug("VDO requires %s RAM, currently available %s RAM.",
+		  display_size(cmd, req_mb << (20 - SECTOR_SHIFT)),
+		  display_size(cmd, available_mb << (20 - SECTOR_SHIFT)));
+
+	if (has_cnt)
+		log_verbose("VDO configuration needs%s.", msg);
 
 	return 1;
 }

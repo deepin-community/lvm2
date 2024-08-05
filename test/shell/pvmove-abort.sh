@@ -49,7 +49,6 @@ else
 	LVM_TEST_TAG="kill_me_$PREFIX" "${cmd1[@]}"
 	LVM_TEST_TAG="kill_me_$PREFIX" "${cmd2[@]}"
 fi
-
 # remove specific device
 pvmove --abort "$dev1"
 

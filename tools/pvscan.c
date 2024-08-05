@@ -19,7 +19,6 @@
 #include "lib/metadata/metadata.h"
 #include "lib/label/hints.h"
 #include "lib/device/online.h"
-#include "lib/filters/filter.h"
 
 #include <dirent.h>
 
@@ -177,21 +176,6 @@ out:
 	return ret;
 }
 
-static void _lookup_file_remove(char *vgname)
-{
-	char path[PATH_MAX];
-
-	if (dm_snprintf(path, sizeof(path), "%s/%s", PVS_LOOKUP_DIR, vgname) < 0) {
-		log_error("Path %s/%s is too long.", PVS_LOOKUP_DIR, vgname);
-		return;
-	}
-
-	log_debug("Unlink pvs_lookup: %s", path);
-
-	if (unlink(path) && (errno != ENOENT))
-		log_sys_debug("unlink", path);
-}
-
 /*
  * When a device goes offline we only know its major:minor, not its PVID.
  * Since the dev isn't around, we can't read it to get its PVID, so we have to
@@ -233,7 +217,7 @@ static void _online_pvid_file_remove_devno(int major, int minor)
 
 			if (file_vgname[0]) {
 				online_vg_file_remove(file_vgname);
-				_lookup_file_remove(file_vgname);
+				online_lookup_file_remove(file_vgname);
 			}
 		}
 	}
@@ -718,7 +702,7 @@ static int _pvscan_aa_quick(struct cmd_context *cmd, struct pvscan_aa_params *pp
 	 * devices used by the VG we read.
 	 */
 	dm_list_iterate_items(pvl, &vg->pvs) {
-		if (dev_in_device_list(pvl->pv->dev, &devs))
+		if (device_list_find_dev(&devs, pvl->pv->dev))
 			continue;
 		log_error_pvscan(cmd, "activation for VG %s found different devices.", vgname);
 		ret = ECMD_FAILED;
@@ -818,49 +802,6 @@ out:
 	return ret;
 }
 
-/*
- * The optimization in which only the pvscan arg devname is added to dev-cache
- * does not work if there's an lvm.conf filter containing symlinks to the dev
- * like /dev/disk/by-id/lvm-pv-uuid-xyz entries.  A full dev_cache_scan will
- * associate the symlinks with the system dev name passed to pvscan, which lets
- * filter-regex match the devname with the symlink name in the filter.
- */
-static int _filter_uses_symlinks(struct cmd_context *cmd, int filter_cfg)
-{
-	const struct dm_config_node *cn;
-	const struct dm_config_value *cv;
-	const char *fname;
-
-	if ((cn = find_config_tree_array(cmd, filter_cfg, NULL))) {
-        	for (cv = cn->v; cv; cv = cv->next) {
-			if (cv->type != DM_CFG_STRING)
-				continue;
-			if (!cv->v.str)
-				continue;
-
-			fname = cv->v.str;
-
-			if (fname[0] != 'a')
-				continue;
-
-			if (strstr(fname, "/dev/disk/"))
-				return 1;
-			if (strstr(fname, "/dev/mapper/"))
-				return 1;
-
-			/* In case /dev/disk/by was omitted */
-			if (strstr(fname, "lvm-pv-uuid"))
-				return 1;
-			if (strstr(fname, "dm-uuid"))
-				return 1;
-			if (strstr(fname, "wwn-"))
-				return 1;
-		}
-	}
-
-	return 0;
-}
-
 struct pvscan_arg {
 	struct dm_list list;
 	const char *devname;
@@ -924,30 +865,6 @@ static int _get_args_devs(struct cmd_context *cmd, struct dm_list *pvscan_args,
 {
 	struct pvscan_arg *arg;
 	struct device_list *devl;
-
-	/*
-	 * If no devices file is used, and lvm.conf filter is set to
-	 * accept /dev/disk/by-id/lvm-pv-uuid-xyz or another symlink,
-	 * but pvscan --cache is passed devname or major:minor, so
-	 * pvscan needs to match its arg device to the filter symlink.
-	 * setup_dev_in_dev_cache() adds /dev/sda2 to dev-cache which
-	 * does not match a symlink to /dev/sda2, so we need a full
-	 * dev_cache_scan that will associate all symlinks to sda2,
-	 * which allows filter-regex to work.  This case could be
-	 * optimized if needed by adding dev-cache entries for each
-	 * filter "a" entry (filter symlink patterns would still need
-	 * a full dev_cache_scan.)
-	 * (When no devices file is used and 69-dm-lvm.rules is
-	 * used which calls pvscan directly, symlinks may not
-	 * have been created by other rules when pvscan runs, so
-	 * the full dev_cache_scan may still not find them.)
-	 */
-	if (!cmd->enable_devices_file && !cmd->enable_devices_list &&
-	    (_filter_uses_symlinks(cmd, devices_filter_CFG) ||
-	     _filter_uses_symlinks(cmd, devices_global_filter_CFG))) {
-		log_print_pvscan(cmd, "finding all devices for filter symlinks.");
-		dev_cache_scan(cmd);
-	}
 
 	/* pass NULL filter when getting devs from dev-cache, filtering is done separately */
 
@@ -1407,7 +1324,8 @@ static int _pvscan_cache_all(struct cmd_context *cmd, int argc, char **argv,
 	 * which we want 'pvscan --cache' to do, and that uses
 	 * info from lvmcache, e.g. duplicate pv info.
 	 */
-	lvmcache_label_scan(cmd);
+	if (!lvmcache_label_scan(cmd))
+		return_0;
 
 	cmd->pvscan_recreate_hints = 0;
 	cmd->use_hints = 0;
@@ -1434,27 +1352,6 @@ static int _pvscan_cache_all(struct cmd_context *cmd, int argc, char **argv,
 	_online_devs(cmd, 1, &pvscan_devs, &pv_count, complete_vgnames);
 
 	return 1;
-}
-
-/*
- * If /dev/sda* of /dev/vda* is excluded by the devices file
- * it's usually a misconfiguration that prevents proper booting,
- * so make it a special case to give extra info to help debugging.
- */
-static void _warn_excluded_root(struct cmd_context *cmd, struct device *dev)
-{
-	struct dev_use *du;
-	const char *cur_idname;
-
-	if (!(du = get_du_for_devname(cmd, dev_name(dev)))) {
-		log_warn("WARNING: no autoactivation for %s: not found in system.devices.", dev_name(dev));
-		return;
-	}
-
-	cur_idname = device_id_system_read(cmd, dev, du->idtype);
-
-	log_warn("WARNING: no autoactivation for %s: system.devices %s current %s.",
-		 dev_name(dev), du->idname, cur_idname ?: "missing device id");
 }
 
 static int _pvscan_cache_args(struct cmd_context *cmd, int argc, char **argv,
@@ -1562,17 +1459,46 @@ static int _pvscan_cache_args(struct cmd_context *cmd, int argc, char **argv,
 
 	cmd->filter_nodata_only = 1;
 
+	/*
+	 * Hack to handle regex filter that contains a symlink name for dev arg.
+	 * pvscan --cache <dev> is called by our udev rule at a time when the
+	 * symlinks for <dev> may not all be created yet (by other udev rules.)
+	 * The regex filter in lvm.conf may refer to <dev> using a symlink name,
+	 * so we need to know all the symlinks for <dev> in order for the filter
+	 * to work correctly. Scanning /dev with dev_cache_scan() would usually
+	 * find all the symlink names for <dev>, adding them to dev->aliases,
+	 * which would let the filter work, but all symlinks aren't created yet.
+	 * But, the DEVLINKS env var, set by udev, contains all the symlink
+	 * names for <dev> that have been or *will be* created. So, we add all
+	 * these symlink names to dev->aliases, as if we had found them in /dev.
+	 * This allows <dev> to be recognized by a regex filter containing a
+	 * symlink for <dev>. We have to tell filter-regex to not set the
+	 * preferred name for <dev> to a symlink name since the <dev> may not
+	 * be usable by that symlink name yet.
+	 */
+	if ((dm_list_size(&pvscan_devs) == 1) &&
+	    !cmd->enable_devices_file &&
+	    !cmd->enable_devices_list) {
+		char *env_str;
+		struct dm_list *env_aliases;
+		devl = dm_list_item(dm_list_first(&pvscan_devs), struct device_list);
+		if ((env_str = getenv("DEVLINKS"))) {
+			log_debug("Finding symlink names from DEVLINKS for filter regex.");
+			log_debug("DEVLINKS %s", env_str);
+			env_aliases = str_to_str_list(cmd->mem, env_str, " ", 0);
+			dm_list_splice(&devl->dev->aliases, env_aliases);
+		} else {
+			log_debug("Finding symlink names from /dev for filter regex.");
+			dev_cache_scan(cmd);
+		}
+		cmd->filter_regex_set_preferred_name_disable = 1;
+	}
+
 	dm_list_iterate_items_safe(devl, devl2, &pvscan_devs) {
 		if (!cmd->filter->passes_filter(cmd, cmd->filter, devl->dev, NULL)) {
 			log_print_pvscan(cmd, "%s excluded: %s.",
 					 dev_name(devl->dev), dev_filtered_reason(devl->dev));
 			dm_list_del(&devl->list);
-
-			/* Special case warning when probable root dev is missing from system.devices */
-			if ((devl->dev->filtered_flags & DEV_FILTERED_DEVICES_FILE) &&
-			    (!strncmp(dev_name(devl->dev), "/dev/sda", 8) ||
-			     !strncmp(dev_name(devl->dev), "/dev/vda", 8)))
-				_warn_excluded_root(cmd, devl->dev);
 		}
 	}
 

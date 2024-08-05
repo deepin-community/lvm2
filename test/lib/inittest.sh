@@ -106,25 +106,29 @@ else
 fi
 
 cd "$TESTDIR"
-mkdir lib
+mkdir lib tmp
 
 # Setting up symlink from $i to $TESTDIR/lib
+# library libdevmapper-event-lvm2.so.2.03 is needed with name
 test -n "${abs_top_builddir+varset}" && \
-    find "$abs_top_builddir/daemons/dmeventd/plugins/" -name '*.so' \
+    find "$abs_top_builddir/daemons/dmeventd/plugins/" -name '*.so*' \
     -exec ln -s -t lib "{}" +
 find "$TESTOLDPWD/lib" ! \( -name '*.sh' -o -name '*.[cdo]' \
     -o -name '*~' \)  -exec ln -s -t lib "{}" +
+LD_LIBRARY_PATH="$TESTDIR/lib:$LD_LIBRARY_PATH"
 
 DM_DEFAULT_NAME_MANGLING_MODE=none
 DM_DEV_DIR="$TESTDIR/dev"
 LVM_SYSTEM_DIR="$TESTDIR/etc"
+TMPDIR="$TESTDIR/tmp"
 # abort on the internal dm errors in the tests (allowing test user override)
 DM_ABORT_ON_INTERNAL_ERRORS=${DM_ABORT_ON_INTERNAL_ERRORS:-1}
 DM_DEBUG_WITH_LINE_NUMBERS=${DM_DEBUG_WITH_LINE_NUMBERS:-1}
 
 export DM_DEFAULT_NAME_MANGLING_MODE DM_DEV_DIR LVM_SYSTEM_DIR DM_ABORT_ON_INTERNAL_ERRORS
-
 mkdir "$LVM_SYSTEM_DIR" "$DM_DEV_DIR"
+MACHINEID=$(uuidgen 2>/dev/null || echo "abcdefabcdefabcdefabcdefabcdefab")
+echo "${MACHINEID//-/}" > "$LVM_SYSTEM_DIR/machine-id"   # remove all '-'
 if test -n "$LVM_TEST_DEVDIR" ; then
 	test -d "$LVM_TEST_DEVDIR" || die "Test device directory LVM_TEST_DEVDIR=\"$LVM_TEST_DEVDIR\" is not valid."
 	DM_DEV_DIR=$LVM_TEST_DEVDIR

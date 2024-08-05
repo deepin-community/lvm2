@@ -383,13 +383,13 @@ static bool _read_bytes(struct device *dev, struct devicefile *def, uint64_t sta
 		return false;
 
 	off = lseek(def->fd, start, SEEK_SET);
-	if (off != start)
+	if (off != (off_t)start)
 		return false;
 
 	rv = read(def->fd, data, len);
 	if (rv < 0)
 		return false;
-	if (rv != len)
+	if ((size_t)rv != len)
 		return false;
 	return true;
 }
@@ -418,7 +418,7 @@ static int _dump_all_text(struct cmd_context *cmd, struct settings *set, const c
 	int multiple_vgs = 0;
 	int bad_end;
 	int vgnamelen;
-	int count;
+	unsigned count;
 	int len;
 
 	if (tofile) {
@@ -1028,7 +1028,6 @@ static int _dump_label_and_pv_header(struct cmd_context *cmd, uint64_t labelsect
 	uint64_t pvh_offset;    /* bytes */
 	uint64_t pvhe_offset;   /* bytes */
 	uint64_t dlocn_offset;  /* bytes */
-	uint64_t tmp;
 	int mda_count = 0;
 	int bad = 0;
 	int di;
@@ -1095,7 +1094,7 @@ static int _dump_label_and_pv_header(struct cmd_context *cmd, uint64_t labelsect
 	if ((void *)dlocn != (void *)(buf + dlocn_offset - lh_offset))
 		log_print("CHECK: problem with pv_header.disk_locn[%d] offset calculation", di);
 
-	while ((tmp = xlate64(dlocn->offset))) {
+	while (xlate64(dlocn->offset)) {
 		if (print_fields) {
 			log_print("pv_header.disk_locn[%d] at %llu # location of data area", di,
 				  (unsigned long long)dlocn_offset);
@@ -1128,7 +1127,7 @@ static int _dump_label_and_pv_header(struct cmd_context *cmd, uint64_t labelsect
 	if ((void *)dlocn != (void *)(buf + dlocn_offset - lh_offset))
 		log_print("CHECK: problem with pv_header.disk_locn[%d] offset calculation", di);
 
-	while ((tmp = xlate64(dlocn->offset))) {
+	while (xlate64(dlocn->offset)) {
 		if (print_fields) {
 			log_print("pv_header.disk_locn[%d] at %llu # location of metadata area", di,
 				  (unsigned long long)dlocn_offset);
@@ -1146,7 +1145,10 @@ static int _dump_label_and_pv_header(struct cmd_context *cmd, uint64_t labelsect
 			 * mda1 offset is page size from machine that created it,
 			 * warn if it's not one of the expected page sizes.
 			 */
-			if ((*mda1_offset != 4096) && (*mda1_offset != 8192) && (*mda1_offset != 65536)) {
+			if ((*mda1_offset != 4096) && 
+			    (*mda1_offset != 8192) &&
+			    (*mda1_offset != 16384) &&
+			    (*mda1_offset != 65536)) {
 				log_print("WARNING: pv_header.disk_locn[%d].offset %llu is unexpected # for first mda",
 					  di, (unsigned long long)*mda1_offset);
 			}
@@ -1211,7 +1213,7 @@ static int _dump_label_and_pv_header(struct cmd_context *cmd, uint64_t labelsect
 	dlocn = pvhe->bootloader_areas_xl;
 	dlocn_offset = pvhe_offset + 8;
 
-	while ((tmp = xlate64(dlocn->offset))) {
+	while (xlate64(dlocn->offset)) {
 		if (print_fields) {
 			log_print("pv_header_extension.disk_locn[%d] at %llu # bootloader area", di,
 				  (unsigned long long)dlocn_offset);
@@ -1273,7 +1275,7 @@ static int _dump_mda_header(struct cmd_context *cmd, struct settings *set,
 	uint64_t meta_offset = 0; /* bytes */
 	uint64_t meta_size = 0;   /* bytes */
 	uint32_t meta_checksum = 0;
-	int mda_num = (mda_offset == 4096) ? 1 : 2;
+	int mda_num = (mda_offset <= 65536) ? 1 : 2;
 	int bad = 0;
 
 	*checksum0_ret = 0; /* checksum from raw_locn[0] */
@@ -1441,8 +1443,13 @@ static int _dump_metadata(struct cmd_context *cmd, const char *dump, struct sett
 	int bad = 0;
 
 	if (arg_is_set(cmd, file_ARG)) {
+		struct stat sb;
 		if (!(tofile = arg_str_value(cmd, file_ARG, NULL)))
 			return 0;
+		if (!stat(tofile, &sb)) {
+			log_error("File already exists.");
+			return 0;
+		}
 	}
 
 	if (set->mda_num)
@@ -1852,8 +1859,8 @@ static int _get_settings(struct cmd_context *cmd, struct settings *set)
 	const char *str;
 	char key[64];
 	char val[64];
-	int num;
-	int pos;
+	unsigned num;
+	unsigned pos;
 
 	/*
 	 * "grouped" means that multiple --settings options can be used.
@@ -2112,7 +2119,7 @@ static int _check_for_mda2(struct cmd_context *cmd, struct device *dev,
 	char buf2[256];
 	char *buf;
 	uint64_t mda_offset, mda_size, extra_bytes; /* bytes */
-	int i, found = 0;
+	unsigned i, found = 0;
 
 	if (device_size < (2 * ONE_MB_IN_BYTES))
 		return_0;
@@ -2826,7 +2833,7 @@ static int _dump_backup_to_raw(struct cmd_context *cmd, struct settings *set)
 		goto fail_close;
 
 	rv = read(fd, back_buf, back_size);
-	if (rv != back_size) {
+	if (rv != (int)back_size) {
 		log_error("Cannot read file: %s", input);
 		free(back_buf);
 		goto fail_close;
@@ -2963,7 +2970,7 @@ static int _read_metadata_file(struct cmd_context *cmd, struct metadata_file *mf
 		goto_out;
 
 	rv = read(fd, text_buf, text_size);
-	if (rv != text_size) {
+	if (rv != (int)text_size) {
 		log_error("Cannot read file: %s", mf->filename);
 		free(text_buf);
 		goto out;

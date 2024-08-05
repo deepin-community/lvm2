@@ -633,6 +633,7 @@ int report_for_selection(struct cmd_context *cmd,
 			 struct logical_volume *lv)
 {
 	struct selection_handle *sh = parent_handle->selection_handle;
+	report_type_t initial_report_type = sh->report_type;
 	struct report_args args = {0};
 	struct single_report_args *single_args = &args.single_args[REPORT_IDX_SINGLE];
 	int do_lv_info, do_lv_seg_status;
@@ -648,8 +649,10 @@ int report_for_selection(struct cmd_context *cmd,
 				    &sh->report_type))
 		return_0;
 
-	if (!(handle = init_processing_handle(cmd, parent_handle)))
+	if (!(handle = init_processing_handle(cmd, parent_handle))) {
+		sh->report_type = initial_report_type;
 		return_0;
+	}
 
 	/*
 	 * We're already reporting for select so override
@@ -694,6 +697,8 @@ int report_for_selection(struct cmd_context *cmd,
 			log_error(INTERNAL_ERROR "report_for_selection: incorrect report type");
 			break;
 	}
+
+	sh->report_type = initial_report_type;
 
 	/*
 	 * Keep the selection handle provided from the caller -
@@ -1455,6 +1460,7 @@ int devtypes(struct cmd_context *cmd, int argc, char **argv)
 
 #define REPORT_FORMAT_NAME_BASIC "basic"
 #define REPORT_FORMAT_NAME_JSON "json"
+#define REPORT_FORMAT_NAME_JSON_STD "json_std"
 
 int report_format_init(struct cmd_context *cmd)
 {
@@ -1475,11 +1481,14 @@ int report_format_init(struct cmd_context *cmd)
 										: DM_REPORT_GROUP_SINGLE;
 	} else if (!strcmp(format_str, REPORT_FORMAT_NAME_JSON)) {
 		args.report_group_type = DM_REPORT_GROUP_JSON;
+	} else if (!strcmp(format_str, REPORT_FORMAT_NAME_JSON_STD)) {
+		args.report_group_type = DM_REPORT_GROUP_JSON_STD;
 	} else {
 		log_error("%s: unknown report format.", format_str);
-		log_error("Supported report formats: %s, %s.",
+		log_error("Supported report formats: %s, %s, %s.",
 			  REPORT_FORMAT_NAME_BASIC,
-			  REPORT_FORMAT_NAME_JSON);
+			  REPORT_FORMAT_NAME_JSON,
+			  REPORT_FORMAT_NAME_JSON_STD);
 		return 0;
 	}
 
@@ -1490,6 +1499,16 @@ int report_format_init(struct cmd_context *cmd)
 		log_error("Failed to create report group.");
 		return 0;
 	}
+
+	/*
+	 * JSON_STD requires strict type mode. That means all NUM and BIN
+	 * fields are always reported as numeric values and not strings which
+	 * are synonyms to these numeric values.
+	 */
+	if (args.report_group_type == DM_REPORT_GROUP_JSON_STD)
+		cmd->report_strict_type_mode = 1;
+	else
+		cmd->report_strict_type_mode = 0;
 
 	if (report_command_log) {
 		single_args = &args.single_args[REPORT_IDX_LOG];

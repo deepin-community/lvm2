@@ -643,6 +643,7 @@ static int _process_config(struct cmd_context *cmd)
 	if (!dm_set_uuid_prefix(UUID_PREFIX))
 		return_0;
 #endif
+	cmd->device_id_sysfs_dir = find_config_tree_str(cmd, devices_device_id_sysfs_dir_CFG, NULL);
 
 	dev_ext_info_src = find_config_tree_str(cmd, devices_external_device_info_source_CFG, NULL);
 
@@ -1505,7 +1506,7 @@ static void _init_rand(struct cmd_context *cmd)
 		return;
 	}
 
-	cmd->rand_seed = (unsigned) time(NULL) + (unsigned) getpid();
+	cmd->rand_seed = (unsigned) ((time(NULL) + getpid()) & 0xffffffff);
 	reset_lvm_errno(1);
 }
 
@@ -1580,7 +1581,7 @@ struct cmd_context *create_config_context(void)
 	if (!(cmd = zalloc(sizeof(*cmd))))
 		goto_out;
 
-	strcpy(cmd->system_dir, DEFAULT_SYS_DIR);
+	strncpy(cmd->system_dir, DEFAULT_SYS_DIR, sizeof(cmd->system_dir) - 1);
 
 	if (!_get_env_vars(cmd))
 		goto_out;
@@ -1712,10 +1713,8 @@ struct cmd_context *create_toolcontext(unsigned is_clvmd,
 	/*
 	 * Environment variable LVM_SYSTEM_DIR overrides this below.
 	 */
-        if (system_dir)
-		strncpy(cmd->system_dir, system_dir, sizeof(cmd->system_dir) - 1);
-	else
-		strcpy(cmd->system_dir, DEFAULT_SYS_DIR);
+	strncpy(cmd->system_dir, (system_dir) ? system_dir : DEFAULT_SYS_DIR,
+		sizeof(cmd->system_dir) - 1);
 
 	if (!_get_env_vars(cmd))
 		goto_out;
@@ -1905,7 +1904,6 @@ int refresh_toolcontext(struct cmd_context *cmd)
 	_destroy_segtypes(&cmd->segtypes);
 	_destroy_formats(cmd, &cmd->formats);
 
-	devices_file_exit(cmd);
 	if (!dev_cache_exit())
 		stack;
 	_destroy_dev_types(cmd);
@@ -2034,7 +2032,6 @@ void destroy_toolcontext(struct cmd_context *cmd)
 	_destroy_segtypes(&cmd->segtypes);
 	_destroy_formats(cmd, &cmd->formats);
 	_destroy_filters(cmd);
-	devices_file_exit(cmd);
 	dev_cache_exit();
 	_destroy_dev_types(cmd);
 	_destroy_tags(cmd);

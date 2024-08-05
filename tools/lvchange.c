@@ -103,7 +103,7 @@ static int _lvchange_pool_update(struct cmd_context *cmd,
 		if (discards != first_seg(lv)->discards) {
 			if (((discards == THIN_DISCARDS_IGNORE) ||
 			     (first_seg(lv)->discards == THIN_DISCARDS_IGNORE)) &&
-			    pool_is_active(lv))
+			    thin_pool_is_active(lv))
 				log_error("Cannot change support for discards while pool volume %s is active.",
 					  display_lvname(lv));
 			else {
@@ -156,8 +156,11 @@ static int _lvchange_monitoring(struct cmd_context *cmd,
 			log_verbose("Monitoring LV %s", display_lvname(lv));
 		else
 			log_verbose("Unmonitoring LV %s", display_lvname(lv));
-		if (!monitor_dev_for_events(cmd, lv, 0, dmeventd_monitor_mode()))
-			return_0;
+		if (!monitor_dev_for_events(cmd, lv, 0, dmeventd_monitor_mode())) {
+			log_error("Failed to change monitoring for %s volume.",
+				  display_lvname(lv));
+			return 0;
+		}
 	}
 
 	return 1;
@@ -357,7 +360,7 @@ static int _lvchange_resync(struct cmd_context *cmd, struct logical_volume *lv)
 		init_dmeventd_monitor(monitored);
 	init_mirror_in_sync(0);
 	if (!sync_local_dev_names(cmd))
-		log_warn("Failed to sync local dev names.");
+		log_warn("WARNING: Failed to sync local dev names.");
 
 	log_very_verbose("Starting resync of %s%s%s%s %s.",
 			 (active) ? "active " : "",
@@ -663,6 +666,21 @@ static int _lvchange_writecache(struct cmd_context *cmd,
 	if (settings.max_age_set) {
 		seg->writecache_settings.max_age_set = settings.max_age_set;
 		seg->writecache_settings.max_age = settings.max_age;
+		set_count++;
+	}
+	if (settings.metadata_only_set) {
+		seg->writecache_settings.metadata_only_set = settings.metadata_only_set;
+		seg->writecache_settings.metadata_only = settings.metadata_only;
+		set_count++;
+	}
+	if (settings.pause_writeback_set) {
+		seg->writecache_settings.pause_writeback_set = settings.pause_writeback_set;
+		seg->writecache_settings.pause_writeback = settings.pause_writeback;
+		set_count++;
+	}
+	if (settings.new_key && settings.new_val) {
+		seg->writecache_settings.new_key = settings.new_key;
+		seg->writecache_settings.new_val = settings.new_val;
 		set_count++;
 	}
 

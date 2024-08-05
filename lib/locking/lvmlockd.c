@@ -513,9 +513,11 @@ static int _create_sanlock_lv(struct cmd_context *cmd, struct volume_group *vg,
 
 	lv_size_bytes = num_mb * ONE_MB_IN_BYTES;  /* size of sanlock LV in bytes */
 	extent_bytes = vg->extent_size * SECTOR_SIZE; /* size of one extent in bytes */
-	total_extents = lv_size_bytes / extent_bytes; /* number of extents in sanlock LV */
+	total_extents = dm_div_up(lv_size_bytes, extent_bytes); /* number of extents in sanlock LV */
 	lp.extents = total_extents;
 
+	lv_size_bytes = total_extents * extent_bytes;
+	num_mb = lv_size_bytes / ONE_MB_IN_BYTES;
 	log_debug("Creating lvmlock LV for sanlock with size %um %ub %u extents", num_mb, lv_size_bytes, lp.extents);
 
 	dm_list_init(&lp.tags);
@@ -545,7 +547,7 @@ static int _remove_sanlock_lv(struct cmd_context *cmd, struct volume_group *vg)
 	return 1;
 }
 
-static int _extend_sanlock_lv(struct cmd_context *cmd, struct volume_group *vg, int extend_mb)
+static int _extend_sanlock_lv(struct cmd_context *cmd, struct volume_group *vg, unsigned extend_mb)
 {
 	struct device *dev;
 	char path[PATH_MAX];
@@ -577,8 +579,9 @@ static int _extend_sanlock_lv(struct cmd_context *cmd, struct volume_group *vg, 
 		  (uint32_t)(new_size_sectors * SECTOR_SIZE));
 
 	lp.size = new_size_sectors;
+	lp.pvh = &vg->pvs;
 
-	if (!lv_resize(lv, &lp, &vg->pvs)) {
+	if (!lv_resize(cmd, lv, &lp)) {
 		log_error("Extend sanlock LV %s to size %s failed.",
 			  display_lvname(lv), display_size(cmd, lp.size));
 		return 0;
@@ -605,7 +608,7 @@ static int _extend_sanlock_lv(struct cmd_context *cmd, struct volume_group *vg, 
 		  (unsigned long long)old_size_bytes,
 		  (unsigned long long)new_size_bytes);
 
-	log_print("Zeroing %u MiB on extended internal lvmlock LV...", extend_mb);
+	log_print_unless_silent("Zeroing %u MiB on extended internal lvmlock LV...", extend_mb);
 
 	if (!(dev = dev_cache_get(cmd, path, NULL))) {
 		log_error("Extend sanlock LV %s cannot find device.", display_lvname(lv));
@@ -651,7 +654,7 @@ static int _refresh_sanlock_lv(struct cmd_context *cmd, struct volume_group *vg)
 int handle_sanlock_lv(struct cmd_context *cmd, struct volume_group *vg)
 {
 	daemon_reply reply;
-	int extend_mb;
+	unsigned extend_mb;
 	int result;
 	int ret;
 
@@ -660,7 +663,7 @@ int handle_sanlock_lv(struct cmd_context *cmd, struct volume_group *vg)
 	if (!_lvmlockd_connected)
 		return 0;
 
-	extend_mb = find_config_tree_int(cmd, global_sanlock_lv_extend_CFG, NULL);
+	extend_mb = (unsigned) find_config_tree_int(cmd, global_sanlock_lv_extend_CFG, NULL);
 
 	/*
 	 * User can choose to not automatically extend the lvmlock LV
@@ -2295,12 +2298,11 @@ int lockd_vg_update(struct volume_group *vg)
 	return ret;
 }
 
-static int _query_lock_lv(struct cmd_context *cmd, struct volume_group *vg,
-			  const char *lv_name, char *lv_uuid,
-			  const char *lock_args, int *ex, int *sh)
+static int _query_lv(struct cmd_context *cmd, struct volume_group *vg,
+		     const char *lv_name, char *lv_uuid, const char *lock_args,
+		     int *ex, int *sh)
 {
 	daemon_reply reply;
-	const char *opts = NULL;
 	const char *reply_str;
 	int result;
 	int ret;
@@ -2309,7 +2311,7 @@ static int _query_lock_lv(struct cmd_context *cmd, struct volume_group *vg,
 
 	reply = _lockd_send("query_lock_lv",
 				"pid = " FMTd64, (int64_t) getpid(),
-				"opts = %s", opts ?: "none",
+				"opts = %s", "none",
 				"vg_name = %s", vg->name,
 				"lv_name = %s", lv_name,
 				"lv_uuid = %s", lv_uuid,
@@ -2343,6 +2345,37 @@ static int _query_lock_lv(struct cmd_context *cmd, struct volume_group *vg,
 	daemon_reply_destroy(reply);
 
 	return ret;
+}
+
+int lockd_query_lv(struct cmd_context *cmd, struct logical_volume *lv, int *ex, int *sh)
+{
+	struct volume_group *vg = lv->vg;
+	char lv_uuid[64] __attribute__((aligned(8)));
+
+	if (cmd->lockd_lv_disable)
+		return 1;
+	if (!vg_is_shared(vg))
+		return 1;
+	if (!_use_lvmlockd)
+		return 0;
+	if (!_lvmlockd_connected)
+		return 0;
+
+	/* types that cannot be active concurrently will always be ex. */
+	if (lv_is_external_origin(lv) ||
+	    lv_is_thin_type(lv) ||
+	    lv_is_mirror_type(lv) ||
+	    lv_is_raid_type(lv) ||
+	    lv_is_vdo_type(lv) ||
+	    lv_is_cache_type(lv)) {
+		*ex = 1;
+		return 1;
+	}
+
+	if (!id_write_format(&lv->lvid.id[1], lv_uuid, sizeof(lv_uuid)))
+		return_0;
+
+	return _query_lv(cmd, vg, lv->name, lv_uuid, lv->lock_args, ex, sh);
 }
 
 /*
@@ -2383,7 +2416,7 @@ int lockd_lv_name(struct cmd_context *cmd, struct volume_group *vg,
 		    !strcmp(cmd->name, "lvchange") || !strcmp(cmd->name, "lvconvert")) {
 			int ex = 0, sh = 0;
 
-			if (!_query_lock_lv(cmd, vg, lv_name, lv_uuid, lock_args, &ex, &sh))
+			if (!_query_lv(cmd, vg, lv_name, lv_uuid, lock_args, &ex, &sh))
 				return 1;
 			if (sh) {
 				log_warn("WARNING: shared LV may require refresh on other hosts where it is active.");
@@ -2555,7 +2588,7 @@ static int _lockd_lv_thin(struct cmd_context *cmd, struct logical_volume *lv,
 	 * Unlock when the pool is no longer active.
 	 */
 
-	if (def_mode && !strcmp(def_mode, "un") && pool_is_active(pool_lv))
+	if (def_mode && !strcmp(def_mode, "un") && thin_pool_is_active(pool_lv))
 		return 1;
 
 	flags |= LDLV_MODE_NO_SH;
@@ -2732,6 +2765,9 @@ int lockd_lv_resize(struct cmd_context *cmd, struct logical_volume *lv,
 
 	if (!_lvmlockd_connected)
 		return 0;
+
+	if (lv_is_lockd_sanlock_lv(lv))
+		return 1;
 
 	/*
 	 * A special case for gfs2 where we want to allow lvextend
@@ -3279,6 +3315,9 @@ out:
 
 int lockd_lv_uses_lock(struct logical_volume *lv)
 {
+	if (!lv_is_visible(lv))
+		return 0;
+
 	if (lv_is_thin_volume(lv))
 		return 0;
 
@@ -3330,9 +3369,6 @@ int lockd_lv_uses_lock(struct logical_volume *lv)
 		return 0;
 
 	if (lv_is_raid_metadata(lv))
-		return 0;
-
-	if (!lv_is_visible(lv))
 		return 0;
 
 	return 1;

@@ -16,7 +16,6 @@
 #include "lib/misc/lib.h"
 #include "lib/commands/toolcontext.h"
 #include "lib/device/device.h"
-#include "lib/device/device_id.h"
 #include "lib/device/online.h"
 
 #include <dirent.h>
@@ -277,7 +276,7 @@ int online_pvid_file_create(struct cmd_context *cmd, struct device *dev, const c
 
 	if (vgname) {
 		if ((len2 = dm_snprintf(buf + len1, sizeof(buf) - len1, "vg:%s\n", vgname)) < 0) {
-			log_print("Incomplete online file for %s %d:%d vg %s.", dev_name(dev), major, minor, vgname);
+			log_print_unless_silent("Incomplete online file for %s %d:%d vg %s.", dev_name(dev), major, minor, vgname);
 			/* can still continue without vgname */
 			len2 = 0;
 		}
@@ -286,7 +285,7 @@ int online_pvid_file_create(struct cmd_context *cmd, struct device *dev, const c
 	devnamelen = dm_snprintf(devname, sizeof(devname), "%s", dev_name(dev));
 	if ((devnamelen > 5) && (devnamelen < NAME_LEN-1)) {
 		if ((len3 = dm_snprintf(buf + len1 + len2, sizeof(buf) - len1 - len2, "dev:%s\n", devname)) < 0) {
-			log_print("Incomplete devname in online file for %s.", dev_name(dev));
+			log_print_unless_silent("Incomplete devname in online file for %s.", dev_name(dev));
 			/* can continue without devname */
 			len3 = 0;
 		}
@@ -505,3 +504,58 @@ do_lookup:
 	if ((rv < 0) && stat(PVS_LOOKUP_DIR, &st))
 		log_error_pvscan(cmd, "Failed to create %s %d", PVS_LOOKUP_DIR, errno);
 }
+
+void online_lookup_file_remove(const char *vgname)
+{
+	char path[PATH_MAX];
+
+	if (dm_snprintf(path, sizeof(path), "%s/%s", PVS_LOOKUP_DIR, vgname) < 0) {
+		log_error("Path %s/%s is too long.", PVS_LOOKUP_DIR, vgname);
+		return;
+	}
+
+	log_debug("Unlink pvs_lookup: %s", path);
+
+	if (unlink(path) && (errno != ENOENT))
+		log_sys_debug("unlink", path);
+}
+
+static int _online_pvid_file_remove(char *pvid)
+{
+	char path[PATH_MAX];
+
+	if (dm_snprintf(path, sizeof(path), "%s/%s", PVS_ONLINE_DIR, pvid) < 0)
+		return_0;
+	if (!unlink(path))
+		return 1;
+	return 0;
+}
+
+/*
+ * Reboot automatically clearing tmpfs on /run is the main method of removing
+ * online files.  It's important to note that removing the online files for a
+ * VG is not a technical requirement for anything and could easily be skipped
+ * if it had any downside.  It's only done to clean up the space used in /run
+ * by the online files, e.g. if there happens to be an extreme amount of
+ * vgcreate/pvscan/vgremove between reboots that are leaving a large number of
+ * useless online files consuming tmpfs space.
+ */
+void online_vgremove(struct volume_group *vg)
+{
+	char pvid[ID_LEN + 1] __attribute__((aligned(8))) = { 0 };
+	struct pv_list *pvl;
+
+	/*
+	 * online files may not exist for the vg if there has been no
+	 * pvscans or autoactivation.
+	 */
+
+	online_vg_file_remove(vg->name);
+	online_lookup_file_remove(vg->name);
+
+	dm_list_iterate_items(pvl, &vg->pvs) {
+		memcpy(pvid, &pvl->pv->id.uuid, ID_LEN);
+		_online_pvid_file_remove(pvid);
+	}
+}
+

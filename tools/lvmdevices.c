@@ -124,6 +124,7 @@ int lvmdevices(struct cmd_context *cmd, int argc, char **argv)
 {
 	struct dm_list search_pvids;
 	struct dm_list found_devs;
+	struct dm_list scan_devs;
 	struct device_id_list *dil;
 	struct device_list *devl;
 	struct device *dev;
@@ -132,6 +133,7 @@ int lvmdevices(struct cmd_context *cmd, int argc, char **argv)
 
 	dm_list_init(&search_pvids);
 	dm_list_init(&found_devs);
+	dm_list_init(&scan_devs);
 
 	if (!setup_devices_file(cmd))
 		return ECMD_FAILED;
@@ -186,6 +188,7 @@ int lvmdevices(struct cmd_context *cmd, int argc, char **argv)
 		int update_set = arg_is_set(cmd, update_ARG);
 		int search_count = 0;
 		int update_needed = 0;
+		int serial_update_needed = 0;
 		int invalid = 0;
 
 		unlink_searched_devnames(cmd);
@@ -264,7 +267,7 @@ int lvmdevices(struct cmd_context *cmd, int argc, char **argv)
 				if (update_set) {
 					log_print("Adding multipath device %s for multipath component %s.",
 						  dev_name(mpath_dev), dev_name(du->dev));
-					if (!device_id_add(cmd, mpath_dev, dev->pvid, NULL, NULL))
+					if (!device_id_add(cmd, mpath_dev, dev->pvid, NULL, NULL, 0))
 						stack;
 				} else {
 					log_print("Missing multipath device %s for multipath component %s.",
@@ -272,6 +275,9 @@ int lvmdevices(struct cmd_context *cmd, int argc, char **argv)
 				}
 			}
 		}
+
+		if (!dm_list_empty(&cmd->device_ids_check_serial))
+			device_ids_check_serial(cmd, &scan_devs, &serial_update_needed, 1);
 
 		/*
 		 * Find and fix any devname entries that have moved to a
@@ -287,8 +293,20 @@ int lvmdevices(struct cmd_context *cmd, int argc, char **argv)
 				label_scan_invalidate(du->dev);
 		}
 
+		if (arg_is_set(cmd, delnotfound_ARG)) {
+			dm_list_iterate_items_safe(du, du2, &cmd->use_devices) {
+				if (!du->dev) {
+					log_print("Deleting IDTYPE=%s IDNAME=%s PVID=%s",
+						  idtype_to_str(du->idtype), du->idname ?: ".", du->pvid ?: ".");
+					dm_list_del(&du->list);
+					free_du(du);
+					update_needed++;
+				}
+			}
+		}
+
 		if (arg_is_set(cmd, update_ARG)) {
-			if (update_needed || !dm_list_empty(&found_devs)) {
+			if (update_needed || serial_update_needed || !dm_list_empty(&found_devs)) {
 				if (!device_ids_write(cmd))
 					goto_bad;
 				log_print("Updated devices file to version %s", devices_file_version());
@@ -301,7 +319,7 @@ int lvmdevices(struct cmd_context *cmd, int argc, char **argv)
 			 * needs updates, i.e. running --update would make
 			 * changes.
 			 */
-			if (update_needed) {
+			if (update_needed || serial_update_needed) {
 				log_error("Updates needed for devices file.");
 				goto bad;
 			}
@@ -360,7 +378,7 @@ int lvmdevices(struct cmd_context *cmd, int argc, char **argv)
 		/* also allow deviceid_ARG ? */
 		deviceidtype = arg_str_value(cmd, deviceidtype_ARG, NULL);
 
-		if (!device_id_add(cmd, dev, dev->pvid, deviceidtype, NULL))
+		if (!device_id_add(cmd, dev, dev->pvid, deviceidtype, NULL, 1))
 			goto_bad;
 		if (!device_ids_write(cmd))
 			goto_bad;
@@ -408,7 +426,7 @@ int lvmdevices(struct cmd_context *cmd, int argc, char **argv)
 		}
 		dm_list_iterate_items(devl, &found_devs) {
 			deviceidtype = arg_str_value(cmd, deviceidtype_ARG, NULL);
-			if (!device_id_add(cmd, devl->dev, devl->dev->pvid, deviceidtype, NULL))
+			if (!device_id_add(cmd, devl->dev, devl->dev->pvid, deviceidtype, NULL, 1))
 				goto_bad;
 		}
 		if (!device_ids_write(cmd))

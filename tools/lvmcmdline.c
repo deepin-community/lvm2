@@ -126,6 +126,7 @@ static const struct command_function _command_functions[CMD_COUNT] = {
 	{ lvconvert_to_thinpool_CMD,			lvconvert_to_pool_cmd },
 	{ lvconvert_to_cachepool_CMD,			lvconvert_to_pool_cmd },
 	{ lvconvert_to_thin_with_external_CMD,		lvconvert_to_thin_with_external_cmd },
+	{ lvconvert_to_thin_with_data_CMD,		lvconvert_to_thin_with_data_cmd },
 	{ lvconvert_to_cache_with_cachevol_CMD,		lvconvert_to_cache_with_cachevol_cmd },
 	{ lvconvert_to_cache_with_device_CMD,		lvconvert_to_cache_with_cachevol_cmd },
 	{ lvconvert_to_cache_with_cachepool_CMD,	lvconvert_to_cache_with_cachepool_cmd },
@@ -165,10 +166,32 @@ static const struct command_function _command_functions[CMD_COUNT] = {
 
 	{ pvscan_display_CMD, pvscan_display_cmd },
 	{ pvscan_cache_CMD, pvscan_cache_cmd },
+
+	/* lvextend/lvreduce/lvresize */
+	{ lvextend_policy_CMD,		lvextend_policy_cmd },
+	{ lvextend_pool_metadata_CMD,	lvresize_cmd },
+	{ lvresize_pool_metadata_CMD,	lvresize_cmd },
+	{ lvextend_pv_CMD,		lvresize_cmd },
+	{ lvresize_pv_CMD,		lvresize_cmd },
+	{ lvextend_size_CMD,		lvresize_cmd },
+	{ lvreduce_size_CMD,		lvresize_cmd },
+	{ lvresize_size_CMD,		lvresize_cmd },
 };
 
 
 /* Command line args */
+int arg_is_valid_for_command(const struct cmd_context *cmd, int a)
+{
+	int i;
+
+	for (i = 0; i < cmd->cname->num_args; i++) {
+		if (cmd->cname->valid_args[i] == a)
+			return 1;
+	}
+
+	return 0;
+}
+
 unsigned arg_count(const struct cmd_context *cmd, int a)
 {
 	return cmd->opt_arg_values ? cmd->opt_arg_values[a].count : 0;
@@ -1058,7 +1081,8 @@ int syncaction_arg(struct cmd_context *cmd, struct arg_values *av)
 int reportformat_arg(struct cmd_context *cmd, struct arg_values *av)
 {
 	if (!strcmp(av->value, "basic") ||
-	    !strcmp(av->value, "json"))
+	    !strcmp(av->value, "json") ||
+	    !strcmp(av->value, "json_std"))
 		return 1;
 	return 0;
 }
@@ -2260,6 +2284,15 @@ static int _process_command_line(struct cmd_context *cmd, int *argc, char ***arg
 
 		av = &cmd->opt_arg_values[arg_enum];
 
+		if (a->flags & ARG_NONINTERACTIVE && cmd->is_interactive) {
+			log_error("Argument%s%c%s%s cannot be used in interactive mode.",
+				  a->short_opt ? " -" : "",
+				  a->short_opt ? : ' ',
+				  (a->short_opt && a->long_opt) ?
+				  "/" : "", a->long_opt ? : "");
+			return 0;
+		}
+
 		if (a->flags & ARG_GROUPABLE) {
 			/*
 			 * Start a new group of arguments:
@@ -2587,7 +2620,7 @@ static int _get_current_settings(struct cmd_context *cmd)
 		if (!strcmp(search_mode, "none") || !strcmp(search_mode, "auto") || !strcmp(search_mode, "all"))
 			cmd->search_for_devnames = search_mode;
 		else {
-			log_warn("Ignoring unknown search_for_devnames setting, using %s.", DEFAULT_SEARCH_FOR_DEVNAMES);
+			log_warn("WARNING: Ignoring unknown search_for_devnames setting, using %s.", DEFAULT_SEARCH_FOR_DEVNAMES);
 			cmd->search_for_devnames = DEFAULT_SEARCH_FOR_DEVNAMES;
 		}
 	}
@@ -3030,7 +3063,7 @@ static void _init_md_checks(struct cmd_context *cmd)
 	         !strcmp(md_check, "full"))
 		cmd->md_component_checks = md_check;
 	else {
-		log_warn("Ignoring unknown md_component_checks setting, using auto.");
+		log_warn("WARNING: Ignoring unknown md_component_checks setting, using auto.");
 		cmd->md_component_checks = "auto";
 	}
 
@@ -3142,6 +3175,9 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 
 	if (!(cmd->command = _find_command(cmd, cmd->name, &argc, argv)))
 		return EINVALID_CMD_LINE;
+
+	/* avoid this by letting lib code use cmd->command */
+	cmd->command_enum = cmd->command->command_enum;
 
 	/*
 	 * If option --foo is set which is listed in IO (ignore option) in
@@ -3305,6 +3341,7 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 	hints_exit(cmd);
 	lvmcache_destroy(cmd, 1, 1);
 	label_scan_destroy(cmd);
+	devices_file_exit(cmd);
 
 	if ((config_string_cft = remove_config_tree_by_source(cmd, CONFIG_STRING)))
 		dm_config_destroy(config_string_cft);

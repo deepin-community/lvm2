@@ -982,7 +982,9 @@ struct writecache_settings {
 	uint32_t fua;
 	uint32_t nofua;
 	uint32_t cleaner;
-	uint32_t max_age;
+	uint32_t max_age;         /* in milliseconds */
+	uint32_t metadata_only;
+	uint32_t pause_writeback; /* in milliseconds */
 
 	/*
 	 * Allow an unrecognized key and its val to be passed to the kernel for
@@ -1004,6 +1006,8 @@ struct writecache_settings {
 	unsigned nofua_set:1;
 	unsigned cleaner_set:1;
 	unsigned max_age_set:1;
+	unsigned metadata_only_set:1;
+	unsigned pause_writeback_set:1;
 };
 
 int dm_tree_node_add_writecache_target(struct dm_tree_node *node,
@@ -1049,6 +1053,7 @@ int dm_tree_node_add_integrity_target(struct dm_tree_node *node,
  */
 int dm_tree_node_add_vdo_target(struct dm_tree_node *node,
 				uint64_t size,
+				uint32_t vdo_version,
 				const char *vdo_pool_name,
 				const char *data_uuid,
 				uint64_t data_size,
@@ -1982,7 +1987,8 @@ struct dm_report_group;
 typedef enum {
 	DM_REPORT_GROUP_SINGLE,
 	DM_REPORT_GROUP_BASIC,
-	DM_REPORT_GROUP_JSON
+	DM_REPORT_GROUP_JSON,
+	DM_REPORT_GROUP_JSON_STD
 } dm_report_group_type_t;
 
 struct dm_report_group *dm_report_group_create(dm_report_group_type_t type, void *data);
@@ -2237,7 +2243,7 @@ struct dm_pool *dm_config_memory(struct dm_config_tree *cft);
 int dm_cookie_supported(void);
 
 /*
- * Udev synchronisation functions.
+ * Udev synchronization functions.
  */
 void dm_udev_set_sync_support(int sync_with_udev);
 int dm_udev_get_sync_support(void);

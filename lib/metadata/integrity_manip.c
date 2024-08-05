@@ -99,6 +99,7 @@ static int _lv_create_integrity_metadata(struct cmd_context *cmd,
 		.read_ahead = DM_READ_AHEAD_NONE,
 		.stripes = 1,
 		.vg_name = vg->name,
+		.temporary = 1,
 		.zero = 0,
 		.wipe_signatures = 0,
 		.suppress_zero_warn = 1,
@@ -118,8 +119,8 @@ static int _lv_create_integrity_metadata(struct cmd_context *cmd,
 	meta_sectors = meta_bytes / 512;
 	lp_meta.extents = meta_sectors / vg->extent_size;
 
-	log_print_unless_silent("Creating integrity metadata LV %s with size %s.",
-		  metaname, display_size(cmd, meta_sectors));
+	log_verbose("Creating integrity metadata LV %s with size %s.",
+		    metaname, display_size(cmd, meta_sectors));
 
 	dm_list_init(&lp_meta.tags);
 
@@ -358,8 +359,8 @@ static int _set_integrity_block_size(struct cmd_context *cmd, struct logical_vol
 		} else if (!lbs_4k && !lbs_512) {
 			if (!settings->block_size)
 				settings->block_size = 512;
-			log_print("Using integrity block size %u with unknown device logical block size.",
-				  settings->block_size);
+			log_print_unless_silent("Using integrity block size %u with unknown device logical block size.",
+						settings->block_size);
 		} else {
 			goto_bad;
 		}
@@ -372,7 +373,7 @@ static int _set_integrity_block_size(struct cmd_context *cmd, struct logical_vol
 		}
 
 		/*
-		 * get_fs_block_size() returns the libblkid BLOCK_SIZE value,
+		 * fs_block_size_and_type() returns the libblkid BLOCK_SIZE value,
 		 * where libblkid has fs-specific code to set BLOCK_SIZE to the
 		 * value we need here.
 		 *
@@ -382,9 +383,9 @@ static int _set_integrity_block_size(struct cmd_context *cmd, struct logical_vol
 		 * value the block size, but it's possible values are not the same
 		 * as xfs's, and do not seem to relate directly to the device LBS.
 		 */
-		rv = get_fs_block_size(pathname, &fs_block_size);
+		rv = fs_block_size_and_type(pathname, &fs_block_size, NULL, NULL);
 		if (!rv || !fs_block_size) {
-			int use_bs;
+			unsigned use_bs;
 
 			if (lbs_4k && pbs_4k) {
 				use_bs = 4096;
@@ -407,8 +408,8 @@ static int _set_integrity_block_size(struct cmd_context *cmd, struct logical_vol
 
 			settings->block_size = use_bs;
 
-			log_print("Using integrity block size %u for unknown file system block size, logical block size %u, physical block size %u.",
-				  settings->block_size, lbs_4k ? 4096 : 512, pbs_4k ? 4096 : 512);
+			log_print_unless_silent("Using integrity block size %u for unknown file system block size, logical block size %u, physical block size %u.",
+						settings->block_size, lbs_4k ? 4096 : 512, pbs_4k ? 4096 : 512);
 			goto out;
 		}
 
@@ -418,13 +419,13 @@ static int _set_integrity_block_size(struct cmd_context *cmd, struct logical_vol
 				   for an application that expects a given io size/alignment is possible. */
 				settings->block_size = 512;
 				if (fs_block_size > 512)
-					log_print("Limiting integrity block size to 512 because the LV is active.");
+					log_print_unless_silent("Limiting integrity block size to 512 because the LV is active.");
 			} else if (fs_block_size <= 4096)
 				settings->block_size = fs_block_size;
 			else
 				settings->block_size = 4096; /* dm-integrity max is 4096 */
-			log_print("Using integrity block size %u for file system block size %u.",
-				  settings->block_size, fs_block_size);
+			log_print_unless_silent("Using integrity block size %u for file system block size %u.",
+						settings->block_size, fs_block_size);
 		} else {
 			/* let user specify integrity block size that is less than fs block size */
 			if (settings->block_size > fs_block_size) {
@@ -432,8 +433,8 @@ static int _set_integrity_block_size(struct cmd_context *cmd, struct logical_vol
 					  settings->block_size, fs_block_size);
 				goto bad;
 			}
-			log_print("Using integrity block size %u for file system block size %u.",
-				  settings->block_size, fs_block_size);
+			log_print_unless_silent("Using integrity block size %u for file system block size %u.",
+						settings->block_size, fs_block_size);
 		}
 	}
 out:
@@ -483,7 +484,7 @@ int lv_add_integrity_to_raid(struct logical_volume *lv, struct integrity_setting
 	struct logical_volume *imeta_lvs[DEFAULT_RAID_MAX_IMAGES];
 	struct cmd_context *cmd = lv->vg->cmd;
 	struct volume_group *vg = lv->vg;
-	struct logical_volume *lv_image, *lv_imeta, *lv_iorig;
+	struct logical_volume *lv_image, *lv_imeta;
 	struct lv_segment *seg_top, *seg_image;
 	struct pv_list *pvl;
 	const struct segment_type *segtype;
@@ -504,11 +505,6 @@ int lv_add_integrity_to_raid(struct logical_volume *lv, struct integrity_setting
 
 	if (!dm_list_empty(&lv->segs_using_this_lv)) {
 		log_error("Integrity can only be added to top level raid LV.");
-		return 0;
-	}
-
-	if (lv_is_origin(lv)) {
-		log_error("Integrity cannot be added to snapshot origins.");
 		return 0;
 	}
 
@@ -681,7 +677,7 @@ int lv_add_integrity_to_raid(struct logical_volume *lv, struct integrity_setting
 		 * but gets a new integrity segment, in place of the segments
 		 * that were moved to lv_iorig.
 		 */
-		if (!(lv_iorig = insert_layer_for_lv(cmd, lv_image, INTEGRITY, "_iorig")))
+		if (!insert_layer_for_lv(cmd, lv_image, 0, "_iorig"))
 			goto_bad;
 
 		lv_image->status |= INTEGRITY;
@@ -935,16 +931,15 @@ int lv_integrity_mismatches(struct cmd_context *cmd,
 			    const struct logical_volume *lv,
 			    uint64_t *mismatches)
 {
-	struct lv_with_info_and_seg_status status;
+	struct lv_with_info_and_seg_status status = {
+		.seg_status.type = SEG_STATUS_NONE,
+	};
 
 	if (lv_is_raid(lv) && lv_raid_has_integrity((struct logical_volume *)lv))
 		return lv_raid_integrity_total_mismatches(cmd, lv, mismatches);
 
 	if (!lv_is_integrity(lv))
 		return_0;
-
-	memset(&status, 0, sizeof(status));
-	status.seg_status.type = SEG_STATUS_NONE;
 
 	status.seg_status.seg = first_seg(lv);
 

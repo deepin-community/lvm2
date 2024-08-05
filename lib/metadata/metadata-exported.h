@@ -277,6 +277,9 @@
 
 #define lv_is_removed(lv)	(((lv)->status & LV_REMOVED) ? 1 : 0)
 
+#define lv_is_zero(lv) 		((dm_list_size(&lv->segments) == 1) && seg_is_zero(first_seg(lv)))
+#define lv_is_error(lv)		((dm_list_size(&lv->segments) == 1) && seg_is_error(first_seg(lv)))
+
 /* Recognize component LV (matching lib/misc/lvm-string.c _lvname_has_reserved_component_string()) */
 #define lv_is_component(lv) (lv_is_cache_origin(lv) || \
 			     lv_is_writecache_origin(lv) || \
@@ -296,6 +299,9 @@
 
 int lv_layout_and_role(struct dm_pool *mem, const struct logical_volume *lv,
 		       struct dm_list **layout, struct dm_list **role);
+
+int lv_is_linear(struct logical_volume *lv);
+int lv_is_striped(struct logical_volume *lv);
 
 /* Ordered list - see lv_manip.c */
 typedef enum {
@@ -587,12 +593,6 @@ struct vgnameid_list {
 	const char *vgid;
 };
 
-struct device_id_list {
-	struct dm_list list;
-	struct device *dev;
-	char pvid[ID_LEN + 1];
-};
-
 #define PV_PE_START_CALC ((uint64_t) -1) /* Calculate pe_start value */
 
 /*
@@ -661,50 +661,48 @@ struct pvcreate_params {
 };
 
 struct lvresize_params {
-	int argc;
-	char **argv;
-
-	const char *vg_name; /* only-used when VG is not yet opened (in /tools) */
-	const char *lv_name;
-
-	const struct segment_type *segtype;
-
-	uint64_t poolmetadata_size;
-	sign_t poolmetadata_sign;
-
-	/* Per LV applied parameters */
-
 	enum {
 		LV_ANY = 0,
 		LV_REDUCE = 1,
 		LV_EXTEND = 2
 	} resize;
-
-	int use_policies;
-
 	alloc_policy_t alloc;
 	int yes;
 	int force;
 	int nosync;
 	int nofsck;
-	int resizefs;
+	int use_policies;
+	int user_set_fs;
+	int user_set_fsmode;
+	char fsopt[16]; /* set by --resizefs|--fs, empty for --fs ignore */
+	char fsmode[16]; /* set by --fsmode */
 
+	const struct segment_type *segtype;
 	unsigned mirrors;
 	uint32_t stripes;
 	uint64_t stripe_size;
 
-	uint32_t extents;
 	uint64_t size;
+	uint32_t extents;
 	sign_t sign;
-	percent_type_t percent;
+	percent_type_t percent; /* the type of percentage, not a value */
+	uint32_t percent_value; /* 0 - 100 */
+	uint64_t poolmetadata_size;
+	sign_t poolmetadata_sign;
+	uint32_t policy_percent_main;
+	uint32_t policy_percent_meta;
 
 	int approx_alloc;
 	int extents_are_pes;	/* Is 'extents' counting PEs or LEs? */
 	int size_changed;	/* Was there actually a size change */
+	int extend_fs_error;    /* FS extend error after LV extend success */
+	int vg_changed_error;   /* VG metadata was modified during fs resize */
 
 	const char *lockopt;
 	char *lockd_lv_refresh_path; /* set during resize to use for refresh at the end */
 	char *lockd_lv_refresh_uuid; /* set during resize to use for refresh at the end */
+
+	struct dm_list *pvh;	/* list of pvs to use */
 };
 
 void pvcreate_params_set_defaults(struct pvcreate_params *pp);
@@ -745,9 +743,10 @@ int vgs_are_compatible(struct cmd_context *cmd,
 		       struct volume_group *vg_to);
 uint32_t vg_lock_newname(struct cmd_context *cmd, const char *vgname);
 
-int lv_resize(struct logical_volume *lv,
-	      struct lvresize_params *lp,
-	      struct dm_list *pvh);
+int lv_resize(struct cmd_context *cmd, struct logical_volume *lv,
+	      struct lvresize_params *lp);
+int lv_extend_policy_calculate_percent(struct logical_volume *lv,
+                                       uint32_t *amount, uint32_t *meta_amount);
 
 struct volume_group *vg_read(struct cmd_context *cmd, const char *vg_name, const char *vgid,
 			     uint32_t read_flags, uint32_t lockd_state,
@@ -880,15 +879,22 @@ uint32_t extents_from_percent_size(struct volume_group *vg, const struct dm_list
 				   percent_type_t percent, uint64_t size);
 
 struct logical_volume *find_pool_lv(const struct logical_volume *lv);
-int pool_is_active(const struct logical_volume *lv);
-int pool_supports_external_origin(const struct lv_segment *pool_seg, const struct logical_volume *external_lv);
+int thin_pool_is_active(const struct logical_volume *lv);
+int thin_pool_supports_external_origin(const struct lv_segment *pool_seg, const struct logical_volume *external_lv);
 int thin_pool_feature_supported(const struct logical_volume *lv, int feature);
+int thin_pool_prepare_metadata(struct logical_volume *metadata_lv,
+			       uint32_t chunk_size,
+			       uint64_t data_blocks,
+			       uint64_t data_begin,
+			       uint64_t data_length);
+int update_thin_pool_lv(struct logical_volume *lv, int activate);
+
 int recalculate_pool_chunk_size_with_dev_hints(struct logical_volume *pool_lv,
+					       struct logical_volume *pool_data_lv,
 					       int chunk_size_calc_policy);
 int validate_cache_chunk_size(struct cmd_context *cmd, uint32_t chunk_size);
 int validate_thin_pool_chunk_size(struct cmd_context *cmd, uint32_t chunk_size);
 int validate_pool_chunk_size(struct cmd_context *cmd, const struct segment_type *segtype, uint32_t chunk_size);
-int update_pool_lv(struct logical_volume *lv, int activate);
 int get_default_allocation_thin_pool_chunk_size(struct cmd_context *cmd, struct profile *profile,
 						uint32_t *chunk_size, int *chunk_size_calc_method);
 int update_thin_pool_params(struct cmd_context *cmd,
@@ -899,7 +905,7 @@ int update_thin_pool_params(struct cmd_context *cmd,
 			    uint32_t pool_data_extents,
 			    uint32_t *pool_metadata_extents,
 			    struct logical_volume *metadata_lv,
-			    unsigned *crop_metadata,
+			    thin_crop_metadata_t *crop_metadata,
 			    int *chunk_size_calc_method, uint32_t *chunk_size,
 			    thin_discards_t *discards, thin_zero_t *zero_new_blocks);
 
@@ -919,7 +925,7 @@ struct lv_status_thin {
 const char *get_pool_discards_name(thin_discards_t discards);
 int set_pool_discards(thin_discards_t *discards, const char *str);
 struct logical_volume *alloc_pool_metadata(struct logical_volume *pool_lv,
-					   const char *name, uint32_t read_ahead,
+					   uint32_t read_ahead,
 					   uint32_t stripes, uint32_t stripe_size,
 					   uint32_t extents, alloc_policy_t alloc,
 					   struct dm_list *pvh);
@@ -1364,6 +1370,8 @@ const char *get_vdo_operating_mode_name(enum dm_vdo_operating_mode mode);
 const char *get_vdo_write_policy_name(enum dm_vdo_write_policy policy);
 uint64_t get_vdo_pool_virtual_size(const struct lv_segment *vdo_pool_seg);
 int update_vdo_pool_virtual_size(struct lv_segment *vdo_pool_seg);
+uint32_t get_vdo_pool_max_extents(const struct dm_vdo_target_params *vtp,
+				  uint32_t extent_size);
 int parse_vdo_pool_status(struct dm_pool *mem, const struct logical_volume *vdo_pool_lv,
 			  const char *params, const struct dm_info *dminfo,
 			  struct lv_status_vdo *status);
@@ -1377,6 +1385,14 @@ int fill_vdo_target_params(struct cmd_context *cmd,
 			   struct dm_vdo_target_params *vtp,
 			   uint64_t *vdo_pool_header_size,
 			   struct profile *profile);
+struct vdo_pool_size_config {
+	uint64_t physical_size;
+	uint64_t virtual_size;
+	uint32_t block_map_cache_size_mb;
+	uint32_t index_memory_size_mb;
+};
+
+int check_vdo_constrains(struct cmd_context *cmd, const struct vdo_pool_size_config *cfg);
 /* --  metadata/vdo_manip.c */
 
 struct logical_volume *find_pvmove_lv(struct volume_group *vg,

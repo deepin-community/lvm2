@@ -38,7 +38,7 @@ ifeq ($(MAKECMDGOALS),distclean)
     udev po
 tools.distclean: test.distclean
 endif
-DISTCLEAN_DIRS += lcov_reports*
+DISTCLEAN_DIRS += lcov_reports* autom4te.cache
 DISTCLEAN_TARGETS += config.cache config.log config.status make.tmpl
 
 include make.tmpl
@@ -47,7 +47,7 @@ include $(top_srcdir)/base/Makefile
 include $(top_srcdir)/device_mapper/Makefile
 include $(top_srcdir)/test/unit/Makefile
 
-lib: libdaemon $(BASE_TARGET) $(DEVICE_MAPPER_TARGET)
+lib: include libdaemon $(BASE_TARGET) $(DEVICE_MAPPER_TARGET)
 daemons: lib libdaemon tools
 scripts: lib
 tools: lib libdaemon
@@ -171,6 +171,7 @@ help:
 	@echo "  lcov-dated		Generate lcov with timedate suffix."
 	@echo "  lcov-reset		Reset lcov counters"
 	@echo "  man			Build man pages."
+	@echo "  print-VARIABLE		Resolve make variable."
 	@echo "  rpm			Build rpm."
 	@echo "  run-unit-test		Run unit tests."
 	@echo "  tags			Generate c/etags."

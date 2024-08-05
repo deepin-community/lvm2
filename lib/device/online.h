@@ -32,9 +32,9 @@ struct pv_online {
 #define log_print_pvscan(cmd, fmt, args...) \
 do \
 	if (cmd->udevoutput) \
-		log_print(fmt, ##args); \
+		log_print_unless_silent(fmt, ##args); \
 	else \
-		log_print("pvscan[%d] " fmt, getpid(), ##args); \
+		log_print_unless_silent("pvscan[%d] " fmt, getpid(), ##args); \
 while (0)
 
 #define log_error_pvscan(cmd, fmt, args...) \
@@ -54,5 +54,7 @@ void online_dir_setup(struct cmd_context *cmd);
 int get_pvs_online(struct dm_list *pvs_online, const char *vgname);
 int get_pvs_lookup(struct dm_list *pvs_online, const char *vgname);
 void free_po_list(struct dm_list *list);
+void online_lookup_file_remove(const char *vgname);
+void online_vgremove(struct volume_group *vg);
 
 #endif
