@@ -15,6 +15,8 @@
 #include "tools.h"
 #include "lib/cache/lvmcache.h"
 #include "lib/device/device_id.h"
+/* coverity[unnecessary_header] needed for MuslC */
+#include <sys/file.h>
 
 struct vgimportdevices_params {
 	uint32_t added_devices;
@@ -36,9 +38,9 @@ static int _vgimportdevices_single(struct cmd_context *cmd,
 	dm_list_iterate_items(pvl, &vg->pvs) {
 		if (is_missing_pv(pvl->pv) || !pvl->pv->dev) {
 			memcpy(pvid, &pvl->pv->id.uuid, ID_LEN);
-			log_error("Not importing devices for VG %s with missing PV %s.",
-				 vg->name, pvid);
-			goto bad;
+			log_print("Not importing devices for VG %s with missing PV %s.",
+				  vg->name, pvid);
+			return ECMD_PROCESSED;
 		}
 	}
 
@@ -60,7 +62,7 @@ static int _vgimportdevices_single(struct cmd_context *cmd,
 		idtypestr = pv->device_id_type;
 
 		memcpy(pvid, &pvl->pv->id.uuid, ID_LEN);
-		device_id_add(cmd, pv->dev, pvid, idtypestr, NULL);
+		device_id_add(cmd, pv->dev, pvid, idtypestr, NULL, 0);
 		vp->added_devices++;
 
 		/* We could skip update if the device_id has not changed. */
@@ -71,14 +73,17 @@ static int _vgimportdevices_single(struct cmd_context *cmd,
 		updated_pvs++;
 	}
 
+	/*
+	 * Writes the device_id of each PV into the vg metadata.
+	 * This is not a critial step and should not influence
+	 * the result of the command.
+	 */
 	if (updated_pvs) {
 		if (!vg_write(vg) || !vg_commit(vg))
-			goto_bad;
+			log_print("Failed to write device ids in VG metadata.");
 	}
 
 	return ECMD_PROCESSED;
-bad:
-	return ECMD_FAILED;
 }
 
 /*
@@ -114,6 +119,7 @@ int vgimportdevices(struct cmd_context *cmd, int argc, char **argv)
 {
 	struct vgimportdevices_params vp = { 0 };
 	struct processing_handle *handle;
+	int created_file = 0;
 	int ret = ECMD_FAILED;
 
 	if (arg_is_set(cmd, foreign_ARG))
@@ -128,8 +134,10 @@ int vgimportdevices(struct cmd_context *cmd, int argc, char **argv)
 		return ECMD_FAILED;
 
 	/*
-	 * Prepare devices file preemptively because the error path for this
-	 * case from process_each is not as clean.
+	 * Prepare/create devices file preemptively because the error path for
+	 * this case from process_each/setup_devices is not as clean.
+	 * This means that when setup_devices is called, it the devices
+	 * file steps will be redundant, and need to handle being repeated.
 	 */
 	if (!setup_devices_file(cmd)) {
 		log_error("Failed to set up devices file.");
@@ -139,9 +147,16 @@ int vgimportdevices(struct cmd_context *cmd, int argc, char **argv)
 		log_error("Devices file not enabled.");
 		return ECMD_FAILED;
 	}
-	if (!devices_file_exists(cmd) && !devices_file_touch(cmd)) {
-		log_error("Failed to create devices file.");
+	if (!lock_devices_file(cmd, LOCK_EX)) {
+		log_error("Failed to lock the devices file.");
 		return ECMD_FAILED;
+	}
+	if (!devices_file_exists(cmd)) {
+	       	if (!devices_file_touch(cmd)) {
+			log_error("Failed to create devices file.");
+			return ECMD_FAILED;
+		}
+		created_file = 1;
 	}
 
 	/*
@@ -195,22 +210,31 @@ int vgimportdevices(struct cmd_context *cmd, int argc, char **argv)
 	 */
 	ret = process_each_vg(cmd, argc, argv, NULL, NULL, READ_FOR_UPDATE,
 			      0, handle, _vgimportdevices_single);
-	if (ret == ECMD_FAILED)
-		goto out;
+	if (ret == ECMD_FAILED) {
+		/*
+		 * Error from setting up devices file or label_scan,
+		 * _vgimportdevices_single does not return an error.
+		 */
+		goto_out;
+	}
 
 	if (!vp.added_devices) {
-		log_print("No devices to add.");
+		log_error("No devices to add.");
+		ret = ECMD_FAILED;
 		goto out;
 	}
 
 	if (!device_ids_write(cmd)) {
-		log_print("Failed to update devices file.");
+		log_error("Failed to write the devices file.");
 		ret = ECMD_FAILED;
 		goto out;
 	}
 
 	log_print("Added %u devices to devices file.", vp.added_devices);
 out:
+	if ((ret == ECMD_FAILED) && created_file)
+		if (unlink(cmd->devices_file_path) < 0)
+			log_sys_debug("unlink", cmd->devices_file_path);
 	destroy_processing_handle(cmd, handle);
 	return ret;
 }

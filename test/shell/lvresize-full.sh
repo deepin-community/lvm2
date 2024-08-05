@@ -37,15 +37,19 @@ lvs -a $vg
 "$MKFS" "$lvdev"
 
 # this should resolve to resize to same actual size
-lvreduce -r -f -l-100%FREE $vg/$lv1
+not lvreduce -l-100%FREE $vg/$lv1
+not lvreduce -r -f -l-100%FREE $vg/$lv1
 "$FSCK" -n "$lvdev"
 
 # size should remain the same
-lvextend -r -f -l+100%FREE $vg/$lv1
+# lvresize fails with same result with or without -r
+not lvextend -l+100%FREE $vg/$lv1
+not lvextend -r -f -l+100%FREE $vg/$lv1
 "$FSCK" -n "$lvdev"
 
 #lvchange -an $vg/$lv1
-lvresize -r -f -l+100%FREE $vg/$lv1
+not lvresize -l+100%FREE $vg/$lv1
+not lvresize -r -f -l+100%FREE $vg/$lv1
 "$FSCK" -n "$lvdev"
 
 # Check there is really file system resize happening
@@ -55,7 +59,8 @@ lvresize -r -f -l+100%FREE $vg/$lv1
 grep "20000 blocks" out
 
 SIZE=$(get lv_field $vg/$lv1 size)
-lvresize -r -f -l-100%FREE $vg/$lv1
+not lvresize -l-100%FREE $vg/$lv1
+not lvresize -r -f -l-100%FREE $vg/$lv1
 test "$SIZE" = "$(get lv_field $vg/$lv1 size)"
 
 "$FSCK" -n "$lvdev" | tee out
@@ -64,7 +69,10 @@ grep -v "20000 blocks" out
 
 # Also check it fails when the user 'resize' volume without
 # resizing fs and then retries with '-r'.
-lvreduce -f -l50%VG $vg/$lv1
-fail lvresize -r -f -l50%VG $vg/$lv1
+# The first lvreduce intentionally ignores the fs and intentionally
+# corrupts the fs so that the second lvresize will fail when it runs
+# fsck.
+lvreduce -f --fs ignore -l50%VG $vg/$lv1
+fail lvresize -r -f -l20%VG $vg/$lv1
 
 lvremove -ff $vg

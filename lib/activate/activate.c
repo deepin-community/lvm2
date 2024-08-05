@@ -322,6 +322,11 @@ int lv_vdo_pool_percent(const struct logical_volume *lv, dm_percent_t *percent)
 {
 	return 0;
 }
+int lv_vdo_pool_size_config(const struct logical_volume *lv,
+			    struct vdo_pool_size_config *cfg)
+{
+	return 0;
+}
 int lvs_in_vg_activated(const struct volume_group *vg)
 {
 	return 0;
@@ -1363,6 +1368,32 @@ int lv_vdo_pool_percent(const struct logical_volume *lv, dm_percent_t *percent)
 	return 1;
 }
 
+/*
+ * lv_vdo_pool_size_config obtains size configuration from active VDO table line
+ *
+ * If the 'params' string has been already retrieved, use it.
+ * If the mempool already exists, use it.
+ *
+ */
+int lv_vdo_pool_size_config(const struct logical_volume *lv,
+			    struct vdo_pool_size_config *cfg)
+{
+	struct dev_manager *dm;
+	int r;
+
+	if (!lv_info(lv->vg->cmd, lv, 1, NULL, 0, 0))
+		return 1;  /* Inactive VDO pool -> no runtime config */
+
+	if (!(dm = dev_manager_create(lv->vg->cmd, lv->vg->name, !lv_is_pvmove(lv))))
+		return_0;
+
+	r = dev_manager_vdo_pool_size_config(dm, lv, cfg);
+
+	dev_manager_destroy(dm);
+
+	return r;
+}
+
 static int _lv_active(struct cmd_context *cmd, const struct logical_volume *lv)
 {
 	struct lvinfo info;
@@ -2141,7 +2172,11 @@ static int _lv_suspend(struct cmd_context *cmd, const char *lvid_s,
 	 * TODO: Relax this limiting condition further */
 	if (!flush_required &&
 	    (lv_is_pvmove(lv) || pvmove_lv ||
-	     (!lv_is_mirror(lv) && !lv_is_thin_pool(lv) && !lv_is_thin_volume(lv)))) {
+	     (!lv_is_mirror(lv) &&
+	      !lv_is_thin_volume(lv) &&
+	      !lv_is_thin_pool(lv) &&
+	      !lv_is_vdo(lv) &&
+	      !lv_is_vdo_pool(lv)))) {
 		log_debug("Requiring flush for LV %s.", display_lvname(lv));
 		flush_required = 1;
 	}
@@ -2520,7 +2555,7 @@ static int _lv_activate(struct cmd_context *cmd, const char *lvid_s,
 	    lv_is_partial(lv) && lv_is_raid(lv) && lv_raid_has_integrity((struct logical_volume *)lv)) {
 		cmd->partial_activation = 0;
 		cmd->degraded_activation = 0;
-		log_print("No degraded or partial activation for raid with integrity.");
+		log_print_unless_silent("No degraded or partial activation for raid with integrity.");
 	}
 
 	if ((!lv->vg->cmd->partial_activation) && lv_is_partial(lv)) {
@@ -2569,6 +2604,8 @@ static int _lv_activate(struct cmd_context *cmd, const char *lvid_s,
 	/* TODO: should not apply for LVs in maintenance mode */
 	if (!lv_is_visible(lv) && lv_is_component(lv)) {
 		laopts->read_only = 1;
+		laopts->component_lv = lv;
+	} else if (lv_is_pool_metadata_spare(lv)) {
 		laopts->component_lv = lv;
 	} else if (filter)
 		laopts->read_only = _passes_readonly_filter(cmd, lv);
@@ -2686,16 +2723,16 @@ static int _remove_dm_dev_by_name(const char *name)
 /* Work all segments of @lv removing any existing, closed "*-missing_N_0" sub devices. */
 static int _lv_remove_any_missing_subdevs(struct logical_volume *lv)
 {
-	if (lv) {
-		uint32_t seg_no = 0;
-		char name[257];
-		struct lv_segment *seg;
+	char name[NAME_LEN];
+	struct lv_segment *seg;
+	uint32_t seg_no = 0;
 
+	if (lv) {
 		dm_list_iterate_items(seg, &lv->segments) {
 			if (dm_snprintf(name, sizeof(name), "%s-%s-missing_%u_0", seg->lv->vg->name, seg->lv->name, seg_no) < 0)
 				return_0;
 			if (!_remove_dm_dev_by_name(name))
-				return 0;
+				return_0;
 
 			seg_no++;
 		}
@@ -2713,10 +2750,10 @@ int lv_deactivate_any_missing_subdevs(const struct logical_volume *lv)
 	for (s = 0; s < seg->area_count; s++) {
 		if (seg_type(seg, s) == AREA_LV &&
 		    !_lv_remove_any_missing_subdevs(seg_lv(seg, s)))
-			return 0;
+			return_0;
 		if (seg->meta_areas && seg_metatype(seg, s) == AREA_LV &&
 		    !_lv_remove_any_missing_subdevs(seg_metalv(seg, s)))
-			return 0;
+			return_0;
 	}
 
 	return 1;
@@ -2760,7 +2797,7 @@ static int _component_cb(struct logical_volume *lv, void *data)
 
 	if (lv_is_locked(lv) || lv_is_pvmove(lv) ||/* ignoring */
 	    /* thin-pool is special and it's using layered device */
-	    (lv_is_thin_pool(lv) && pool_is_active(lv)))
+	    (lv_is_thin_pool(lv) && thin_pool_is_active(lv)))
 		return -1;
 
 	/* External origin is activated through thinLV and uses -real suffix.

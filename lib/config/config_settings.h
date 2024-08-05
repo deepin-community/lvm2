@@ -118,6 +118,7 @@
  * the previous default value was set (uncommented) in lvm.conf.
  */
 #include "lib/config/defaults.h"
+#include "device_mapper/vdo/vdo_limits.h"
 
 cfg_section(root_CFG_SECTION, "(root)", root_CFG_SECTION, 0, vsn(0, 0, 0), 0, NULL, NULL)
 
@@ -223,6 +224,9 @@ cfg(devices_dir_CFG, "dir", devices_CFG_SECTION, CFG_DEFAULT_COMMENTED | CFG_ADV
 	"Directory in which to create volume group device nodes.\n"
 	"Commands also accept this as a prefix on volume group names.\n")
 
+cfg(devices_device_id_sysfs_dir_CFG, "device_id_sysfs_dir", devices_CFG_SECTION, CFG_DEFAULT_COMMENTED | CFG_UNSUPPORTED, CFG_TYPE_STRING, DEFAULT_DEVICE_ID_SYSFS_DIR, vsn(2, 3, 17), NULL, 0, NULL,
+	"Location of sysfs for finding device ids (for testing.)\n")
+
 cfg_array(devices_scan_CFG, "scan", devices_CFG_SECTION, CFG_DEFAULT_COMMENTED | CFG_ADVANCED, CFG_TYPE_STRING, "#S/dev", vsn(1, 0, 0), NULL, 0, NULL,
 	"Directories containing device nodes to use with LVM.\n")
 
@@ -276,7 +280,7 @@ cfg_array(devices_preferred_names_CFG, "preferred_names", devices_CFG_SECTION, C
 	"preferred_names = [ \"^/dev/mpath/\", \"^/dev/mapper/mpath\", \"^/dev/[hs]d\" ]\n"
 	"#\n")
 
-cfg(devices_use_devicesfile_CFG, "use_devicesfile", devices_CFG_SECTION, CFG_DEFAULT_COMMENTED, CFG_TYPE_BOOL, DEFAULT_USE_DEVICES_FILE, vsn(2, 3, 12), NULL, 0, NULL,
+cfg(devices_use_devicesfile_CFG, "use_devicesfile", devices_CFG_SECTION, CFG_DEFAULT_COMMENTED, CFG_TYPE_BOOL, DEFAULT_USE_DEVICES_FILE, vsn(2, 3, 12), "@DEFAULT_USE_DEVICES_FILE@", 0, NULL,
 	"Enable or disable the use of a devices file.\n"
 	"When enabled, lvm will only use devices that\n"
 	"are lised in the devices file. A devices file will\n"
@@ -708,12 +712,11 @@ cfg(allocation_vdo_use_deduplication_CFG, "vdo_use_deduplication", allocation_CF
 cfg(allocation_vdo_use_metadata_hints_CFG, "vdo_use_metadata_hints", allocation_CFG_SECTION, CFG_PROFILABLE | CFG_PROFILABLE_METADATA | CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_VDO_USE_METADATA_HINTS, VDO_1ST_VSN, NULL, 0, NULL,
 	"Enables or disables whether VDO volume should tag its latency-critical\n"
 	"writes with the REQ_SYNC flag. Some device mapper targets such as dm-raid5\n"
-	"process writes with this flag at a higher priority.\n"
-	"Default is enabled.\n")
+	"process writes with this flag at a higher priority.\n")
 
 cfg(allocation_vdo_minimum_io_size_CFG, "vdo_minimum_io_size", allocation_CFG_SECTION, CFG_PROFILABLE | CFG_PROFILABLE_METADATA | CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_VDO_MINIMUM_IO_SIZE, VDO_1ST_VSN, NULL, 0, NULL,
 	"The minimum IO size for VDO volume to accept, in bytes.\n"
-	"Valid values are 512 or 4096. The recommended and default value is 4096.\n")
+	"Valid values are 512 or 4096. The recommended value is 4096.\n")
 
 cfg(allocation_vdo_block_map_cache_size_mb_CFG, "vdo_block_map_cache_size_mb", allocation_CFG_SECTION, CFG_PROFILABLE | CFG_PROFILABLE_METADATA | CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_VDO_BLOCK_MAP_CACHE_SIZE_MB, VDO_1ST_VSN, NULL, 0, NULL,
 	"Specifies the amount of memory in MiB allocated for caching block map\n"
@@ -726,10 +729,11 @@ cfg(allocation_vdo_block_map_era_length_CFG, "vdo_block_map_period", allocation_
 	"The speed with which the block map cache writes out modified block map pages.\n"
 	"A smaller era length is likely to reduce the amount time spent rebuilding,\n"
 	"at the cost of increased block map writes during normal operation.\n"
-	"The maximum and recommended value is 16380; the minimum value is 1.\n")
+	"The maximum and recommended value is " DM_TO_STRING(DM_VDO_BLOCK_MAP_ERA_LENGTH_MAXIMUM)
+	"; the minimum value is " DM_TO_STRING(DM_VDO_BLOCK_MAP_ERA_LENGTH_MINIMUM) ".\n")
 
-cfg(allocation_vdo_check_point_frequency_CFG, "vdo_check_point_frequency", allocation_CFG_SECTION, CFG_PROFILABLE | CFG_PROFILABLE_METADATA | CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_VDO_CHECK_POINT_FREQUENCY, VDO_1ST_VSN, NULL, 0, NULL,
-	"The default check point frequency for VDO volume.\n")
+cfg(allocation_vdo_check_point_frequency_CFG, "vdo_check_point_frequency", allocation_CFG_SECTION, CFG_PROFILABLE | CFG_PROFILABLE_METADATA | CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_VDO_CHECK_POINT_FREQUENCY, VDO_1ST_VSN, NULL, vsn(2, 3, 22), NULL,
+	"Deprecated option to set default check point frequency for VDO volume.\n")
 
 // vdo format
 cfg(allocation_vdo_use_sparse_index_CFG, "vdo_use_sparse_index", allocation_CFG_SECTION, CFG_PROFILABLE | CFG_PROFILABLE_METADATA | CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_VDO_USE_SPARSE_INDEX, VDO_1ST_VSN, NULL, 0, NULL,
@@ -748,27 +752,34 @@ cfg(allocation_vdo_slab_size_mb_CFG, "vdo_slab_size_mb", allocation_CFG_SECTION,
 cfg(allocation_vdo_ack_threads_CFG, "vdo_ack_threads", allocation_CFG_SECTION, CFG_PROFILABLE | CFG_PROFILABLE_METADATA | CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_VDO_ACK_THREADS, VDO_1ST_VSN, NULL, 0, NULL,
 	"Specifies the number of threads to use for acknowledging\n"
 	"completion of requested VDO I/O operations.\n"
-	"The value must be at in range [0..100].\n")
+	"The value must be at in range [" DM_TO_STRING(DM_VDO_ACK_THREADS_MINIMUM) ".."
+	DM_TO_STRING(DM_VDO_ACK_THREADS_MAXIMUM) "].\n")
 
 cfg(allocation_vdo_bio_threads_CFG, "vdo_bio_threads", allocation_CFG_SECTION, CFG_PROFILABLE | CFG_PROFILABLE_METADATA | CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_VDO_BIO_THREADS, VDO_1ST_VSN, NULL, 0, NULL,
 	"Specifies the number of threads to use for submitting I/O\n"
 	"operations to the storage device of VDO volume.\n"
-	"The value must be in range [1..100]\n"
+	"The value must be in range [" DM_TO_STRING(DM_VDO_BIO_THREADS_MINIMUM) ".."
+	DM_TO_STRING(DM_VDO_BIO_THREADS_MAXIMUM) "].\n"
 	"Each additional thread after the first will use an additional 18MiB of RAM,\n"
 	"plus 1.12 MiB of RAM per megabyte of configured read cache size.\n")
 
 cfg(allocation_vdo_bio_rotation_CFG, "vdo_bio_rotation", allocation_CFG_SECTION, CFG_PROFILABLE | CFG_PROFILABLE_METADATA | CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_VDO_BIO_ROTATION, VDO_1ST_VSN, NULL, 0, NULL,
 	"Specifies the number of I/O operations to enqueue for each bio-submission\n"
-	"thread before directing work to the next. The value must be in range [1..1024].\n")
+	"thread before directing work to the next. The value must be in range ["
+	DM_TO_STRING(DM_VDO_BIO_ROTATION_MINIMUM) ".."
+	DM_TO_STRING(DM_VDO_BIO_ROTATION_MAXIMUM) "].\n")
 
 cfg(allocation_vdo_cpu_threads_CFG, "vdo_cpu_threads", allocation_CFG_SECTION, CFG_PROFILABLE | CFG_PROFILABLE_METADATA | CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_VDO_CPU_THREADS, VDO_1ST_VSN, NULL, 0, NULL,
 	"Specifies the number of threads to use for CPU-intensive work such as\n"
-	"hashing or compression for VDO volume. The value must be in range [1..100]\n")
+	"hashing or compression for VDO volume. The value must be in range ["
+	DM_TO_STRING(DM_VDO_CPU_THREADS_MINIMUM) ".."
+	DM_TO_STRING(DM_VDO_CPU_THREADS_MAXIMUM) "].\n")
 
 cfg(allocation_vdo_hash_zone_threads_CFG, "vdo_hash_zone_threads", allocation_CFG_SECTION, CFG_PROFILABLE | CFG_PROFILABLE_METADATA | CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_VDO_HASH_ZONE_THREADS, VDO_1ST_VSN, NULL, 0, NULL,
 	"Specifies the number of threads across which to subdivide parts of the VDO\n"
 	"processing based on the hash value computed from the block data.\n"
-	"The value must be at in range [0..100].\n"
+	"The value must be at in range [" DM_TO_STRING(DM_VDO_HASH_ZONE_THREADS_MINIMUM) ".."
+	DM_TO_STRING(DM_VDO_HASH_ZONE_THREADS_MAXIMUM) "].\n"
 	"vdo_hash_zone_threads, vdo_logical_threads and vdo_physical_threads must be\n"
 	"either all zero or all non-zero.\n")
 
@@ -777,7 +788,8 @@ cfg(allocation_vdo_logical_threads_CFG, "vdo_logical_threads", allocation_CFG_SE
 	"processing based on the hash value computed from the block data.\n"
 	"A logical thread count of 9 or more will require explicitly specifying\n"
 	"a sufficiently large block map cache size, as well.\n"
-	"The value must be in range [0..100].\n"
+	"The value must be in range [" DM_TO_STRING(DM_VDO_LOGICAL_THREADS_MINIMUM) ".."
+	DM_TO_STRING(DM_VDO_LOGICAL_THREADS_MAXIMUM) "].\n"
 	"vdo_hash_zone_threads, vdo_logical_threads and vdo_physical_threads must be\n"
 	"either all zero or all non-zero.\n")
 
@@ -785,7 +797,8 @@ cfg(allocation_vdo_physical_threads_CFG, "vdo_physical_threads", allocation_CFG_
 	"Specifies the number of threads across which to subdivide parts of the VDO\n"
 	"processing based on physical block addresses.\n"
 	"Each additional thread after the first will use an additional 10MiB of RAM.\n"
-	"The value must be in range [0..16].\n"
+	"The value must be in range [" DM_TO_STRING(DM_VDO_PHYSICAL_THREADS_MINIMUM) ".."
+	DM_TO_STRING(DM_VDO_PHYSICAL_THREADS_MAXIMUM) "].\n"
 	"vdo_hash_zone_threads, vdo_logical_threads and vdo_physical_threads must be\n"
 	"either all zero or all non-zero.\n")
 
@@ -811,7 +824,7 @@ cfg(allocation_vdo_max_discard_CFG, "vdo_max_discard", allocation_CFG_SECTION, C
 	"The default and minimum is 1. The maximum is UINT_MAX / 4096.\n")
 
 cfg(allocation_vdo_pool_header_size_CFG, "vdo_pool_header_size", allocation_CFG_SECTION, CFG_PROFILABLE | CFG_PROFILABLE_METADATA | CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_VDO_POOL_HEADER_SIZE_KB, vsn(2, 3, 12), NULL, 0, NULL,
-	"Specified the emptry header size in KiB at the front and end of vdo pool device.\n")
+	"Specified the empty header size in KiB at the front and end of vdo pool device.\n")
 
 cfg(log_report_command_log_CFG, "report_command_log", log_CFG_SECTION, CFG_PROFILABLE | CFG_DEFAULT_COMMENTED | CFG_DISALLOW_INTERACTIVE, CFG_TYPE_BOOL, DEFAULT_COMMAND_LOG_REPORT, vsn(2, 2, 158), NULL, 0, NULL,
 	"Enable or disable LVM log reporting.\n"
@@ -934,7 +947,7 @@ cfg(backup_archive_CFG, "archive", backup_CFG_SECTION, CFG_DEFAULT_COMMENTED, CF
 	"Think very hard before turning this off.\n")
 
 cfg_runtime(backup_archive_dir_CFG, "archive_dir", backup_CFG_SECTION, CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, vsn(1, 0, 0), 0, NULL,
-	"Location of the metdata archive files.\n"
+	"Location of the metadata archive files.\n"
 	"Remember to back up this directory regularly!\n")
 
 cfg(backup_retain_min_CFG, "retain_min", backup_CFG_SECTION, CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_ARCHIVE_NUMBER, vsn(1, 0, 0), NULL, 0, NULL,
@@ -1164,7 +1177,7 @@ cfg(global_lvmlockctl_kill_command_CFG, "lvmlockctl_kill_command", global_CFG_SE
 
 cfg(global_thin_check_executable_CFG, "thin_check_executable", global_CFG_SECTION, CFG_ALLOW_EMPTY | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, THIN_CHECK_CMD, vsn(2, 2, 94), "@THIN_CHECK_CMD@", 0, NULL,
 	"The full path to the thin_check command.\n"
-	"LVM uses this command to check that a thin metadata device is in a\n"
+	"LVM uses this command to check that a thin pool metadata device is in a\n"
 	"usable state. When a thin pool is activated and after it is\n"
 	"deactivated, this command is run. Activation will only proceed if\n"
 	"the command has an exit status of 0. Set to \"\" to skip this check.\n"
@@ -1182,6 +1195,12 @@ cfg(global_thin_repair_executable_CFG, "thin_repair_executable", global_CFG_SECT
 	"an unusable state. Also see thin_repair_options.\n"
 	"(See package device-mapper-persistent-data or thin-provisioning-tools)\n")
 
+cfg(global_thin_restore_executable_CFG, "thin_restore_executable", global_CFG_SECTION, CFG_ALLOW_EMPTY | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, THIN_RESTORE_CMD, vsn(2, 3, 22), "@THIN_RESTORE_CMD@", 0, NULL,
+	"The full path to the thin_restore command.\n"
+	"LVM uses this command to restore generated data for a thin pool metadata device.\n"
+	"Also see thin_restore_options.\n"
+	"(See package device-mapper-persistent-data or thin-provisioning-tools)\n")
+
 cfg_array(global_thin_check_options_CFG, "thin_check_options", global_CFG_SECTION, CFG_ALLOW_EMPTY | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_THIN_CHECK_OPTIONS_CONFIG, vsn(2, 2, 96), NULL, 0, NULL,
 	"List of options passed to the thin_check command.\n"
 	"With thin_check version 2.1 or newer you can add the option\n"
@@ -1191,6 +1210,9 @@ cfg_array(global_thin_check_options_CFG, "thin_check_options", global_CFG_SECTIO
 
 cfg_array(global_thin_repair_options_CFG, "thin_repair_options", global_CFG_SECTION, CFG_ALLOW_EMPTY | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_THIN_REPAIR_OPTIONS_CONFIG, vsn(2, 2, 100), NULL, 0, NULL,
 	"List of options passed to the thin_repair command.\n")
+
+cfg_array(global_thin_restore_options_CFG, "thin_restore_options", global_CFG_SECTION, CFG_ALLOW_EMPTY | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_THIN_RESTORE_OPTIONS_CONFIG, vsn(2, 3, 22), NULL, 0, NULL,
+	"List of options passed to the thin_restore command.\n")
 
 cfg_array(global_thin_disabled_features_CFG, "thin_disabled_features", global_CFG_SECTION, CFG_ALLOW_EMPTY | CFG_DEFAULT_UNDEFINED, CFG_TYPE_STRING, NULL, vsn(2, 2, 99), NULL, 0, NULL,
 	"Features to not use in the thin driver.\n"
@@ -1232,6 +1254,12 @@ cfg(global_cache_repair_executable_CFG, "cache_repair_executable", global_CFG_SE
 	"an unusable state. Also see cache_repair_options.\n"
 	"(See package device-mapper-persistent-data or thin-provisioning-tools)\n")
 
+cfg(global_cache_restore_executable_CFG, "cache_restore_executable", global_CFG_SECTION, CFG_ALLOW_EMPTY | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, CACHE_RESTORE_CMD, vsn(2, 3, 22), "@CACHE_RESTORE_CMD@", 0, NULL,
+	"The full path to the cache_restore command.\n"
+	"LVM uses this command to restore generated data for a cache metadata device.\n"
+	"Also see cache_restore_options.\n"
+	"(See package device-mapper-persistent-data or thin-provisioning-tools)\n")
+
 cfg_array(global_cache_check_options_CFG, "cache_check_options", global_CFG_SECTION, CFG_ALLOW_EMPTY | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_CACHE_CHECK_OPTIONS_CONFIG, vsn(2, 2, 108), NULL, 0, NULL,
 	"List of options passed to the cache_check command.\n"
 	"With cache_check version 5.0 or newer you should include the option\n"
@@ -1239,6 +1267,9 @@ cfg_array(global_cache_check_options_CFG, "cache_check_options", global_CFG_SECT
 
 cfg_array(global_cache_repair_options_CFG, "cache_repair_options", global_CFG_SECTION, CFG_ALLOW_EMPTY | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_CACHE_REPAIR_OPTIONS_CONFIG, vsn(2, 2, 108), NULL, 0, NULL,
 	"List of options passed to the cache_repair command.\n")
+
+cfg_array(global_cache_restore_options_CFG, "cache_restore_options", global_CFG_SECTION, CFG_ALLOW_EMPTY | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_CACHE_RESTORE_OPTIONS_CONFIG, vsn(2, 3, 22), NULL, 0, NULL,
+	"List of options passed to the cache_restore command.\n")
 
 cfg(global_vdo_format_executable_CFG, "vdo_format_executable", global_CFG_SECTION, CFG_ALLOW_EMPTY | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, VDO_FORMAT_CMD, VDO_1ST_VSN, "@VDO_FORMAT_CMD@", 0, NULL,
 	"The full path to the vdoformat command.\n"
@@ -1250,10 +1281,10 @@ cfg_array(global_vdo_format_options_CFG, "vdo_format_options", global_CFG_SECTIO
 cfg_array(global_vdo_disabled_features_CFG, "vdo_disabled_features", global_CFG_SECTION, CFG_ALLOW_EMPTY | CFG_DEFAULT_UNDEFINED, CFG_TYPE_STRING, NULL, vsn(2, 3, 11), NULL, 0, NULL,
 	"Features to not use in the vdo driver.\n"
 	"This can be helpful for testing, or to avoid using a feature that is\n"
-	"causing problems. Features include: online_rename\n"
+	"causing problems. Features include: online_rename, version4\n"
 	"#\n"
 	"Example\n"
-	"vdo_disabled_features = [ \"online_rename\" ]\n"
+	"vdo_disabled_features = [ \"online_rename\", \"version4\" ]\n"
 	"#\n")
 
 cfg(global_fsadm_executable_CFG, "fsadm_executable", global_CFG_SECTION, CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_FSADM_PATH, vsn(2, 2, 170), "@FSADM_PATH@", 0, NULL,
@@ -1369,11 +1400,11 @@ cfg(activation_use_linear_target_CFG, "use_linear_target", activation_CFG_SECTIO
 
 cfg(activation_reserved_stack_CFG, "reserved_stack", activation_CFG_SECTION, CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_RESERVED_STACK, vsn(1, 0, 0), NULL, 0, NULL,
 	"Stack size in KiB to reserve for use while devices are suspended.\n"
-	"Insufficent reserve risks I/O deadlock during device suspension.\n")
+	"Insufficient reserve risks I/O deadlock during device suspension.\n")
 
 cfg(activation_reserved_memory_CFG, "reserved_memory", activation_CFG_SECTION, CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_RESERVED_MEMORY, vsn(1, 0, 0), NULL, 0, NULL,
 	"Memory size in KiB to reserve for use while devices are suspended.\n"
-	"Insufficent reserve risks I/O deadlock during device suspension.\n")
+	"Insufficient reserve risks I/O deadlock during device suspension.\n")
 
 cfg(activation_process_priority_CFG, "process_priority", activation_CFG_SECTION, CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_PROCESS_PRIORITY, vsn(1, 0, 0), NULL, 0, NULL,
 	"Nice value used while devices are suspended.\n"
@@ -1499,7 +1530,7 @@ cfg(activation_raid_fault_policy_CFG, "raid_fault_policy", activation_CFG_SECTIO
 	"This includes LVs that have the following segment types:\n"
 	"raid1, raid4, raid5*, and raid6*.\n"
 	"If a device in the LV fails, the policy determines the steps\n"
-	"performed by dmeventd automatically, and the steps perfomed by the\n"
+	"performed by dmeventd automatically, and the steps performed by the\n"
 	"manual command lvconvert --repair --use-policies.\n"
 	"Automatic handling requires dmeventd to be monitoring the LV.\n"
 	"#\n"
@@ -1521,7 +1552,7 @@ cfg_runtime(activation_mirror_image_fault_policy_CFG, "mirror_image_fault_policy
 	"(copies) and a mirror log. A disk log ensures that a mirror LV does\n"
 	"not need to be re-synced (all copies made the same) every time a\n"
 	"machine reboots or crashes. If a device in the LV fails, this policy\n"
-	"determines the steps perfomed by dmeventd automatically, and the steps\n"
+	"determines the steps performed by dmeventd automatically, and the steps\n"
 	"performed by the manual command lvconvert --repair --use-policies.\n"
 	"Automatic handling requires dmeventd to be monitoring the LV.\n"
 	"#\n"
@@ -1665,7 +1696,7 @@ cfg(activation_monitoring_CFG, "monitoring", activation_CFG_SECTION, CFG_DEFAULT
 cfg(activation_polling_interval_CFG, "polling_interval", activation_CFG_SECTION, CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_INTERVAL, vsn(2, 2, 63), NULL, 0, NULL,
 	"Check pvmove or lvconvert progress at this interval (seconds).\n"
 	"When pvmove or lvconvert must wait for the kernel to finish\n"
-	"synchronising or merging data, they check and report progress at\n"
+	"synchronizing or merging data, they check and report progress at\n"
 	"intervals of this number of seconds. If this is set to 0 and there\n"
 	"is only one thing to wait for, there are no progress reports, but\n"
 	"the process is awoken immediately once the operation is complete.\n")
@@ -1796,7 +1827,14 @@ cfg(report_output_format_CFG, "output_format", report_CFG_SECTION, CFG_PROFILABL
 	"    one report per command, each report is prefixed with report's\n"
 	"    name for identification.\n"
 	"  json\n"
-	"    JSON format.\n")
+	"    JSON format.\n"
+	"  json_std\n"
+	"    JSON format that is more compliant with JSON standard.\n"
+        "    Compared to original \"json\" format:\n"
+        "      - it does not use double quotes around numeric values,\n"
+        "      - it uses 'null' for undefined numeric values,\n"
+        "      - it prints string list as proper JSON array of strings instead of a single string."
+	"\n")
 
 cfg(report_compact_output_CFG, "compact_output", report_CFG_SECTION, CFG_PROFILABLE | CFG_DEFAULT_COMMENTED, CFG_TYPE_BOOL, DEFAULT_REP_COMPACT_OUTPUT, vsn(2, 2, 115), NULL, 0, NULL,
 	"Do not print empty values for all report fields.\n"

@@ -1,3 +1,72 @@
+version 2.03.22 - 02nd August 2023
+==================================
+  Fix pv_major/pv_minor report field types so they are integers, not strings.
+  Add lvmdevices --delnotfound to delete entries for missing devices.
+  Always use cachepool name for metadata backup LV for lvconvert --repair.
+  Make metadata backup LVs read-only after pool's lvconvert --repair.
+  Improve VDO and Thin support with lvmlockd.
+  Handle 'lvextend --usepolicies' for pools for all activation variants.
+  Fix memleak in vgchange autoactivation setup.
+  Update py-compile building script.
+  Support conversion from thick to fully provisioned thin LV.
+  Cache/Thin-pool can use error and zero volumes for testing.
+  Individual thin volume can be cached, but cannot take snapshot.
+  Better internal support for handling error and zero target (for testing).
+  Resize COW above trimmed maximal size is does not return error.
+  Support parsing of vdo geometry format version 4.
+  Add lvm.conf thin_restore and cache_restore settings.
+  Handle multiple mounts while resizing volume with a FS.
+  Handle leading/trailing spaces in sys_wwid and sys_serial used by deivce_id.
+  Enhance lvm_import_vdo and use snapshot when converting VDO volume.
+  Fix parsing of VDO metadata.
+  Fix failing -S|--select for non-reporting cmds if using LV info/status fields.
+  Allow snapshots of raid+integrity LV.
+  Fix multisegment RAID1 allocator to prevent using single disk for more legs.
+
+version 2.03.21 - 21st April 2023
+=================================
+  Fix activation of vdo-pool for with 0 length headers (converted pools).
+  Avoid printing internal init messages when creation integration devices.
+  Allow (write)cache over raid+integrity LV.
+
+version 2.03.20 - 21st March 2023
+=================================
+  Fix segfault if using -S|--select with log/report_command_log=1 setting.
+  Configure now fails when requested lvmlockd dependencies are missing.
+  Add some configure Gentoo enhancements for static builds.
+
+version 2.03.19 - 21st February 2023
+====================================
+  Configure supports --with-systemd-run executed from udev rules.
+  Enhancement for build with MuslC systemd and non-bash system shells (dash).
+  Do not reset SYSTEMD_READY variable in udev for PVs on MD and loop devices.
+  Ensure udev is processing origin LV before its thick snapshots LVs.
+  Fix and improve runtime memory size detection for VDO volumes.
+
+version 2.03.18 - 22nd December 2022
+====================================
+  Fix issues reported by coverity scan.
+  Fix warning for thin pool overprovisioning on lvextend (2.03.17).
+  Add support for writecache metadata_only and pause_writeback settings.
+  Fix missing error messages in lvmdbusd.
+
+Version 2.03.17 - 10th November 2022
+====================================
+  Add new options (--fs, --fsmode) for FS handling when resizing LVs.
+  Fix 'lvremove -S|--select LV' to not also remove its historical LV right away.
+  Fix lv_active field type to binary so --select and --binary applies properly.
+  Switch to use mallinfo2 and use it only with glibc.
+  Error out in lvm shell if using a cmd argument not supported in the shell.
+  Fix lvm shell's lastlog command to report previous pre-command failures.
+  Extend VDO and VDOPOOL without flushing and locking fs.
+  Add --valuesonly option to lvmconfig to print only values without keys.
+  Updates configure with recent autoconf tooling.
+  Fix lvconvert --test --type vdo-pool execution.
+  Add json_std output format for more JSON standard compliant version of output.
+  Fix vdo_slab_size_mb value for converted VDO volume.
+  Fix many corner cases in device_id, including handling of S/N duplicates.
+  Fix various issues in lvmdbusd.
+
 Version 2.03.16 - 18th May 2022
 ===============================
   Fix segfault when handling selection with historical LVs.
@@ -96,7 +165,7 @@ Version 2.03.12 - 07th May 2021
   Fix IMSM MD RAID detection on 4k devices.
   Check for presence of VDO target before starting any conversion.
   Support metatadata profiles with volume VDO pool conversions.
-  Support -Zn for conversion of already formated VDO pools.
+  Support -Zn for conversion of already formatted VDO pools.
   Avoid removing LVs on error path of lvconvert during creation volumes.
   Fix crashing lvdisplay when thin volume was waiting for merge.
   Support option --errorwhenfull when converting volume to thin-pool.
@@ -169,7 +238,7 @@ Version 2.03.10 - 09th August 2020
 
 Version 2.03.09 - 26th March 2020
 =================================
-  Fix formating of vdopool (vdo_slab_size_mb was smaller by 2 bits).
+  Fix formatting of vdopool (vdo_slab_size_mb was smaller by 2 bits).
   Fix showing of a dm kernel error when uncaching a volume with cachevol.
 
 Version 2.03.08 - 11th February 2020
@@ -3182,7 +3251,7 @@ Version 2.02.68 - 23rd June 2010
   Add device name and offset to raw_read_mda_header error messages.
   Honour log argument when down-converting stacked mirror.
   Sleep to workaround clvmd -S race: socket closed early and server drops cmd.
-  Use early udev synchronisation and update of dev nodes for clustered mirrors.
+  Use early udev synchronization and update of dev nodes for clustered mirrors.
   Remove incorrect inclusion of kdev_t.h from cmirrord/functions.h.
   Add man pages for lvmconf and non-existent lvmsadc and lvmsar tools.
   Exit successfully when using -o help (but not -o +help) with LVM reports.

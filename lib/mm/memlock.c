@@ -105,13 +105,13 @@ static const char * const _blacklist_maps[] = {
 	"/LC_MESSAGES/",
 	"gconv/gconv-modules.cache",
 	"/ld-2.",		/* not using dlopen,dlsym during mlock */
-	"/libaio.so.",		/* not using aio during mlock */
 	"/libattr.so.",		/* not using during mlock (udev) */
 	"/libblkid.so.",	/* not using blkid during mlock (udev) */
 	"/libbz2.so.",		/* not using during mlock (udev) */
 	"/libcap.so.",		/* not using during mlock (systemd) */
 	"/libdl-",		/* not using dlopen,dlsym during mlock */
 	"/libdw-",		/* not using during mlock (udev) */
+	"/libedit.so.",		/* not using editline during mlock */
 	"/libelf-",		/* not using during mlock (udev) */
 	"/libgcrypt.so.",	/* not using during mlock (systemd) */
 	"/libgpg-error.so.",	/* not using gpg-error during mlock (systemd) */
@@ -122,7 +122,6 @@ static const char * const _blacklist_maps[] = {
 	"/libpcre.so.",		/* not using pcre during mlock (selinux) */
 	"/libpcre2-",		/* not using pcre during mlock (selinux) */
 	"/libreadline.so.",	/* not using readline during mlock */
-	"/libedit.so.",		/* not using editline during mlock */
 	"/libresolv-",		/* not using during mlock (udev) */
 	"/libselinux.so.",	/* not using selinux during mlock */
 	"/libsepol.so.",	/* not using sepol during mlock */
@@ -131,6 +130,7 @@ static const char * const _blacklist_maps[] = {
 	"/libudev.so.",		/* not using udev during mlock */
 	"/libuuid.so.",		/* not using uuid during mlock (blkid) */
 	"/libz.so.",		/* not using during mlock (udev) */
+	"/libzstd.so.",		/* not using zstd during mlock (systemd) */
 	"/etc/selinux",		/* not using selinux during mlock */
 	/* "/libdevmapper-event.so" */
 };
@@ -160,10 +160,16 @@ static void _touch_memory(void *mem, size_t size)
 
 static void _allocate_memory(void)
 {
-#ifndef VALGRIND_POOL
+#if defined(__GLIBC__) && !defined(VALGRIND_POOL)
+	/* Memory allocation is currently only tested with glibc
+	 * for different C libraries, some other mechanisms might be needed
+	 * meanwhile let users use lvm2 code without memory preallocation.
+	 * Compilation for VALGRIND tracing also goes without preallocation.
+	 */
 	void *stack_mem;
 	struct rlimit limit;
-	int i, area = 0, missing = _size_malloc_tmp, max_areas = 32, hblks;
+	int i, area = 0, missing = _size_malloc_tmp, max_areas = 32;
+	size_t hblks;
 	char *areas[max_areas];
 
 	/* Check if we could preallocate requested stack */
@@ -176,6 +182,12 @@ static void _allocate_memory(void)
 	}
 	/* FIXME else warn user setting got ignored */
 
+#ifdef HAVE_MALLINFO2
+        /* Prefer mallinfo2 call when avaialble with newer glibc */
+#define MALLINFO mallinfo2
+#else
+#define MALLINFO mallinfo
+#endif
         /*
          *  When a brk() fails due to fragmented address space (which sometimes
          *  happens when we try to grab 8M or so), glibc will make a new
@@ -187,13 +199,13 @@ static void _allocate_memory(void)
          *  memory on free(), this is good enough for our purposes.
          */
 	while (missing > 0) {
-		struct mallinfo inf = mallinfo();
+		struct MALLINFO inf = MALLINFO();
 		hblks = inf.hblks;
 
 		if ((areas[area] = malloc(_size_malloc_tmp)))
 			_touch_memory(areas[area], _size_malloc_tmp);
 
-		inf = mallinfo();
+		inf = MALLINFO();
 
 		if (hblks < inf.hblks) {
 			/* malloc cheated and used mmap, even though we told it

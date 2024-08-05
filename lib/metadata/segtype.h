@@ -221,6 +221,8 @@ struct dev_manager;
 #define seg_is_vdo(seg)		segtype_is_vdo((seg)->segtype)
 #define seg_is_vdo_pool(seg)	segtype_is_vdo_pool((seg)->segtype)
 #define seg_is_virtual(seg)	segtype_is_virtual((seg)->segtype)
+#define seg_is_error(seg)	segtype_is_error((seg)->segtype)
+#define seg_is_zero(seg)	segtype_is_zero((seg)->segtype)
 #define seg_unknown(seg)	segtype_is_unknown((seg)->segtype)
 #define seg_can_split(seg)	segtype_can_split((seg)->segtype)
 #define seg_cannot_be_zeroed(seg)	segtype_cannot_be_zeroed((seg)->segtype)
@@ -353,6 +355,7 @@ int init_vdo_segtypes(struct cmd_context *cmd, struct segtype_library *seglib);
 #endif
 
 #define VDO_FEATURE_ONLINE_RENAME		(1U << 0) /* version 6.2.3 */
+#define VDO_FEATURE_VERSION4			(1U << 1) /* version 8.2.0 */
 
 int init_writecache_segtypes(struct cmd_context *cmd, struct segtype_library *seglib);
 

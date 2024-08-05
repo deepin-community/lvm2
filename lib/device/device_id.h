@@ -28,13 +28,14 @@ int device_ids_use_devname(struct cmd_context *cmd);
 int device_ids_read(struct cmd_context *cmd);
 int device_ids_write(struct cmd_context *cmd);
 int device_id_add(struct cmd_context *cmd, struct device *dev, const char *pvid,
-                  const char *idtype_arg, const char *id_arg);
+                  const char *idtype_arg, const char *id_arg, int use_idtype_only);
 void device_id_pvremove(struct cmd_context *cmd, struct device *dev);
 void device_ids_match(struct cmd_context *cmd);
 int device_ids_match_dev(struct cmd_context *cmd, struct device *dev);
 void device_ids_match_device_list(struct cmd_context *cmd);
 void device_ids_validate(struct cmd_context *cmd, struct dm_list *scanned_devs, int *device_ids_invalid, int noupdate);
 int device_ids_version_unchanged(struct cmd_context *cmd);
+void device_ids_check_serial(struct cmd_context *cmd, struct dm_list *scan_devs, int *update_needed, int noupdate);
 void device_ids_find_renamed_devs(struct cmd_context *cmd, struct dm_list *dev_list, int *search_count, int noupdate);
 const char *device_id_system_read(struct cmd_context *cmd, struct device *dev, uint16_t idtype);
 void device_id_update_vg_uuid(struct cmd_context *cmd, struct volume_group *vg, struct id *old_vg_id);
@@ -58,7 +59,17 @@ void devices_file_exit(struct cmd_context *cmd);
 void unlink_searched_devnames(struct cmd_context *cmd);
 
 int read_sys_block(struct cmd_context *cmd, struct device *dev, const char *suffix, char *sysbuf, int sysbufsize);
+int read_sys_block_binary(struct cmd_context *cmd, struct device *dev,
+			  const char *suffix, char *sysbuf, int sysbufsize, int *retlen);
 
 int dev_has_mpath_uuid(struct cmd_context *cmd, struct device *dev, const char **idname_out);
+
+int wwid_type_to_idtype(int wwid_type);
+int idtype_to_wwid_type(int idtype);
+void free_wwids(struct dm_list *ids);
+struct dev_wwid *dev_add_wwid(char *id, int id_type, struct dm_list *ids);
+int dev_read_vpd_wwids(struct cmd_context *cmd, struct device *dev);
+int dev_read_sys_wwid(struct cmd_context *cmd, struct device *dev,
+		      char *buf, int bufsize, struct dev_wwid **dw_out);
 
 #endif

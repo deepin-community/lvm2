@@ -45,18 +45,17 @@
 #include "lib/notify/lvmnotify.h"
 #include "lib/label/hints.h"
 
+/*
+ * cmd_enum.h uses the generated cmds.h to create the enum with an ID
+ * for each command definition in command-lines.in.
+ */
+#include "lib/commands/cmd_enum.h"
+
 #include <ctype.h>
 #include <sys/types.h>
 
 #define CMD_LEN 256
 #define MAX_ARGS 64
-
-/* define the enums for each unique ID in command defs in command-lines.in */
-enum {
-#define cmd(a, b) a ,
-#include "cmds.h"
-#undef cmd
-};
 
 /* define the enums for the values accepted by command line --options, foo_VAL */
 enum {
@@ -96,6 +95,7 @@ enum {
 
 #define ARG_COUNTABLE 0x00000001	/* E.g. -vvvv */
 #define ARG_GROUPABLE 0x00000002	/* E.g. --addtag */
+#define ARG_NONINTERACTIVE 0x00000004	/* only for use in noninteractive mode  */
 
 struct arg_values {
 	unsigned count;
@@ -193,6 +193,7 @@ int repairtype_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_v
 int dumptype_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_values *av);
 
 /* we use the enums to access the switches */
+int arg_is_valid_for_command(const struct cmd_context *cmd, int a);
 unsigned arg_count(const struct cmd_context *cmd, int a);
 unsigned arg_is_set(const struct cmd_context *cmd, int a);
 int arg_from_list_is_set(const struct cmd_context *cmd, const char *err_found, ...);
@@ -263,6 +264,7 @@ int lvconvert_to_cache_with_cachevol_cmd(struct cmd_context *cmd, int argc, char
 int lvconvert_to_cache_with_cachepool_cmd(struct cmd_context *cmd, int argc, char **argv);
 int lvconvert_to_writecache_cmd(struct cmd_context *cmd, int argc, char **argv);
 int lvconvert_to_thin_with_external_cmd(struct cmd_context *cmd, int argc, char **argv);
+int lvconvert_to_thin_with_data_cmd(struct cmd_context *cmd, int argc, char **argv);
 int lvconvert_swap_pool_metadata_cmd(struct cmd_context *cmd, int argc, char **argv);
 int lvconvert_to_pool_or_swap_metadata_cmd(struct cmd_context *cmd, int argc, char **argv);
 int lvconvert_merge_thin_cmd(struct cmd_context *cmd, int argc, char **argv);
@@ -294,5 +296,8 @@ int lvconvert_writecache_attach_single(struct cmd_context *cmd,
 int lvconvert_cachevol_attach_single(struct cmd_context *cmd,
                                      struct logical_volume *lv,
                                      struct processing_handle *handle);
+
+int lvresize_cmd(struct cmd_context *cmd, int argc, char **argv);
+int lvextend_policy_cmd(struct cmd_context *cmd, int argc, char **argv);
 
 #endif

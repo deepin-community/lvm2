@@ -88,6 +88,7 @@ int become_daemon(struct cmd_context *cmd, int skip_lvm)
 		_exit(ECMD_FAILED);
 	}
 
+	/* coverity[leaked_handle] don't care */
 	if ((dup2(null_fd, STDIN_FILENO) < 0)  || /* reopen stdin */
 	    (dup2(null_fd, STDOUT_FILENO) < 0) || /* reopen stdout */
 	    (dup2(null_fd, STDERR_FILENO) < 0)) { /* reopen stderr */
@@ -113,7 +114,6 @@ int become_daemon(struct cmd_context *cmd, int skip_lvm)
 	}
 
 	/* coverity[leaked_handle] null_fd does not leak here */
-
 	return 1;
 }
 
@@ -211,7 +211,7 @@ static int _ignore_vg(struct cmd_context *cmd,
 			}
 			return 1;
 		} else {
-			log_warn("Skipping clustered VG %s.", vg_name);
+			log_warn("WARNING: Skipping clustered VG %s.", vg_name);
 			if (!_printed_clustered_vg_advice) {
 				_printed_clustered_vg_advice = 1;
 				log_error("See lvmlockd(8) for changing a clvm/clustered VG to a shared VG.");
@@ -565,7 +565,7 @@ int vgcreate_params_set_from_args(struct cmd_context *cmd,
 		if (vp_new->system_id && cmd->system_id &&
 		    strcmp(vp_new->system_id, cmd->system_id)) {
 			if (*vp_new->system_id)
-				log_warn("VG with system ID %s might become inaccessible as local system ID is %s",
+				log_warn("WARNING: VG with system ID %s might become inaccessible as local system ID is %s",
 					 vp_new->system_id, cmd->system_id);
 			else
 				log_warn("WARNING: A VG without a system ID allows unsafe access from other hosts.");
@@ -584,7 +584,7 @@ int vgcreate_params_set_from_args(struct cmd_context *cmd,
 
 		if (vp_new->system_id && cmd->system_id &&
 		    strcmp(vp_new->system_id, cmd->system_id)) {
-			log_warn("VG with system ID %s might become inaccessible as local system ID is %s",
+			log_warn("WARNING: VG with system ID %s might become inaccessible as local system ID is %s",
 				 vp_new->system_id, cmd->system_id);
 		}
 	}
@@ -883,7 +883,9 @@ int vg_refresh_visible(struct cmd_context *cmd, struct volume_group *vg)
 			break;
 		}
 
-		if (lv_is_visible(lvl->lv) && !lv_refresh(cmd, lvl->lv)) {
+		if (lv_is_visible(lvl->lv) &&
+		    !(lv_is_cow(lvl->lv) && !lv_is_virtual_origin(origin_from_cow(lvl->lv))) &&
+		    !lv_refresh(cmd, lvl->lv)) {
 			r = 0;
 			stack;
 		}
@@ -902,7 +904,7 @@ void lv_spawn_background_polling(struct cmd_context *cmd,
 
 	/* Ensure there is nothing waiting on cookie */
 	if (!sync_local_dev_names(cmd))
-		log_warn("Failed to sync local dev names.");
+		log_warn("WARNING: Failed to sync local dev names.");
 
 	if (lv_is_pvmove(lv))
 		lv_mirr = lv;
@@ -1206,12 +1208,10 @@ out:
  */
 static int _compare_vdo_option(const char *b1, const char *b2)
 {
+	int use_skipped = 0;
+
 	if (strncasecmp(b1, "vdo", 3) == 0) // skip vdo prefix
 		b1 += 3;
-
-	if ((tolower(*b1) != tolower(*b2)) &&
-	    (strncmp(b2, "use_", 4) == 0))
-		b2 += 4;  // try again with skipped prefix 'use_'
 
 	while (*b1 && *b2) {
 		if (tolower(*b1) == tolower(*b2)) {
@@ -1224,8 +1224,14 @@ static int _compare_vdo_option(const char *b1, const char *b2)
 			++b1;           // skip to next char
 		else if (*b2 == '_')
 			++b2;           // skip to next char
-		else
+		else {
+			if (!use_skipped++ && (strncmp(b2, "use_", 4) == 0)) {
+				b2 += 4;  // try again with skipped prefix 'use_'
+				continue;
+			}
+
 			break;          // mismatch
+		}
 	}
 
 	return (*b1 || *b2) ? 0 : 1;
@@ -1313,7 +1319,6 @@ int get_vdo_settings(struct cmd_context *cmd,
 			// Settings bellow cannot be changed with lvchange command
 			is_lvchange = checked_lvchange;
 
-			DO_OFFLINE(check_point_frequency);
 			DO_OFFLINE(index_memory_size_mb);
 			DO_OFFLINE(minimum_io_size);
 			DO_OFFLINE(slab_size_mb);
@@ -1328,6 +1333,11 @@ int get_vdo_settings(struct cmd_context *cmd,
 					goto_out;
 				u |= VDO_CHANGE_OFFLINE;
 				continue;
+			}
+
+			if (_compare_vdo_option(cn->key, "check_point_frequency")) {
+				log_verbose("Ignoring deprecated --vdosettings option \"%s\" and its value.", cn->key);
+				continue; /* Accept & ignore deprecated option */
 			}
 
 			log_error("Unknown VDO setting \"%s\".", cn->key);
@@ -1347,23 +1357,23 @@ int get_vdo_settings(struct cmd_context *cmd,
 			u |= VDO_CHANGE_ONLINE;
 	}
 
-	if (updated) {
-		// validation of updated VDO option
-		if (!dm_vdo_validate_target_params(vtp, 0 /* vdo_size */)) {
-err:
-			if (is_lvchange)
-				log_error("Cannot change VDO setting \"vdo_%s\" in existing VDO pool.",
-					  option);
-			else
-				log_error("Invalid argument for VDO setting \"vdo_%s\".",
-					  option);
-			goto out;
-		}
+	// validation of updated VDO option
+	if (!dm_vdo_validate_target_params(vtp, 0 /* vdo_size */))
+		goto_out;
 
+	if (updated)
 		*updated = u;
-	}
 
-	r = 1;
+	r = 1; // success
+	goto out;
+err:
+	if (is_lvchange)
+		log_error("Cannot change VDO setting \"vdo_%s\" in existing VDO pool.",
+			  option);
+	else
+		log_error("Invalid argument for VDO setting \"vdo_%s\".",
+			  option);
+
 out:
 	if (result)
 		dm_config_destroy(result);
@@ -1469,18 +1479,32 @@ static int _get_one_writecache_setting(struct cmd_context *cmd, struct writecach
 		return 1;
 	}
 
+	if (!strncmp(key, "metadata_only", strlen("metadata_only"))) {
+		if (sscanf(val, "%u", &settings->metadata_only) != 1)
+			goto_bad;
+		settings->metadata_only_set = 1;
+		return 1;
+	}
+
+	if (!strncmp(key, "pause_writeback", strlen("pause_writeback"))) {
+		if (sscanf(val, "%u", &settings->pause_writeback) != 1)
+			goto_bad;
+		settings->pause_writeback_set = 1;
+		return 1;
+	}
+
 	if (settings->new_key) {
 		log_error("Setting %s is not recognized. Only one unrecognized setting is allowed.", key);
 		return 0;
 	}
 
-	log_warn("Unrecognized writecache setting \"%s\" may cause activation failure.", key);
+	log_warn("WARNING: Unrecognized writecache setting \"%s\" may cause activation failure.", key);
 	if (yes_no_prompt("Use unrecognized writecache setting? [y/n]: ") == 'n') {
 		log_error("Aborting writecache conversion.");
 		return 0;
 	}
 
-	log_warn("Using unrecognized writecache setting: %s = %s.", key, val);
+	log_warn("WARNING: Using unrecognized writecache setting: %s = %s.", key, val);
 
 	settings->new_key = dm_pool_strdup(cmd->mem, key);
 	settings->new_val = dm_pool_strdup(cmd->mem, val);
@@ -1500,7 +1524,7 @@ int get_writecache_settings(struct cmd_context *cmd, struct writecache_settings 
 	char key[64];
 	char val[64];
 	int num;
-	int pos;
+	unsigned pos;
 	int rn;
 	int found = 0;
 
@@ -1655,7 +1679,10 @@ int process_each_label(struct cmd_context *cmd, int argc, char **argv,
 
 	log_set_report_object_type(LOG_REPORT_OBJECT_TYPE_LABEL);
 
-	lvmcache_label_scan(cmd);
+	if (!lvmcache_label_scan(cmd)) {
+		ret_max = ECMD_FAILED;
+		goto_out;
+	}
 
 	if (argc) {
 		for (; opt < argc; opt++) {
@@ -1827,7 +1854,7 @@ int get_and_validate_major_minor(const struct cmd_context *cmd,
 				 *major, cmd->dev_types->device_mapper_major);
 		}
 		/* Stay with dynamic major:minor if minor is not specified. */
-		*major = (*minor == -1) ? -1 : cmd->dev_types->device_mapper_major;
+		*major = (*minor == -1) ? -1 : (int)cmd->dev_types->device_mapper_major;
 	}
 
 	if ((*minor != -1) && !validate_major_minor(cmd, fmt, *major, *minor))
@@ -2027,7 +2054,20 @@ void destroy_processing_handle(struct cmd_context *cmd, struct processing_handle
 
 		log_restore_report_state(cmd->cmd_report.saved_log_report_state);
 
-		if (!cmd->is_interactive) {
+		/*
+		 * Do not destroy current cmd->report_group and cmd->log_rh
+		 * (the log report) yet if we're running interactively
+		 * (== running in lvm shell) or if there's a parent handle
+		 * (== we're executing nested processing, like it is when
+		 * doing selection for parent's process_each_* processing).
+		 *
+		 * In both cases, there's still possible further processing
+		 * to do outside the processing covered by the handle we are
+		 * destroying here and for which we may still need to access
+		 * the log report to cover the rest of the processing.
+		 *
+		 */
+		if (!cmd->is_interactive && !handle->parent) {
 			if (!dm_report_group_destroy(cmd->cmd_report.report_group))
 				stack;
 			cmd->cmd_report.report_group = NULL;
@@ -2277,7 +2317,12 @@ static int _resolve_duplicate_vgnames(struct cmd_context *cmd,
 		 * is unknown.
 		 */
 		log_error("Multiple VGs found with the same name: skipping %s", sl->str);
-		log_error("Use --select vg_uuid=<uuid> in place of the VG name.");
+
+		if (arg_is_valid_for_command(cmd, select_ARG))
+			log_error("Use --select vg_uuid=<uuid> in place of the VG name.");
+		else
+			log_error("Use VG uuid in place of the VG name.");
+
 		dm_list_del(&sl->list);
 		ret = ECMD_FAILED;
 	}
@@ -2435,8 +2480,13 @@ int process_each_vg(struct cmd_context *cmd,
 	 * Scan all devices to populate lvmcache with initial
 	 * list of PVs and VGs.
 	 */
-	if (!(read_flags & PROCESS_SKIP_SCAN))
-		lvmcache_label_scan(cmd);
+	if (!(read_flags & PROCESS_SKIP_SCAN)) {
+		if (!lvmcache_label_scan(cmd)) {
+			ret_max = ECMD_FAILED;
+			goto_out;
+		}
+	}
+
 
 	/*
 	 * A list of all VGs on the system is needed when:
@@ -2696,10 +2746,16 @@ static int _lv_is_prop(struct cmd_context *cmd, struct logical_volume *lv, int l
 		return lv_is_cache_origin(lv);
 	case is_merging_cow_LVP:
 		return lv_is_merging_cow(lv);
+	case is_cow_LVP:
+		return lv_is_cow(lv);
 	case is_cow_covering_origin_LVP:
 		return lv_is_cow_covering_origin(lv);
 	case is_visible_LVP:
 		return lv_is_visible(lv);
+	case is_error_LVP:
+		return lv_is_error(lv);
+	case is_zero_LVP:
+		return lv_is_zero(lv);
 	case is_historical_LVP:
 		return lv_is_historical(lv);
 	case is_raid_with_tracking_LVP:
@@ -2763,9 +2819,9 @@ static int _lv_is_type(struct cmd_context *cmd, struct logical_volume *lv, int l
 	case integrity_LVT:
 		return seg_is_integrity(seg);
 	case error_LVT:
-		return !strcmp(seg->segtype->name, SEG_TYPE_NAME_ERROR);
+		return seg_is_error(seg);
 	case zero_LVT:
-		return !strcmp(seg->segtype->name, SEG_TYPE_NAME_ZERO);
+		return seg_is_zero(seg);
 	default:
 		log_error(INTERNAL_ERROR "unknown lv type value lvt_enum %d", lvt_enum);
 	}
@@ -2823,9 +2879,9 @@ int get_lvt_enum(struct logical_volume *lv)
 	if (seg_is_integrity(seg))
 		return integrity_LVT;
 
-	if (!strcmp(seg->segtype->name, SEG_TYPE_NAME_ERROR))
+	if (seg_is_error(seg))
 		return error_LVT;
-	if (!strcmp(seg->segtype->name, SEG_TYPE_NAME_ZERO))
+	if (seg_is_zero(seg))
 		return zero_LVT;
 
 	return 0;
@@ -2945,10 +3001,10 @@ static int _check_lv_types(struct cmd_context *cmd, struct logical_volume *lv, i
 		int lvt_enum = get_lvt_enum(lv);
 		struct lv_type *type = get_lv_type(lvt_enum);
 		if (!type) {
-			log_warn("Command on LV %s does not accept LV type unknown (%d).",
+			log_warn("WARNING: Command on LV %s does not accept LV type unknown (%d).",
 				 display_lvname(lv), lvt_enum);
 		} else {
-			log_warn("Command on LV %s does not accept LV type %s.",
+			log_warn("WARNING: Command on LV %s does not accept LV type %s.",
 				 display_lvname(lv), type->name);
 		}
 	}
@@ -3059,7 +3115,7 @@ static int _check_lv_rules(struct cmd_context *cmd, struct logical_volume *lv)
 		if (rule->check_opts && (rule->rule == RULE_INVALID) && opts_match_count) {
 			memset(buf, 0, sizeof(buf));
 			opt_array_to_str(cmd, rule->check_opts, rule->check_opts_count, buf, sizeof(buf));
-			log_warn("Command on LV %s has invalid use of option %s.",
+			log_warn("WARNING: Command on LV %s has invalid use of option %s.",
 				 display_lvname(lv), buf);
 			ret = 0;
 		}
@@ -3069,7 +3125,7 @@ static int _check_lv_rules(struct cmd_context *cmd, struct logical_volume *lv)
 		if (rule->check_opts && (rule->rule == RULE_REQUIRE) && opts_unmatch_count)  {
 			memset(buf, 0, sizeof(buf));
 			opt_array_to_str(cmd, rule->check_opts, rule->check_opts_count, buf, sizeof(buf));
-			log_warn("Command on LV %s requires option %s.",
+			log_warn("WARNING: Command on LV %s requires option %s.",
 				 display_lvname(lv), buf);
 			ret = 0;
 		}
@@ -3078,10 +3134,10 @@ static int _check_lv_rules(struct cmd_context *cmd, struct logical_volume *lv)
 
 		if (rule->check_lvt_bits && (rule->rule == RULE_INVALID) && lv_types_match_bits) {
 			if (rule->opts_count)
-				log_warn("Command on LV %s uses options invalid with LV type %s.",
+				log_warn("WARNING: Command on LV %s uses options invalid with LV type %s.",
 				 	 display_lvname(lv), lvtype ? lvtype->name : "unknown");
 			else
-				log_warn("Command on LV %s with invalid LV type %s.",
+				log_warn("WARNING: Command on LV %s with invalid LV type %s.",
 				 	 display_lvname(lv), lvtype ? lvtype->name : "unknown");
 			ret = 0;
 		}
@@ -3092,10 +3148,10 @@ static int _check_lv_rules(struct cmd_context *cmd, struct logical_volume *lv)
 			memset(buf, 0, sizeof(buf));
 			_lvt_bits_to_str(rule->check_lvt_bits, buf, sizeof(buf));
 			if (rule->opts_count)
-				log_warn("Command on LV %s uses options that require LV types %s.",
+				log_warn("WARNING: Command on LV %s uses options that require LV types %s.",
 					 display_lvname(lv), buf);
 			else
-				log_warn("Command on LV %s does not accept LV type %s. Required LV types are %s.",
+				log_warn("WARNING: Command on LV %s does not accept LV type %s. Required LV types are %s.",
 					 display_lvname(lv), lvtype ? lvtype->name : "unknown", buf);
 			ret = 0;
 		}
@@ -3106,10 +3162,10 @@ static int _check_lv_rules(struct cmd_context *cmd, struct logical_volume *lv)
 			memset(buf, 0, sizeof(buf));
 			_lvp_bits_to_str(lv_props_match_bits, buf, sizeof(buf));
 			if (rule->opts_count)
-				log_warn("Command on LV %s uses options that are invalid with LV properties: %s.",
+				log_warn("WARNING: Command on LV %s uses options that are invalid with LV properties: %s.",
 				 	 display_lvname(lv), buf);
 			else
-				log_warn("Command on LV %s is invalid on LV with properties: %s.",
+				log_warn("WARNING: Command on LV %s is invalid on LV with properties: %s.",
 				 	 display_lvname(lv), buf);
 			ret = 0;
 		}
@@ -3120,10 +3176,10 @@ static int _check_lv_rules(struct cmd_context *cmd, struct logical_volume *lv)
 			memset(buf, 0, sizeof(buf));
 			_lvp_bits_to_str(lv_props_unmatch_bits, buf, sizeof(buf));
 			if (rule->opts_count)
-				log_warn("Command on LV %s uses options that require LV properties: %s.",
+				log_warn("WARNING: Command on LV %s uses options that require LV properties: %s.",
 				 	 display_lvname(lv), buf);
 			else
-				log_warn("Command on LV %s requires LV with properties: %s.",
+				log_warn("WARNING: Command on LV %s requires LV with properties: %s.",
 				 	 display_lvname(lv), buf);
 			ret = 0;
 		}
@@ -3266,7 +3322,9 @@ int process_each_lv_in_vg(struct cmd_context *cmd, struct volume_group *vg,
 
 		/* Skip availability change for non-virt snaps when processing all LVs */
 		/* FIXME: pass process_all to process_single_lv() */
-		if (process_all && arg_is_set(cmd, activate_ARG) &&
+		if (process_all &&
+		    (arg_is_set(cmd, activate_ARG) ||
+		     arg_is_set(cmd, refresh_ARG)) &&
 		    lv_is_cow(lvl->lv) && !lv_is_virtual_origin(origin_from_cow(lvl->lv)))
 			continue;
 
@@ -3437,6 +3495,9 @@ int process_each_lv_in_vg(struct cmd_context *cmd, struct volume_group *vg,
 				ret_max = ECMD_FAILED;
 				goto_out;
 			}
+
+			if (glvl->glv->historical->fresh)
+				continue;
 
 			process_lv = process_all;
 
@@ -3987,7 +4048,10 @@ int process_each_lv(struct cmd_context *cmd,
 	 * Scan all devices to populate lvmcache with initial
 	 * list of PVs and VGs.
 	 */
-	lvmcache_label_scan(cmd);
+	if (!lvmcache_label_scan(cmd)) {
+		ret_max = ECMD_FAILED;
+		goto_out;
+	}
 
 	/*
 	 * A list of all VGs on the system is needed when:
@@ -4115,32 +4179,6 @@ static int _get_arg_devices(struct cmd_context *cmd,
 	return ret_max;
 }
 
-static int _device_list_remove(struct dm_list *devices, struct device *dev)
-{
-	struct device_id_list *dil;
-
-	dm_list_iterate_items(dil, devices) {
-		if (dil->dev == dev) {
-			dm_list_del(&dil->list);
-			return 1;
-		}
-	}
-
-	return 0;
-}
-
-static struct device_id_list *_device_list_find_dev(struct dm_list *devices, struct device *dev)
-{
-	struct device_id_list *dil;
-
-	dm_list_iterate_items(dil, devices) {
-		if (dil->dev == dev)
-			return dil;
-	}
-
-	return NULL;
-}
-
 /* Process devices that are not PVs. */
 
 static int _process_other_devices(struct cmd_context *cmd,
@@ -4245,8 +4283,8 @@ static int _process_duplicate_pvs(struct cmd_context *cmd,
 	dm_list_iterate_items(devl, &unused_duplicate_devs) {
 		/* Duplicates are displayed if -a is used or the dev is named as an arg. */
 
-		if ((dil = _device_list_find_dev(arg_devices, devl->dev)))
-			_device_list_remove(arg_devices, devl->dev);
+		if ((dil = device_id_list_find_dev(arg_devices, devl->dev)))
+			device_id_list_remove(arg_devices, devl->dev);
 
 		if (!process_other_devices && !dil)
 			continue;
@@ -4366,8 +4404,8 @@ static int _process_pvs_in_vg(struct cmd_context *cmd,
 		/* Remove each arg_devices entry as it is processed. */
 
 		if (arg_devices && !dm_list_empty(arg_devices)) {
-			if ((dil = _device_list_find_dev(arg_devices, pv->dev)))
-				_device_list_remove(arg_devices, dil->dev);
+			if ((dil = device_id_list_find_dev(arg_devices, pv->dev)))
+				device_id_list_remove(arg_devices, dil->dev);
 		}
 
 		if (!process_pv && dil)
@@ -4502,7 +4540,8 @@ static int _process_pvs_in_vgs(struct cmd_context *cmd, uint32_t read_flags,
 		error_flags = 0;
 
 		vg = vg_read(cmd, vg_name, vg_uuid, read_flags, lockd_state, &error_flags, &error_vg);
-		if (_ignore_vg(cmd, error_flags, error_vg, vg_name, NULL, read_flags, &skip, &notfound)) {
+		if (_ignore_vg(cmd, error_flags, error_vg, vg_name, NULL, read_flags, &skip, &notfound) ||
+		    (!vg && !error_vg)) {
 			stack;
 			ret_max = ECMD_FAILED;
 			report_log_ret_code(ret_max);
@@ -4512,7 +4551,7 @@ static int _process_pvs_in_vgs(struct cmd_context *cmd, uint32_t read_flags,
 		}
 		if (notfound)
 			goto endvg;
-		
+
 		/*
 		 * Don't call "continue" when skip is set, because we need to remove
 		 * error_vg->pvs entries from devices list.
@@ -4623,8 +4662,12 @@ int process_each_pv(struct cmd_context *cmd,
 		goto_out;
 	}
 
-	if (!(read_flags & PROCESS_SKIP_SCAN))
-		lvmcache_label_scan(cmd);
+	if (!(read_flags & PROCESS_SKIP_SCAN)) {
+		if (!lvmcache_label_scan(cmd)) {
+			ret_max = ECMD_FAILED;
+			goto_out;
+		}
+	}
 
 	if (!lvmcache_get_vgnameids(cmd, &all_vgnameids, only_this_vgname, 1)) {
 		ret_max = ret;
@@ -5814,7 +5857,7 @@ do_command:
 
 				/* allow deviceidtype_ARG/deviceid_ARG ? */
 				memcpy(pvid, &pvl->pv->id.uuid, ID_LEN);
-				device_id_add(cmd, pd->dev, pvid, NULL, NULL);
+				device_id_add(cmd, pd->dev, pvid, NULL, NULL, 0);
 
 			} else {
 				log_error("Failed to find PV %s", pd->name);
@@ -5854,7 +5897,7 @@ do_command:
 
 		/* allow deviceidtype_ARG/deviceid_ARG ? */
 		memcpy(pvid, &pv->id.uuid, ID_LEN);
-		device_id_add(cmd, pd->dev, pvid, NULL, NULL);
+		device_id_add(cmd, pd->dev, pvid, NULL, NULL, 0);
 
 		log_verbose("Set up physical volume for \"%s\" with %" PRIu64
 			    " available sectors.", pv_name, pv_size(pv));

@@ -169,6 +169,7 @@ static struct glv_list *_init_historical_glvl(struct dm_pool *mem, struct lv_seg
 	hlv->name = seg->lv->name;
 	hlv->vg = seg->lv->vg;
 	hlv->timestamp = seg->lv->timestamp;
+	hlv->fresh = 1;
 	dm_list_init(&hlv->indirect_glvs);
 
 	glvl->glv->is_historical = 1;
@@ -310,9 +311,9 @@ int detach_pool_lv(struct lv_segment *seg)
 		return_0;
 
 	if (seg->device_id && /* Only thins with device_id > 0 can be deleted */
-	    !attach_pool_message(first_seg(seg->pool_lv),
-				 DM_THIN_MESSAGE_DELETE,
-				 NULL, seg->device_id, no_update))
+	    !attach_thin_pool_message(first_seg(seg->pool_lv),
+				      DM_THIN_MESSAGE_DELETE,
+				      NULL, seg->device_id, no_update))
 		return_0;
 
 	if (!remove_seg_from_segs_using_this_lv(seg->pool_lv, seg))
@@ -415,9 +416,9 @@ int validate_pool_chunk_size(struct cmd_context *cmd,
 }
 
 int recalculate_pool_chunk_size_with_dev_hints(struct logical_volume *pool_lv,
+					       struct logical_volume *pool_data_lv,
 					       int chunk_size_calc_policy)
 {
-	struct logical_volume *pool_data_lv;
 	struct lv_segment *seg;
 	struct physical_volume *pv;
 	struct cmd_context *cmd = pool_lv->vg->cmd;
@@ -438,7 +439,6 @@ int recalculate_pool_chunk_size_with_dev_hints(struct logical_volume *pool_lv,
 		return 0;
 	}
 
-	pool_data_lv = seg_lv(first_seg(pool_lv), 0);
 	dm_list_iterate_items(seg, &pool_data_lv->segments) {
 		switch (seg_type(seg, 0)) {
 		case AREA_PV:
@@ -606,7 +606,7 @@ bad:
 }
 
 struct logical_volume *alloc_pool_metadata(struct logical_volume *pool_lv,
-					   const char *name, uint32_t read_ahead,
+					   uint32_t read_ahead,
 					   uint32_t stripes, uint32_t stripe_size,
 					   uint32_t extents, alloc_policy_t alloc,
 					   struct dm_list *pvh)
@@ -636,9 +636,6 @@ struct logical_volume *alloc_pool_metadata(struct logical_volume *pool_lv,
 	/* FIXME: allocate properly space for metadata_lv */
 
 	if (!(metadata_lv = lv_create_single(pool_lv->vg, &lvc)))
-		return_0;
-
-	if (!lv_rename_update(pool_lv->vg->cmd, metadata_lv, name, 0))
 		return_0;
 
 	return metadata_lv;
@@ -737,6 +734,7 @@ int handle_pool_metadata_spare(struct volume_group *vg, uint32_t extents,
 		extents = MAX_SIZE;
 
 	if (!lv) {
+		log_debug("Adding new pool metadata spare %u extents.", extents);
 		if (!_alloc_pool_metadata_spare(vg, extents, pvh))
 			return_0;
 
@@ -746,6 +744,8 @@ int handle_pool_metadata_spare(struct volume_group *vg, uint32_t extents,
 	seg = last_seg(lv);
 	seg_mirrors = lv_mirror_count(lv);
 
+	log_debug("Extending pool metadata spare from %u to %u extents.",
+		  lv->le_count, extents);
 	/* Check spare LV is big enough and preserve segtype */
 	if ((lv->le_count < extents) && seg &&
 	    !lv_extend(lv, seg->segtype,

@@ -144,28 +144,6 @@ int lvmcache_found_duplicate_vgnames(void)
 	return _found_duplicate_vgnames;
 }
 
-static struct device_list *_get_devl_in_device_list(struct device *dev, struct dm_list *head)
-{
-	struct device_list *devl;
-
-	dm_list_iterate_items(devl, head) {
-		if (devl->dev == dev)
-			return devl;
-	}
-	return NULL;
-}
-
-int dev_in_device_list(struct device *dev, struct dm_list *head)
-{
-	struct device_list *devl;
-
-	dm_list_iterate_items(devl, head) {
-		if (devl->dev == dev)
-			return 1;
-	}
-	return 0;
-}
-
 bool lvmcache_has_duplicate_devs(void)
 {
 	if (dm_list_empty(&_unused_duplicates) && dm_list_empty(&_initial_duplicates))
@@ -192,11 +170,11 @@ void lvmcache_del_dev_from_duplicates(struct device *dev)
 {
 	struct device_list *devl;
 
-	if ((devl = _get_devl_in_device_list(dev, &_initial_duplicates))) {
+	if ((devl = device_list_find_dev(&_initial_duplicates, dev))) {
 		log_debug_cache("delete dev from initial duplicates %s", dev_name(dev));
 		dm_list_del(&devl->list);
 	}
-	if ((devl = _get_devl_in_device_list(dev, &_unused_duplicates))) {
+	if ((devl = device_list_find_dev(&_unused_duplicates, dev))) {
 		log_debug_cache("delete dev from unused duplicates %s", dev_name(dev));
 		dm_list_del(&devl->list);
 	}
@@ -605,7 +583,7 @@ int vg_has_duplicate_pvs(struct volume_group *vg)
 
 bool lvmcache_dev_is_unused_duplicate(struct device *dev)
 {
-	return dev_in_device_list(dev, &_unused_duplicates) ? true : false;
+	return device_list_find_dev(&_unused_duplicates, dev) ? true : false;
 }
 
 static void _warn_unused_duplicates(struct cmd_context *cmd)
@@ -644,13 +622,18 @@ static int _all_multipath_components(struct cmd_context *cmd, struct lvmcache_in
 	struct device *dev_mp = NULL;
 	struct device *dev1 = NULL;
 	struct device *dev;
+	char wwid1_buf[DEV_WWID_SIZE] = { 0 };
+	char wwid_buf[DEV_WWID_SIZE] = { 0 };
 	const char *wwid1 = NULL;
-	const char *wwid;
+	const char *wwid = NULL;
 	int diff_wwid = 0;
 	int same_wwid = 0;
 	int dev_is_mp;
 
 	*dev_mpath = NULL;
+
+	if (!find_config_tree_bool(cmd, devices_multipath_component_detection_CFG, NULL))
+		return 0;
 
 	/* This function only makes sense with more than one dev. */
 	if ((info && dm_list_empty(altdevs)) || (!info && (dm_list_size(altdevs) == 1))) {
@@ -664,14 +647,23 @@ static int _all_multipath_components(struct cmd_context *cmd, struct lvmcache_in
 		dev = info->dev;
 		dev_is_mp = (cmd->dev_types->device_mapper_major == MAJOR(dev->dev)) && dev_has_mpath_uuid(cmd, dev, NULL);
 
+		/*
+		 * dev_mpath_component_wwid allocates wwid from dm_pool,
+		 * device_id_system_read does not and needs free.
+		 */
+
 		if (dev_is_mp) {
 			if ((wwid1 = dev_mpath_component_wwid(cmd, dev))) {
+				strncpy(wwid1_buf, wwid1, DEV_WWID_SIZE-1);
 				dev_mp = dev;
 				dev1 = dev;
 			}
 		} else {
-			if ((wwid1 = device_id_system_read(cmd, dev, DEV_ID_TYPE_SYS_WWID)))
+			if ((wwid1 = device_id_system_read(cmd, dev, DEV_ID_TYPE_SYS_WWID))) {
+				strncpy(wwid1_buf, wwid1, DEV_WWID_SIZE-1);
+				free((char *)wwid1);
 				dev1 = dev;
+			}
 		}
 	}
 
@@ -679,39 +671,44 @@ static int _all_multipath_components(struct cmd_context *cmd, struct lvmcache_in
 		dev = devl->dev;
 		dev_is_mp = (cmd->dev_types->device_mapper_major == MAJOR(dev->dev)) && dev_has_mpath_uuid(cmd, dev, NULL);
 
-		if (dev_is_mp)
-			wwid = dev_mpath_component_wwid(cmd, dev);
-		else
-			wwid = device_id_system_read(cmd, dev, DEV_ID_TYPE_SYS_WWID);
+		if (dev_is_mp) {
+			if ((wwid = dev_mpath_component_wwid(cmd, dev)))
+				strncpy(wwid_buf, wwid, DEV_WWID_SIZE-1);
+		} else {
+			if ((wwid = device_id_system_read(cmd, dev, DEV_ID_TYPE_SYS_WWID))) {
+				strncpy(wwid_buf, wwid, DEV_WWID_SIZE-1);
+				free((char *)wwid);
+			}
+		}
 
-		if (!wwid && wwid1) {
+		if (!wwid_buf[0] && wwid1_buf[0]) {
 			log_debug("Different wwids for duplicate PVs %s %s %s none",
-				  dev_name(dev1), wwid1, dev_name(dev));
+				  dev_name(dev1), wwid1_buf, dev_name(dev));
 			diff_wwid++;
 			continue;
 		}
 
-		if (!wwid)
+		if (!wwid_buf[0])
 			continue;
 
-		if (!wwid1) {
-			wwid1 = wwid;
+		if (!wwid1_buf[0]) {
+			memcpy(wwid1_buf, wwid_buf, DEV_WWID_SIZE-1);
 			dev1 = dev;
 			continue;
 		}
 
 		/* Different wwids indicates these are not multipath components. */
-		if (strcmp(wwid1, wwid)) {
+		if (strcmp(wwid1_buf, wwid_buf)) {
 			log_debug("Different wwids for duplicate PVs %s %s %s %s",
-				  dev_name(dev1), wwid1, dev_name(dev), wwid);
+				  dev_name(dev1), wwid1_buf, dev_name(dev), wwid_buf);
 			diff_wwid++;
 			continue;
 		}
 
 		/* Different mpath devs with the same wwid shouldn't happen. */
 		if (dev_is_mp && dev_mp) {
-			log_print("Found multiple multipath devices for PVID %s WWID %s: %s %s",
-				   pvid, wwid1, dev_name(dev_mp), dev_name(dev));
+			log_print_unless_silent("Found multiple multipath devices for PVID %s WWID %s: %s %s.",
+						pvid, wwid1_buf, dev_name(dev_mp), dev_name(dev));
 			continue;
 		}
 
@@ -727,7 +724,7 @@ static int _all_multipath_components(struct cmd_context *cmd, struct lvmcache_in
 		return 0;
 
 	if (dev_mp)
-		log_debug("Found multipath device %s for PVID %s WWID %s.", dev_name(dev_mp), pvid, wwid1);
+		log_debug("Found multipath device %s for PVID %s WWID %s.", dev_name(dev_mp), pvid, wwid1_buf);
 
 	*dev_mpath = dev_mp;
 	return 1;
@@ -915,7 +912,7 @@ next:
 			}
 
 			/* Remove dev_mpath from altdevs. */
-			if ((devl = _get_devl_in_device_list(dev_mpath, &altdevs)))
+			if ((devl = device_list_find_dev(&altdevs, dev_mpath)))
 				dm_list_del(&devl->list);
 
 			/* Remove info from lvmcache that came from the component dev. */
@@ -982,7 +979,7 @@ next:
 			}
 
 			/* Remove dev_md from altdevs. */
-			if ((devl = _get_devl_in_device_list(dev_md, &altdevs)))
+			if ((devl = device_list_find_dev(&altdevs, dev_md)))
 				dm_list_del(&devl->list);
 
 			/* Remove info from lvmcache that came from the component dev. */
@@ -1010,7 +1007,7 @@ next:
 			}
 
 			/* Remove dev_md from altdevs. */
-			if ((devl = _get_devl_in_device_list(dev_md, &altdevs)))
+			if ((devl = device_list_find_dev(&altdevs, dev_md)))
 				dm_list_del(&devl->list);
 		}
 
@@ -1088,8 +1085,8 @@ next:
 		if (dev1 == dev2)
 			continue;
 
-		prev_unchosen1 = dev_in_device_list(dev1, &_unused_duplicates);
-		prev_unchosen2 = dev_in_device_list(dev2, &_unused_duplicates);
+		prev_unchosen1 = device_list_find_dev(&_unused_duplicates, dev1) ? 1 :0;
+		prev_unchosen2 = device_list_find_dev(&_unused_duplicates, dev2) ? 1 :0;
 
 		if (!prev_unchosen1 && !prev_unchosen2) {
 			/*
@@ -1099,8 +1096,8 @@ next:
 			 * want the same duplicate preference to be preserved
 			 * in each instance of lvmcache for a single command.
 			 */
-			prev_unchosen1 = dev_in_device_list(dev1, &_prev_unused_duplicate_devs);
-			prev_unchosen2 = dev_in_device_list(dev2, &_prev_unused_duplicate_devs);
+			prev_unchosen1 = device_list_find_dev(&_prev_unused_duplicate_devs, dev1) ? 1 :0;
+			prev_unchosen2 = device_list_find_dev(&_prev_unused_duplicate_devs, dev2) ? 1 : 0;
 		}
 
 		dev1_major = MAJOR(dev1->dev);
@@ -1277,7 +1274,7 @@ next:
 	if (!info) {
 		log_debug_cache("PV %s with duplicates will use %s.", pvid, dev_name(dev1));
 
-		if (!(devl_add = _get_devl_in_device_list(dev1, &altdevs))) {
+		if (!(devl_add = device_list_find_dev(&altdevs, dev1))) {
 			/* shouldn't happen */
 			log_error(INTERNAL_ERROR "PV %s with duplicates no alternate list entry for %s", pvid, dev_name(dev1));
 			dm_list_splice(&new_unused, &altdevs);
@@ -1296,7 +1293,7 @@ next:
 		 * for the current lvmcache device to drop.
 		 */
 
-		if (!(devl_add = _get_devl_in_device_list(dev1, &altdevs))) {
+		if (!(devl_add = device_list_find_dev(&altdevs, dev1))) {
 			/* shouldn't happen */
 			log_error(INTERNAL_ERROR "PV %s with duplicates no alternate list entry for %s", pvid, dev_name(dev1));
 			dm_list_splice(&new_unused, &altdevs);
@@ -1506,6 +1503,9 @@ void lvmcache_extra_md_component_checks(struct cmd_context *cmd)
 	 */
 
 	dm_list_iterate_items_safe(vginfo, vginfo2, &_vginfos) {
+		char vgid[ID_LEN + 1] __attribute__((aligned(8))) = { 0 };
+		memcpy(vgid, vginfo->vgid, ID_LEN);
+
 		dm_list_iterate_items_safe(info, info2, &vginfo->infos) {
 			dev = info->dev;
 			device_hint = _get_pvsummary_device_hint(dev->pvid);
@@ -1560,6 +1560,10 @@ void lvmcache_extra_md_component_checks(struct cmd_context *cmd)
 				/* lvmcache_del will also delete vginfo if info was last one */
 				lvmcache_del(info);
 				cmd->filter->wipe(cmd, cmd->filter, dev, NULL);
+
+				/* If vginfo was deleted don't continue using vginfo->infos */
+				if (!_search_vginfos_list(NULL, vgid))
+					break;
 			}
 		}
 	}
@@ -1612,7 +1616,24 @@ int lvmcache_label_scan(struct cmd_context *cmd)
 	 * with infos/vginfos based on reading headers from
 	 * each device, and a vg summary from each mda.
 	 */
-	label_scan(cmd);
+	if (!label_scan(cmd))
+		return_0;
+
+	/*
+	 * device_ids_validate() found devices using a sys_serial device id
+	 * which had a PVID on disk that did not match the PVID in the devices
+	 * file.  Serial numbers may not always be unique, so any device with
+	 * the same serial number is found and searched for the correct PVID.
+	 * If the PVID is found on a device that has not been scanned, then
+	 * it needs to be scanned so it can be used.
+	 */
+	if (!dm_list_empty(&cmd->device_ids_check_serial)) {
+		struct dm_list scan_devs;
+		dm_list_init(&scan_devs);
+		device_ids_check_serial(cmd, &scan_devs, NULL, 0);
+		if (!dm_list_empty(&scan_devs))
+			label_scan_devs(cmd, cmd->filter, &scan_devs);
+	}
 
 	/*
 	 * When devnames are used as device ids (which is dispreferred),
@@ -2257,7 +2278,7 @@ int lvmcache_update_vgname_and_id(struct cmd_context *cmd, struct lvmcache_info 
  * vginfo/info.  PVs that don't hold VG metadata weren't attached to the vginfo
  * during label scan, and PVs with outdated metadata (claiming to be in the VG,
  * but not listed in the latest metadata) were attached to the vginfo, but
- * shouldn't be.  After vg_read() gets the full metdata in the form of a 'vg',
+ * shouldn't be.  After vg_read() gets the full metadata in the form of a 'vg',
  * this function is called to fix up the lvmcache representation of the VG
  * using the 'vg'.
  */
@@ -2494,7 +2515,7 @@ struct lvmcache_info *lvmcache_add(struct cmd_context *cmd, struct labeller *lab
 			memcpy(dev->pvid, pvid, ID_LEN);
 
 			/* shouldn't happen */
-			if (dev_in_device_list(dev, &_initial_duplicates))
+			if (device_list_find_dev(&_initial_duplicates, dev))
 				log_debug_cache("Initial duplicate already in list %s", dev_name(dev));
 			else {
 				/*

@@ -277,7 +277,7 @@ static int _info_run(const char *dlid, struct dm_info *dminfo,
 	int dmtask;
 	int with_flush; /* TODO: arg for _info_run */
 	void *target = NULL;
-	uint64_t target_start, target_length, start, length, length_crop = 0;
+	uint64_t target_start, target_length, start, extent_size, length, length_crop = 0;
 	char *target_name, *target_params;
 	const char *devname;
 
@@ -306,8 +306,8 @@ static int _info_run(const char *dlid, struct dm_info *dminfo,
 
 	/* Query status only for active device */
 	if (seg_status && dminfo->exists) {
-		start = length = seg_status->seg->lv->vg->extent_size;
-		start *= seg_status->seg->le;
+		extent_size = length = seg_status->seg->lv->vg->extent_size;
+		start = extent_size * seg_status->seg->le;
 		length *= _seg_len(seg_status->seg);
 
 		/* Uses max DM_THIN_MAX_METADATA_SIZE sectors for metadata device */
@@ -328,6 +328,8 @@ static int _info_run(const char *dlid, struct dm_info *dminfo,
 
 			if ((start == target_start) &&
 			    ((length == target_length) ||
+			     ((lv_is_vdo_pool(seg_status->seg->lv)) && /* should fit within extent size */
+			      (length < target_length) && ((length + extent_size) > target_length)) ||
 			     (length_crop && (length_crop == target_length))))
 				break; /* Keep target_params when matching segment is found */
 
@@ -1068,7 +1070,7 @@ bad:
 	return r;
 }
 
-static int _thin_lv_has_device_id(struct dm_pool *mem, const struct logical_volume *lv,
+static int _lv_has_thin_device_id(struct dm_pool *mem, const struct logical_volume *lv,
 				  const char *layer, unsigned device_id)
 {
 	char *dlid;
@@ -1955,6 +1957,71 @@ out:
 	return r;
 }
 
+int dev_manager_vdo_pool_size_config(struct dev_manager *dm,
+				     const struct logical_volume *lv,
+				     struct vdo_pool_size_config *cfg)
+{
+	const char *dlid;
+	struct dm_info info;
+	uint64_t start, length;
+	struct dm_task *dmt = NULL;
+	char *type = NULL;
+	char *params = NULL;
+	int r = 0;
+	unsigned version = 0;
+
+	memset(cfg, 0, sizeof(*cfg));
+
+	if (!(dlid = build_dm_uuid(dm->mem, lv, lv_layer(lv))))
+		return_0;
+
+	if (!(dmt = _setup_task_run(DM_DEVICE_TABLE, &info, NULL, dlid, 0, 0, 0, 0, 0, 0)))
+		return_0;
+
+	if (!info.exists)
+		goto inactive; /* VDO device is not active, should not happen here... */
+
+	log_debug_activation("Checking VDO pool table line for LV %s.",
+			     display_lvname(lv));
+
+	if (dm_get_next_target(dmt, NULL, &start, &length, &type, &params)) {
+		log_error("More then one table line found for %s.",
+			  display_lvname(lv));
+		goto out;
+	}
+
+	if (!type || strcmp(type, TARGET_NAME_VDO)) {
+		log_error("Expected %s segment type but got %s instead.",
+			  TARGET_NAME_VDO, type ? type : "NULL");
+		goto out;
+	}
+
+	if (sscanf(params, "V%u %*s " FMTu64 " %*u " FMTu32,
+		   &version, &cfg->physical_size, &cfg->block_map_cache_size_mb) != 3) {
+		log_error("Failed to parse VDO parameters %s for LV %s.",
+			  params, display_lvname(lv));
+		goto out;
+	}
+
+	switch (version) {
+	case 2: break;
+	case 4: break;
+	default: log_warn("WARNING: Unknown VDO table line version %u.", version);
+	}
+
+	cfg->virtual_size = length;
+	cfg->physical_size *= 8; // From 4K unit to 512B
+	cfg->block_map_cache_size_mb /= 256; // From 4K unit to MiB
+	cfg->index_memory_size_mb = first_seg(lv)->vdo_params.index_memory_size_mb; // Preserved
+
+inactive:
+	r = 1;
+out:
+	dm_task_destroy(dmt);
+
+	return r;
+}
+
 
 /*************************/
 /*  NEW CODE STARTS HERE */
@@ -1999,6 +2066,8 @@ int dev_manager_mknodes(const struct logical_volume *lv)
 		/* read-only component LV is also made visible */
 		if (_lv_has_mknode(lv) || (dminfo.read_only && lv_is_component(lv)))
 			r = _dev_manager_lv_mknodes(lv);
+		else
+			r = 1;
 	} else
 		r = _dev_manager_lv_rmnodes(lv);
 
@@ -2390,8 +2459,6 @@ static int _pool_callback(struct dm_tree_node *node,
 			  dm_node_callback_t type, void *cb_data)
 {
 	int ret, status = 0, fd;
-	const struct dm_config_node *cn;
-	const struct dm_config_value *cv;
 	const struct pool_cb_data *data = cb_data;
 	const struct logical_volume *pool_lv = data->pool_lv;
 	const struct logical_volume *mlv = first_seg(pool_lv)->metadata_lv;
@@ -2399,11 +2466,11 @@ static int _pool_callback(struct dm_tree_node *node,
 	long buf[64 / sizeof(long)]; /* buffer for short disk header (64B) */
 	int args = 0;
 	char *mpath;
-	const char *argv[19] = { /* Max supported 15 args */
+	const char *argv[DEFAULT_MAX_EXEC_ARGS + 7] = { /* Max supported 15 args */
 		find_config_tree_str_allow_empty(cmd, data->exec, NULL)
 	};
 
-	if (!*argv[0]) /* *_check tool is unconfigured/disabled with "" setting */
+	if (!argv[0] || !*argv[0]) /* *_check tool is unconfigured/disabled with "" setting */
 		return 1;
 
 	if (lv_is_cache_vol(pool_lv)) {
@@ -2450,25 +2517,8 @@ static int _pool_callback(struct dm_tree_node *node,
 		}
 	}
 
-	if (!(cn = find_config_tree_array(cmd, data->opts, NULL))) {
-		log_error(INTERNAL_ERROR "Unable to find configuration for pool check options.");
-		return 0;
-	}
-
-	for (cv = cn->v; cv && args < 16; cv = cv->next) {
-		if (cv->type != DM_CFG_STRING) {
-			log_error("Invalid string in config file: "
-				  "global/%s_check_options.",
-				  data->global);
-			return 0;
-		}
-		argv[++args] = cv->v.str;
-	}
-
-	if (args == 16) {
-		log_error("Too many options for %s command.", argv[0]);
-		return 0;
-	}
+	if (!prepare_exec_args(cmd, argv, &args, data->opts))
+		return_0;
 
 	argv[++args] = mpath;
 
@@ -2933,34 +2983,51 @@ static int _add_error_area(struct dev_manager *dm, struct dm_tree_node *node,
 	return 1;
 }
 
+static int _bad_pv_area(struct lv_segment *seg, uint32_t s)
+{
+	struct stat info;
+	const char *name;
+	struct device *dev;
+
+	if (!seg_pvseg(seg, s))
+		return 1;
+	if (!seg_pv(seg, s))
+		return 1;
+	if (!(dev = seg_dev(seg, s)))
+		return 1;
+	if (dm_list_empty(&dev->aliases))
+		return 1;
+	/* FIXME Avoid repeating identical stat in dm_tree_node_add_target_area */
+	name = dev_name(dev);
+	if (stat(name, &info) < 0)
+		return 1;
+	if (!S_ISBLK(info.st_mode))
+		return 1;
+	return 0;
+}
+
 int add_areas_line(struct dev_manager *dm, struct lv_segment *seg,
 		   struct dm_tree_node *node, uint32_t start_area,
 		   uint32_t areas)
 {
+	struct cmd_context *cmd = seg->lv->vg->cmd;
 	uint64_t extent_size = seg->lv->vg->extent_size;
 	uint32_t s;
 	char *dlid;
-	struct stat info;
 	const char *name;
 	unsigned num_error_areas = 0;
 	unsigned num_existing_areas = 0;
 
-	/* FIXME Avoid repeating identical stat in dm_tree_node_add_target_area */
 	for (s = start_area; s < areas; s++) {
-
-		/* FIXME: dev_name() does not return NULL!  It needs to check if dm_list_empty(&dev->aliases)
-		   but this knot of logic is too complex to pull apart without careful deconstruction. */
-
-		if ((seg_type(seg, s) == AREA_PV &&
-		     (!seg_pvseg(seg, s) || !seg_pv(seg, s) || !seg_dev(seg, s) ||
-		       !(name = dev_name(seg_dev(seg, s))) || !*name ||
-		       stat(name, &info) < 0 || !S_ISBLK(info.st_mode))) ||
-		    (seg_type(seg, s) == AREA_LV && !seg_lv(seg, s))) {
-			if (!seg->lv->vg->cmd->partial_activation) {
-				if (!seg->lv->vg->cmd->degraded_activation ||
-				    !lv_is_raid_type(seg->lv)) {
-					log_error("Aborting.  LV %s is now incomplete "
-						  "and '--activationmode partial' was not specified.",
+		if (((seg_type(seg, s) == AREA_PV) && _bad_pv_area(seg, s)) ||
+		    ((seg_type(seg, s) == AREA_LV) && !seg_lv(seg, s))) {
+			if (!cmd->partial_activation) {
+				if (!cmd->degraded_activation ||
+				    (!lv_is_raid_type(seg->lv) &&
+				     !lv_is_integrity(seg->lv) &&
+				     !lv_is_integrity_metadata(seg->lv) &&
+				     !lv_is_integrity_origin(seg->lv))) {
+					log_error("Aborting.  LV %s is incomplete and --activationmode partial was not specified.",
 						  display_lvname(seg->lv));
 					return 0;
 				}
@@ -3048,7 +3115,7 @@ static int _add_layer_target_to_dtree(struct dev_manager *dm,
 
 	/* Add linear mapping over layered LV */
 	/* From VDO layer expose ONLY vdo pool header, we would need to use virtual size otherwise */
-	if (!add_linear_area_to_dtree(dnode, lv_is_vdo_pool(lv) ? first_seg(lv)->vdo_pool_header_size : lv->size,
+	if (!add_linear_area_to_dtree(dnode, lv_is_vdo_pool(lv) ? 8 : lv->size,
 				      lv->vg->extent_size,
 				      lv->vg->cmd->use_linear_target,
 				      lv->vg->name, lv->name) ||
@@ -3462,7 +3529,7 @@ static int _add_new_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 		 */
 		if ((dinfo = _cached_dm_info(dm->mem, dtree, lv, NULL))) {
 			/* Merging origin LV is present, check if mergins is already running. */
-			if ((seg_is_thin_volume(seg) && _thin_lv_has_device_id(dm->mem, lv, NULL, seg->device_id)) ||
+			if ((seg_is_thin_volume(seg) && _lv_has_thin_device_id(dm->mem, lv, NULL, seg->device_id)) ||
 			    (!seg_is_thin_volume(seg) && lv_has_target_type(dm->mem, lv, NULL, TARGET_NAME_SNAPSHOT_MERGE))) {
 				log_debug_activation("Merging of snapshot volume %s to origin %s is in progress.",
 						     display_lvname(seg->lv), display_lvname(seg->lv));
@@ -3520,9 +3587,6 @@ static int _add_new_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 	if ((dnode = dm_tree_find_node_by_uuid(dtree, dlid)) &&
 	    dm_tree_node_get_context(dnode))
 		return 1;
-
-	lvlayer->lv = lv;
-	lvlayer->visible_component = (laopts->component_lv == lv) ? 1 : 0;
 
 	/*
 	 * Add LV to dtree.
@@ -3627,6 +3691,8 @@ static int _add_new_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 	if (lv_is_cache(lv) && lv_is_cache_vol(first_seg(lv)->pool_lv) &&
 	    /* Register callback only for layer activation or non-layered cache LV */
 	    (layer || !lv_layer(lv)) &&
+	    /* Register callback when cachevol LV is NOT already active */
+	    !_cached_dm_info(dm->mem, dtree, first_seg(lv)->pool_lv, NULL) &&
 	    !_pool_register_callback(dm, dnode, lv))
 		return_0;
 
@@ -3842,10 +3908,11 @@ static int _tree_action(struct dev_manager *dm, const struct logical_volume *lv,
 	if (!seg_is_striped_target(first_seg(lv)) || (action == CLEAN))
 		dm->cmd->disable_dm_devs = 1;
 
-	if (!(dtree = _create_partial_dtree(dm, lv, laopts->origin_only)))
-		return_0;
-
+	dtree = _create_partial_dtree(dm, lv, laopts->origin_only);
 	dm->cmd->disable_dm_devs = tmp_state;
+
+	if (!dtree)
+		return_0;
 
 	if (!(root = dm_tree_find_node(dtree, 0, 0))) {
 		log_error("Lost dependency tree root node.");
@@ -3907,6 +3974,8 @@ static int _tree_action(struct dev_manager *dm, const struct logical_volume *lv,
 		 * non 'thin pool/volume' and  size increase */
 		else if (!lv_is_thin_volume(lv) &&
 			 !lv_is_thin_pool(lv) &&
+			 !lv_is_vdo(lv) &&
+			 !lv_is_vdo_pool(lv) &&
 			 dm_tree_node_size_changed(root))
 			dm->flush_required = 1;
 
@@ -4024,4 +4093,79 @@ out:
 	dm_tree_free(dtree);
 
 	return r;
+}
+
+/*
+ * crypt offset is usually the LUKS header size but can be larger.
+ * The LUKS header is usually 2MB for LUKS1 and 16MB for LUKS2.
+ * The offset needs to be subtracted from the LV size to get the
+ * size used to resize the crypt device.
+ */
+int get_crypt_table_offset(dev_t crypt_devt, uint32_t *offset_bytes)
+{
+	struct dm_task *dmt = dm_task_create(DM_DEVICE_TABLE);
+	uint64_t start, length;
+	char *target_type = NULL;
+	void *next = NULL;
+	char *params = NULL;
+	char offset_str[32] = { 0 };
+	int copy_offset = 0;
+	int spaces = 0;
+	unsigned i, i_off = 0;
+
+	if (!dmt)
+		return_0;
+
+	if (!dm_task_set_major_minor(dmt, (int)MAJOR(crypt_devt), (int)MINOR(crypt_devt), 0)) {
+		dm_task_destroy(dmt);
+		return_0;
+	}
+
+	/* Non-blocking status read */
+	if (!dm_task_no_flush(dmt))
+		log_warn("WARNING: Can't set no_flush for dm status.");
+
+	if (!dm_task_run(dmt)) {
+		dm_task_destroy(dmt);
+		return_0;
+	}
+
+	next = dm_get_next_target(dmt, next, &start, &length, &target_type, &params);
+
+	if (!target_type || !params || strcmp(target_type, "crypt")) {
+		dm_task_destroy(dmt);
+		return_0;
+	}
+
+	/*
+	 * get offset from params string:
+	 * <cipher> <key> <iv_offset> <device> <offset> [<#opt_params> <opt_params>]
+	 * <offset> is reported in 512 byte sectors.
+	 */
+	for (i = 0; i < strlen(params); i++) {
+		if (params[i] == ' ') {
+			spaces++;
+			if (spaces == 4)
+				copy_offset = 1;
+			if (spaces == 5)
+				break;
+			continue;
+		}
+		if (!copy_offset)
+			continue;
+
+		offset_str[i_off++] = params[i];
+
+		if (i_off == sizeof(offset_str)) {
+			offset_str[0] = '\0';
+			break;
+		}
+	}
+	dm_task_destroy(dmt);
+
+	if (!offset_str[0])
+		return_0;
+
+	*offset_bytes = ((uint32_t)strtoul(offset_str, NULL, 0) * 512);
+	return 1;
 }

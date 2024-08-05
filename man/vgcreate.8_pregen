@@ -63,7 +63,7 @@ device.
 .br
 [    \fB--\fP[\fBvg\fP]\fBmetadatacopies\fP \fBall\fP|\fBunmanaged\fP|\fINumber\fP ]
 .br
-[    \fB--reportformat\fP \fBbasic\fP|\fBjson\fP ]
+[    \fB--reportformat\fP \fBbasic\fP|\fBjson\fP|\fBjson_std\fP ]
 .br
 [    \fB--dataalignment\fP \fISize\fP[k|UNIT] ]
 .br
@@ -323,7 +323,7 @@ incorrect results.
 Sets the physical extent size of PVs in the VG.
 The value must be either a power of 2 of at least 1 sector
 (where the sector size is the largest sector size of the PVs
-currently used in the VG), or at least 128KiB.
+currently used in the VG), or at least 128 KiB.
 Once this value has been set, it is difficult to change
 without recreating the VG, unless no extents need moving.
 .
@@ -351,14 +351,16 @@ Suppress output and log messages. Overrides --debug and --verbose.
 Repeat once to also suppress any prompts with answer 'no'.
 .
 .HP
-\fB--reportformat\fP \fBbasic\fP|\fBjson\fP
+\fB--reportformat\fP \fBbasic\fP|\fBjson\fP|\fBjson_std\fP
 .br
 Overrides current output format for reports which is defined globally by
 the report/output_format setting in \fBlvm.conf\fP(5).
 \fBbasic\fP is the original format with columns and rows.
 If there is more than one report per command, each report is prefixed
 with the report name for identification. \fBjson\fP produces report
-output in JSON format. See \fBlvmreport\fP(7) for more information.
+output in JSON format. \fBjson_std\fP produces report output in
+JSON format which is more compliant with JSON standard.
+See \fBlvmreport\fP(7) for more information.
 .
 .HP
 \fB--setautoactivation\fP \fBy\fP|\fBn\fP

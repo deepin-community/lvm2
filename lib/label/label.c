@@ -266,7 +266,7 @@ static bool _in_bcache(struct device *dev)
 
 static struct labeller *_find_lvm_header(struct device *dev,
 				   char *headers_buf,
-				   int headers_buf_size,
+				   size_t headers_buf_size,
 				   uint64_t *label_sector,
 				   uint64_t block_sector,
 				   uint64_t start_sector)
@@ -341,7 +341,7 @@ static struct labeller *_find_lvm_header(struct device *dev,
  * are performed in the processing functions to get that data.
  */
 static int _process_block(struct cmd_context *cmd, struct dev_filter *f,
-			  struct device *dev, char *headers_buf, int headers_buf_size,
+			  struct device *dev, char *headers_buf, size_t headers_buf_size,
 			  uint64_t block_sector, uint64_t start_sector,
 			  int *is_lvm_device)
 {
@@ -372,7 +372,7 @@ static int _process_block(struct cmd_context *cmd, struct dev_filter *f,
 			 * that now.  It's unlikely this is actually needed.
 			 */
 			if (dev->pvid[0]) {
-				log_print("Clear pvid and info for filtered dev %s", dev_name(dev));
+				log_print_unless_silent("Clear pvid and info for filtered dev %s.", dev_name(dev));
 				lvmcache_del_dev(dev);
 				memset(dev->pvid, 0, sizeof(dev->pvid));
 			}
@@ -399,7 +399,7 @@ static int _process_block(struct cmd_context *cmd, struct dev_filter *f,
 
 		/* See comment above */
 		if (dev->pvid[0]) {
-			log_print("Clear pvid and info for no lvm header %s", dev_name(dev));
+			log_print_unless_silent("Clear pvid and info for no lvm header %s", dev_name(dev));
 			lvmcache_del_dev(dev);
 			memset(dev->pvid, 0, sizeof(dev->pvid));
 		}
@@ -801,7 +801,7 @@ static int _setup_bcache(void)
 	}
 
 	if (!(scan_bcache = bcache_create(BCACHE_BLOCK_SIZE_IN_SECTORS, cache_blocks, ioe))) {
-		log_error("Failed to create bcache with %d cache blocks.", cache_blocks);
+		log_error("Failed to set up io layer with %d blocks.", cache_blocks);
 		return 0;
 	}
 
@@ -993,7 +993,7 @@ int label_scan_vg_online(struct cmd_context *cmd, const char *vgname,
 	struct pv_online *po;
 	struct device_list *devl, *devl2;
 	int relax_deviceid_filter = 0;
-	int metadata_pv_count;
+	unsigned metadata_pv_count;
 	int try_dev_scan = 0;
 
 	dm_list_init(&pvs_online);
@@ -1099,12 +1099,23 @@ int label_scan_vg_online(struct cmd_context *cmd, const char *vgname,
 		log_debug("Skipping device_id filtering due to devname ids.");
 	}
 
+	/*
+	 * See corresponding code in pvscan.  This function is used during
+	 * startup autoactivation when udev has not created all symlinks, so
+	 * regex filter containing symlinks doesn't work.  pvscan has code
+	 * to properly check devs against the filter using DEVLINKS.  The
+	 * pvscan will only create pvs_online files for devs that pass the
+	 * filter.  We get devs from the pvs_online files, so we inherit the
+	 * regex filtering from pvscan and don't have to do it ourself.
+	 */
+	cmd->filter_regex_skip = 1;
+
 	cmd->filter_nodata_only = 1;
 
 	dm_list_iterate_items_safe(devl, devl2, &devs) {
 		if (!cmd->filter->passes_filter(cmd, cmd->filter, devl->dev, NULL)) {
-			log_print("%s excluded: %s.",
-				  dev_name(devl->dev), dev_filtered_reason(devl->dev));
+			log_print_unless_silent("%s excluded: %s.",
+						dev_name(devl->dev), dev_filtered_reason(devl->dev));
 			dm_list_del(&devl->list);
 			dm_list_add(&devs_drop, &devl->list);
 		}
@@ -1135,7 +1146,7 @@ int label_scan_vg_online(struct cmd_context *cmd, const char *vgname,
 		int has_pvid;
 
 		if (!label_read_pvid(devl->dev, &has_pvid)) {
-			log_print("%s cannot read label.", dev_name(devl->dev));
+			log_print_unless_silent("%s cannot read label.", dev_name(devl->dev));
 			dm_list_del(&devl->list);
 			dm_list_add(&devs_drop, &devl->list);
 			continue;
@@ -1143,7 +1154,7 @@ int label_scan_vg_online(struct cmd_context *cmd, const char *vgname,
 
 		if (!has_pvid) {
 			/* Not an lvm device */
-			log_print("%s not an lvm device.", dev_name(devl->dev));
+			log_print_unless_silent("%s not an lvm device.", dev_name(devl->dev));
 			dm_list_del(&devl->list);
 			dm_list_add(&devs_drop, &devl->list);
 			continue;
@@ -1155,8 +1166,8 @@ int label_scan_vg_online(struct cmd_context *cmd, const char *vgname,
 		 */
 		if (relax_deviceid_filter) {
 			if (!(du = get_du_for_pvid(cmd, devl->dev->pvid))) {
-				log_print("%s excluded by devices file (checking PVID).",
-					  dev_name(devl->dev));
+				log_print_unless_silent("%s excluded by devices file (checking PVID).",
+							dev_name(devl->dev));
 				dm_list_del(&devl->list);
 				dm_list_add(&devs_drop, &devl->list);
 				continue;
@@ -1169,8 +1180,8 @@ int label_scan_vg_online(struct cmd_context *cmd, const char *vgname,
 
 		/* Applies all filters, including those that need data from dev. */
 		if (!cmd->filter->passes_filter(cmd, cmd->filter, devl->dev, NULL)) {
-			log_print("%s excluded: %s.",
-				  dev_name(devl->dev), dev_filtered_reason(devl->dev));
+			log_print_unless_silent("%s excluded: %s.",
+						dev_name(devl->dev), dev_filtered_reason(devl->dev));
 			dm_list_del(&devl->list);
 			dm_list_add(&devs_drop, &devl->list);
 		}
@@ -1178,6 +1189,8 @@ int label_scan_vg_online(struct cmd_context *cmd, const char *vgname,
 
 	if (relax_deviceid_filter)
 		cmd->filter_deviceid_skip = 0;
+
+	cmd->filter_regex_skip = 0;
 
 	free_po_list(&pvs_online);
 
@@ -1292,7 +1305,7 @@ int label_scan(struct cmd_context *cmd)
 	 * data to invalidate.)
 	 */
 	if (!(iter = dev_iter_create(NULL, 0))) {
-		log_error("Scanning failed to get devices.");
+		log_error("Failed to get device list.");
 		return 0;
 	}
 	while ((dev = dev_iter_get(cmd, iter))) {
@@ -1332,7 +1345,8 @@ int label_scan(struct cmd_context *cmd)
 			dm_list_add(&filtered_devs, &devl->list);
 
 			if (dev->pvid[0]) {
-				log_print("Clear pvid and info for filtered dev %s", dev_name(dev));
+				log_print_unless_silent("Clear pvid and info for filtered dev %s.",
+							dev_name(dev));
 				lvmcache_del_dev(dev);
 				memset(dev->pvid, 0, sizeof(dev->pvid));
 			}

@@ -1279,7 +1279,7 @@ static int res_lock(struct lockspace *ls, struct resource *r, struct action *act
 	 * be invalidated.  When we need to invalidate the lvmetad
 	 * cache, but don't have a usable r_version from the lvb,
 	 * send lvmetad new_version 0 which causes it to invalidate
-	 * the VG metdata without comparing against the currently
+	 * the VG metadata without comparing against the currently
 	 * cached VG seqno.
 	 */
 
@@ -5280,7 +5280,7 @@ static int match_dm_uuid(char *dm_uuid, char *lv_lock_uuid)
 {
 	char buf1[64];
 	char buf2[64];
-	int i, j;
+	unsigned i, j;
 
 	memset(buf1, 0, sizeof(buf1));
 	memset(buf2, 0, sizeof(buf2));
@@ -5954,7 +5954,18 @@ static void adopt_locks(void)
 	}
 
 
-	/* FIXME: purge any remaining orphan locks in each rejoined ls? */
+	/* Try to purge the orphan locks when lock manager is dlm */
+	if (lm_support_dlm() && lm_is_running_dlm()) {
+		list_for_each_entry(ls, &ls_found, list) {
+			pthread_mutex_lock(&lockspaces_mutex);
+			ls1 = find_lockspace_name(ls->name);
+			if (ls1) {
+				log_debug("ls: %s purge locks", ls->name);
+				lm_purge_locks_dlm(ls1);
+			}
+			pthread_mutex_unlock(&lockspaces_mutex);
+		}
+	}
 
 	if (count_start_fail || count_adopt_fail)
 		goto fail;
@@ -6269,9 +6280,8 @@ int main(int argc, char *argv[])
 		.daemon_fini = NULL,
 		.daemon_main = main_loop,
 	};
-	daemon_host_id_file = NULL;
 
-	static struct option long_options[] = {
+	static const struct option long_options[] = {
 		{"help",            no_argument,       0, 'h' },
 		{"version",         no_argument,       0, 'V' },
 		{"test",            no_argument,       0, 'T' },
@@ -6288,6 +6298,8 @@ int main(int argc, char *argv[])
 		{"sanlock-timeout", required_argument, 0, 'o' },
 		{0, 0, 0, 0 }
 	};
+
+	daemon_host_id_file = NULL;
 
 	while (1) {
 		int c;

@@ -1,3 +1,17 @@
+lvm2 (2.03.22-1) unstable; urgency=medium
+
+  * New upstream release.
+
+ -- Bastian Blank <waldi@debian.org>  Sat, 24 Feb 2024 16:41:00 +0100
+
+lvm2 (2.03.16-3) unstable; urgency=medium
+
+  * Remove obsolete dependency on lsb-base.
+  * Expect systemd relates files in /usr. (closes: #1052666)
+  * Move all remaining files to /usr.
+
+ -- Bastian Blank <waldi@debian.org>  Sat, 06 Jan 2024 18:47:24 +0100
+
 lvm2 (2.03.16-2) unstable; urgency=medium
 
   * Remove remaining unused init scripts.

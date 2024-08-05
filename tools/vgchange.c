@@ -386,7 +386,7 @@ static int _vgchange_pesize(struct cmd_context *cmd, struct volume_group *vg)
 	uint32_t extent_size;
 
 	if (arg_uint64_value(cmd, physicalextentsize_ARG, 0) > MAX_EXTENT_SIZE) {
-		log_warn("Physical extent size cannot be larger than %s.",
+		log_warn("WARNING: Physical extent size cannot be larger than %s.",
 			 display_size(cmd, (uint64_t) MAX_EXTENT_SIZE));
 		return 1;
 	}
@@ -394,7 +394,7 @@ static int _vgchange_pesize(struct cmd_context *cmd, struct volume_group *vg)
 	extent_size = arg_uint_value(cmd, physicalextentsize_ARG, 0);
 	/* FIXME: remove check - redundant with vg_change_pesize */
 	if (extent_size == vg->extent_size) {
-		log_warn("Physical extent size of VG %s is already %s.",
+		log_warn("WARNING: Physical extent size of VG %s is already %s.",
 			 vg->name, display_size(cmd, (uint64_t) extent_size));
 		return 1;
 	}
@@ -463,10 +463,10 @@ static int _vgchange_metadata_copies(struct cmd_context *cmd,
 
 	if (mda_copies == vg_mda_copies(vg)) {
 		if (vg_mda_copies(vg) == VGMETADATACOPIES_UNMANAGED)
-			log_warn("Number of metadata copies for VG %s is already unmanaged.",
+			log_warn("WARNING: Number of metadata copies for VG %s is already unmanaged.",
 				 vg->name);
 		else
-			log_warn("Number of metadata copies for VG %s is already %u.",
+			log_warn("WARNING: Number of metadata copies for VG %s is already %u.",
 				 vg->name, mda_copies);
 		return 1;
 	}
@@ -863,6 +863,9 @@ static int _vgchange_autoactivation_setup(struct cmd_context *cmd,
 		*flags &= ~READ_WITHOUT_LOCK;
 		cmd->can_use_one_scan = 0;
 	}
+
+	free(vgname);
+
 	return 1;
 
 }
@@ -1049,7 +1052,7 @@ static int _vgchange_locktype(struct cmd_context *cmd, struct volume_group *vg)
 	}
 
 	if (lock_type && !strcmp(vg->lock_type, lock_type)) {
-		log_warn("New lock type %s matches the current lock type %s.",
+		log_warn("WARNING: New lock type %s matches the current lock type %s.",
 			 lock_type, vg->lock_type);
 		return 1;
 	}
@@ -1383,6 +1386,24 @@ static int _vgchange_systemid_single(struct cmd_context *cmd, const char *vg_nam
 			             struct volume_group *vg,
 			             struct processing_handle *handle)
 {
+	if (arg_is_set(cmd, majoritypvs_ARG)) {
+		struct pv_list *pvl;
+		int missing_pvs = 0;
+		int found_pvs = 0;
+
+		dm_list_iterate_items(pvl, &vg->pvs) {
+			if (!pvl->pv->dev)
+				missing_pvs++;
+			else
+				found_pvs++;
+		}
+		if (found_pvs <= missing_pvs) {
+			log_error("Cannot change system ID without the majority of PVs (found %d of %d)",
+				  found_pvs, found_pvs+missing_pvs);
+			return ECMD_FAILED;
+		}
+	}
+
 	if (!_vgchange_system_id(cmd, vg))
 		return_ECMD_FAILED;
 
@@ -1414,6 +1435,9 @@ int vgchange_systemid_cmd(struct cmd_context *cmd, int argc, char **argv)
 		log_error("Failed to initialize processing handle.");
 		return ECMD_FAILED;
 	}
+
+	if (arg_is_set(cmd, majoritypvs_ARG))
+		cmd->handles_missing_pvs = 1;
 
 	ret = process_each_vg(cmd, argc, argv, NULL, NULL, READ_FOR_UPDATE, 0, handle, &_vgchange_systemid_single);
 

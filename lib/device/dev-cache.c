@@ -53,7 +53,7 @@ static struct {
 	const char *dev_dir;
 
 	int has_scanned;
-	long st_dev;
+	dev_t st_dev;
 	struct dm_list dirs;
 	struct dm_list files;
 
@@ -80,6 +80,7 @@ static void _dev_init(struct device *dev)
 
 	dm_list_init(&dev->aliases);
 	dm_list_init(&dev->ids);
+	dm_list_init(&dev->wwids);
 }
 
 void dev_destroy_file(struct device *dev)
@@ -380,6 +381,22 @@ out:
 		return 0;
 	}
 
+	return 1;
+}
+
+int get_sysfs_binary(const char *path, char *buf, size_t buf_size, int *retlen)
+{
+	int ret;
+	int fd;
+
+	fd = open(path, O_RDONLY);
+	if (fd < 0)
+		return 0;
+	ret = read(fd, buf, buf_size);
+	close(fd);
+	if (ret <= 0)
+		return 0;
+	*retlen = ret;
 	return 1;
 }
 
@@ -1336,6 +1353,7 @@ int dev_cache_exit(void)
 		dm_hash_iterate(n, _cache.names) {
 			dev = (struct device *) dm_hash_get_data(_cache.names, n);
 			free_dids(&dev->ids);
+			free_wwids(&dev->wwids);
 		}
 	}
 
@@ -1864,6 +1882,15 @@ int setup_devices(struct cmd_context *cmd)
 	file_exists = devices_file_exists(cmd);
 
 	/*
+	 * Fail if user specifies a file name that doesn't exist and
+	 * the command is not creating a new devices file.
+	 */
+	if (!file_exists && !cmd->create_edit_devices_file && cmd->devicesfile && strlen(cmd->devicesfile)) {
+		log_error("Devices file not found: %s", cmd->devices_file_path);
+		return 0;
+	}
+
+	/*
 	 * Removing the devices file is another way of disabling the use of
 	 * a devices file, unless the command creates the devices file.
 	 */
@@ -1910,10 +1937,9 @@ int setup_devices(struct cmd_context *cmd)
 
 	if (!file_exists) {
 		/*
-		 * pvcreate/vgcreate/vgimportdevices/lvmdevices-add create
-		 * a new devices file here if it doesn't exist.
-		 * They have the create_edit_devices_file flag set.
-		 * First they create/lock-ex the devices file lockfile.
+		 * pvcreate/vgcreate create a new devices file here if it
+		 * doesn't exist.  They have create_edit_devices_file=1.
+		 * First create/lock-ex the devices file lockfile.
 		 * Other commands will not use a devices file if none exists.
 		 */
 		lock_mode = LOCK_EX;
@@ -2097,10 +2123,10 @@ static char *_get_devname_from_devno(struct cmd_context *cmd, dev_t devno)
 	char devname[PATH_MAX] = { 0 };
 	char namebuf[NAME_LEN];
 	char line[1024];
-	int major = MAJOR(devno);
-	int minor = MINOR(devno);
-	int line_major;
-	int line_minor;
+	unsigned major = MAJOR(devno);
+	unsigned minor = MINOR(devno);
+	unsigned line_major;
+	unsigned line_minor;
 	uint64_t line_blocks;
 	DIR *dir;
 	struct dirent *dirent;
@@ -2205,7 +2231,6 @@ try_partition:
 int setup_devname_in_dev_cache(struct cmd_context *cmd, const char *devname)
 {
 	struct stat buf;
-	struct device *dev;
 
 	if (stat(devname, &buf) < 0) {
 		log_error("Cannot access device %s.", devname);
@@ -2220,7 +2245,7 @@ int setup_devname_in_dev_cache(struct cmd_context *cmd, const char *devname)
 	if (!_insert_dev(devname, buf.st_rdev))
 		return_0;
 
-	if (!(dev = (struct device *) dm_hash_lookup(_cache.names, devname)))
+	if (!dm_hash_lookup(_cache.names, devname))
 		return_0;
 
 	return 1;

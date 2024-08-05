@@ -231,9 +231,19 @@ int lvm_shell(struct cmd_context *cmd, struct cmdline_context *cmdline)
 
 	orig_command_log_selection = dm_pool_strdup(cmd->libmem, find_config_tree_str(cmd, log_command_log_selection_CFG, NULL));
 	log_set_report_context(LOG_REPORT_CONTEXT_SHELL);
-	log_set_report_object_type(LOG_REPORT_OBJECT_TYPE_CMD);
+	log_set_report_object_type(LOG_REPORT_OBJECT_TYPE_PRE_CMD);
 
 	while (1) {
+		/*
+		 * Note: If we need to output the log report before we get to the dm_report_group_output_and_pop_all
+		 * at the end of this loop, like hitting a failure situation before we execute the command itself,
+		 * don't forget to directly call dm_report_group_output_and_pop_all, otherwise no log meesage will
+		 * appear on output (for output formats other than 'basic').
+		 *
+		 * Obviously, you can't output the 'log report' if the error is in initializing or setting
+		 * the report itself. In this case, we can only return an error code, but no message.
+		 */
+
 		report_reset_cmdlog_seqnum();
 		if (cmd->cmd_report.log_rh) {
 			/*
@@ -245,6 +255,7 @@ int lvm_shell(struct cmd_context *cmd, struct cmdline_context *cmdline)
 				log_error("Failed to reset log report selection.");
 		}
 
+		log_set_report_object_type(LOG_REPORT_OBJECT_TYPE_PRE_CMD);
 		log_set_report(cmd->cmd_report.log_rh);
 		log_set_report_object_name_and_id(NULL, NULL);
 
@@ -265,6 +276,8 @@ int lvm_shell(struct cmd_context *cmd, struct cmdline_context *cmdline)
 			continue;
 		}
 
+		log_set_report_object_name_and_id(input, NULL);
+
 		add_history(input);
 
 		for (i = 0; i < MAX_ARGS; i++)
@@ -275,7 +288,7 @@ int lvm_shell(struct cmd_context *cmd, struct cmdline_context *cmdline)
 		if (lvm_split(input, &argc, argv, MAX_ARGS) == MAX_ARGS) {
 			_discard_log_report_content(cmd);
 			log_error("Too many arguments, sorry.");
-			continue;
+			goto report_log;
 		}
 
 		if (!argc) {
@@ -293,6 +306,7 @@ int lvm_shell(struct cmd_context *cmd, struct cmdline_context *cmdline)
 			continue;
 		}
 
+		log_set_report_object_type(LOG_REPORT_OBJECT_TYPE_CMD);
 		log_set_report_object_name_and_id(argv[0], NULL);
 
 		is_lastlog_cmd = !strcmp(argv[0], "lastlog");
@@ -320,7 +334,7 @@ int lvm_shell(struct cmd_context *cmd, struct cmdline_context *cmdline)
 
 		if (!is_lastlog_cmd)
 			_log_shell_command_status(cmd, ret);
-
+report_log:
 		log_set_report(NULL);
 		dm_report_group_output_and_pop_all(cmd->cmd_report.report_group);
 

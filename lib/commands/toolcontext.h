@@ -18,6 +18,7 @@
 
 #include "lib/device/dev-cache.h"
 #include "lib/device/dev-type.h"
+#include "lib/commands/cmd_enum.h"
 
 #include <limits.h>
 
@@ -94,6 +95,7 @@ struct cmd_context {
 	const char *name; /* needed before cmd->command is set */
 	struct command_name *cname;
 	struct command *command;
+	int command_enum; /* duplicate from command->command_enum for lib code */
 	char **argv;
 	struct arg_values *opt_arg_values;
 	struct dm_list arg_value_groups;
@@ -144,6 +146,7 @@ struct cmd_context {
 	unsigned degraded_activation:1;
 	unsigned auto_set_activation_skip:1;
 	unsigned si_unit_consistency:1;
+	unsigned report_strict_type_mode:1;
 	unsigned report_binary_values_as_numeric:1;
 	unsigned report_mark_hidden_devices:1;
 	unsigned metadata_read_only:1;
@@ -191,6 +194,7 @@ struct cmd_context {
 	unsigned create_edit_devices_file:1;	/* command expects to create and/or edit devices file */
 	unsigned edit_devices_file:1;		/* command expects to edit devices file */
 	unsigned filter_deviceid_skip:1;	/* don't use filter-deviceid */
+	unsigned filter_regex_skip:1;		/* don't use filter-regex */
 	unsigned filter_regex_with_devices_file:1; /* use filter-regex even when devices file is enabled */
 	unsigned filter_nodata_only:1;          /* only use filters that do not require data from the dev */
 	unsigned run_by_dmeventd:1;		/* command is being run by dmeventd */
@@ -204,6 +208,7 @@ struct cmd_context {
 	unsigned udevoutput:1;
 	unsigned online_vg_file_removed:1;
 	unsigned disable_dm_devs:1;		/* temporarily disable use of dm devs cache */
+	unsigned filter_regex_set_preferred_name_disable:1; /* prevent dev_set_preferred_name */
 
 	/*
 	 * Devices and filtering.
@@ -212,6 +217,7 @@ struct cmd_context {
 	struct dm_list use_devices;		/* struct dev_use for each entry in devices file */
 	const char *md_component_checks;
 	const char *search_for_devnames;	/* config file setting */
+	struct dm_list device_ids_check_serial;
 	const char *devicesfile;                /* from --devicesfile option */
 	struct dm_list deviceslist;             /* from --devices option, struct dm_str_list */
 
@@ -244,6 +250,7 @@ struct cmd_context {
 	 * Paths.
 	 */
 	const char *lib_dir;			/* cache value global/library_dir */
+	const char *device_id_sysfs_dir;
 	char system_dir[PATH_MAX];
 	char dev_dir[PATH_MAX];
 	char proc_dir[PATH_MAX];

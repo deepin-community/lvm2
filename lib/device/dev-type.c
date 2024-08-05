@@ -25,7 +25,7 @@
 #include "device_mapper/misc/dm-ioctl.h"
 
 #ifdef BLKID_WIPING_SUPPORT
-#include <blkid.h>
+#include <blkid/blkid.h>
 #endif
 
 #ifdef UDEV_SYNC_SUPPORT
@@ -89,7 +89,7 @@ int dev_is_used_by_active_lv(struct cmd_context *cmd, struct device *dev, int *u
 	DIR *d;
 	struct dirent *dirent;
 	char *holder_name;
-	int dm_dev_major, dm_dev_minor;
+	unsigned dm_dev_major, dm_dev_minor;
 	size_t lvm_prefix_len = sizeof(UUID_PREFIX) - 1;
 	size_t lvm_uuid_len = sizeof(UUID_PREFIX) - 1 + 2 * ID_LEN;
 	size_t uuid_len;
@@ -548,7 +548,7 @@ static int _has_sys_partition(struct device *dev)
 	int minor = (int) MINOR(dev->dev);
 
 	/* check if dev is a partition */
-	if (dm_snprintf(path, sizeof(path), "%s/dev/block/%d:%d/partition",
+	if (dm_snprintf(path, sizeof(path), "%sdev/block/%d:%d/partition",
 			dm_sysfs_dir(), major, minor) < 0) {
 		log_warn("WARNING: %s: partition path is too long.", dev_name(dev));
 		return 0;
@@ -775,7 +775,7 @@ int dev_get_primary_dev(struct dev_types *dt, struct device *dev, dev_t *result)
 	 * - basename ../../block/md0/md0  = md0
 	 * Parent's 'dev' sysfs attribute  = /sys/block/md0/dev
 	 */
-	if (dm_snprintf(path, sizeof(path), "%s/dev/block/%d:%d",
+	if (dm_snprintf(path, sizeof(path), "%sdev/block/%d:%d",
 			dm_sysfs_dir(), major, minor) < 0) {
 		log_warn("WARNING: %s: major:minor sysfs path is too long.", dev_name(dev));
 		return 0;
@@ -787,7 +787,7 @@ int dev_get_primary_dev(struct dev_types *dt, struct device *dev, dev_t *result)
 
 	temp_path[size] = '\0';
 
-	if (dm_snprintf(path, sizeof(path), "%s/block/%s/dev",
+	if (dm_snprintf(path, sizeof(path), "%sblock/%s/dev",
 			dm_sysfs_dir(), basename(dirname(temp_path))) < 0) {
 		log_warn("WARNING: sysfs path for %s is too long.",
 			 basename(dirname(temp_path)));
@@ -823,26 +823,143 @@ out:
 }
 
 #ifdef BLKID_WIPING_SUPPORT
-int get_fs_block_size(const char *pathname, uint32_t *fs_block_size)
+int fs_block_size_and_type(const char *pathname, uint32_t *fs_block_size_bytes, char *fstype, int *nofs)
 {
-	char *block_size_str = NULL;
+	blkid_probe probe = NULL;
+	const char *type_str = NULL, *size_str = NULL;
+	size_t len = 0;
+	int ret = 1;
+	int rc;
 
-	if ((block_size_str = blkid_get_tag_value(NULL, "BLOCK_SIZE", pathname))) {
-		*fs_block_size = (uint32_t)atoi(block_size_str);
-		free(block_size_str);
-		log_debug("Found blkid BLOCK_SIZE %u for fs on %s", *fs_block_size, pathname);
-		return 1;
-	} else {
-		log_debug("No blkid BLOCK_SIZE for fs on %s", pathname);
-		*fs_block_size = 0;
+	if (!(probe = blkid_new_probe_from_filename(pathname))) {
+		log_error("Failed libblkid probe setup for %s", pathname);
 		return 0;
 	}
+
+	blkid_probe_enable_superblocks(probe, 1);
+	blkid_probe_set_superblocks_flags(probe,
+			BLKID_SUBLKS_LABEL | BLKID_SUBLKS_LABELRAW |
+			BLKID_SUBLKS_UUID | BLKID_SUBLKS_UUIDRAW |
+			BLKID_SUBLKS_TYPE | BLKID_SUBLKS_SECTYPE |
+			BLKID_SUBLKS_USAGE | BLKID_SUBLKS_VERSION |
+#ifdef BLKID_SUBLKS_FSINFO
+			BLKID_SUBLKS_FSINFO |
+#endif
+			BLKID_SUBLKS_MAGIC);
+	rc = blkid_do_safeprobe(probe);
+	if (rc < 0) {
+		log_debug("Failed libblkid probe for %s", pathname);
+		ret = 0;
+		goto out;
+	} else if (rc == 1) {
+		/* no file system on the device */
+		log_debug("No file system found on %s.", pathname);
+		if (nofs)
+			*nofs = 1;
+		goto out;
+	}
+
+	if (!blkid_probe_lookup_value(probe, "TYPE", &type_str, &len) && len && type_str) {
+		if (fstype)
+			strncpy(fstype, type_str, FSTYPE_MAX);
+	} else {
+		/* any difference from blkid_do_safeprobe rc=1? */
+		log_debug("No file system type on %s.", pathname);
+		if (nofs)
+			*nofs = 1;
+		goto out;
+	}
+
+	if (fs_block_size_bytes) {
+		if (!blkid_probe_lookup_value(probe, "BLOCK_SIZE", &size_str, &len) && len && size_str)
+			*fs_block_size_bytes = atoi(size_str);
+		else
+			*fs_block_size_bytes = 0;
+	}
+
+	log_debug("Found blkid fstype %s fsblocksize %s on %s",
+		  type_str ?: "none", size_str ?: "unused", pathname);
+out:
+	blkid_free_probe(probe);
+	return ret;
 }
+
+int fs_get_blkid(const char *pathname, struct fs_info *fsi)
+{
+	blkid_probe probe = NULL;
+	const char *str = "";
+	size_t len = 0;
+	uint64_t fslastblock = 0;
+	unsigned int fsblocksize = 0;
+	int rc;
+
+	if (!(probe = blkid_new_probe_from_filename(pathname))) {
+		log_error("Failed libblkid probe setup for %s", pathname);
+		return 0;
+	}
+
+	blkid_probe_enable_superblocks(probe, 1);
+	blkid_probe_set_superblocks_flags(probe,
+			BLKID_SUBLKS_LABEL | BLKID_SUBLKS_LABELRAW |
+			BLKID_SUBLKS_UUID | BLKID_SUBLKS_UUIDRAW |
+			BLKID_SUBLKS_TYPE | BLKID_SUBLKS_SECTYPE |
+			BLKID_SUBLKS_USAGE | BLKID_SUBLKS_VERSION |
+#ifdef BLKID_SUBLKS_FSINFO
+			BLKID_SUBLKS_FSINFO |
+#endif
+			BLKID_SUBLKS_MAGIC);
+	rc = blkid_do_safeprobe(probe);
+	if (rc < 0) {
+		log_error("Failed libblkid probe for %s", pathname);
+		blkid_free_probe(probe);
+		return 0;
+	} else if (rc == 1) {
+		/* no file system on the device */
+		log_print_unless_silent("No file system found on %s.", pathname);
+		fsi->nofs = 1;
+		blkid_free_probe(probe);
+		return 1;
+	}
+
+	if (!blkid_probe_lookup_value(probe, "TYPE", &str, &len) && len)
+		strncpy(fsi->fstype, str, sizeof(fsi->fstype)-1);
+	else {
+		/* any difference from blkid_do_safeprobe rc=1? */
+		log_print_unless_silent("No file system type on %s.", pathname);
+		fsi->nofs = 1;
+		blkid_free_probe(probe);
+		return 1;
+	}
+
+	if (!blkid_probe_lookup_value(probe, "BLOCK_SIZE", &str, &len) && len)
+		fsi->fs_block_size_bytes = atoi(str);
+
+	if (!blkid_probe_lookup_value(probe, "FSLASTBLOCK", &str, &len) && len)
+		fslastblock = strtoull(str, NULL, 0);
+
+	if (!blkid_probe_lookup_value(probe, "FSBLOCKSIZE", &str, &len) && len)
+		fsblocksize = (unsigned int)atoi(str);
+
+	blkid_free_probe(probe);
+
+	if (fslastblock && fsblocksize)
+		fsi->fs_last_byte = fslastblock * fsblocksize;
+
+	log_debug("libblkid TYPE %s BLOCK_SIZE %d FSLASTBLOCK %llu FSBLOCKSIZE %u fs_last_byte %llu",
+		  fsi->fstype, fsi->fs_block_size_bytes, (unsigned long long)fslastblock, fsblocksize,
+		  (unsigned long long)fsi->fs_last_byte);
+	return 1;
+}
+
 #else
-int get_fs_block_size(const char *pathname, uint32_t *fs_block_size)
+int fs_block_size_and_type(const char *pathname, uint32_t *fs_block_size_bytes, char *fstype, int *nofs)
 {
 	log_debug("Disabled blkid BLOCK_SIZE for fs.");
-	*fs_block_size = 0;
+	return 0;
+}
+int fs_get_blkid(const char *pathname, struct fs_info *fsi)
+{
+	log_debug("Disabled blkid for fs info.");
 	return 0;
 }
 #endif
@@ -1095,7 +1212,7 @@ int wipe_known_signatures(struct cmd_context *cmd, struct device *dev,
 static int _snprintf_attr(char *buf, size_t buf_size, const char *sysfs_dir,
 			 const char *attribute, dev_t dev)
 {
-	if (dm_snprintf(buf, buf_size, "%s/dev/block/%d:%d/%s", sysfs_dir,
+	if (dm_snprintf(buf, buf_size, "%sdev/block/%d:%d/%s", sysfs_dir,
 			(int)MAJOR(dev), (int)MINOR(dev),
 			attribute) < 0) {
 		log_warn("WARNING: sysfs path for %s attribute is too long.", attribute);

@@ -20,6 +20,8 @@
 #include "lib/metadata/segtype.h"
 #include "lib/config/defaults.h"
 #include "lib/display/display.h"
+#include "lib/commands/toolcontext.h"
+#include "lib/misc/lvm-exec.h"
 
 struct logical_volume *data_lv_from_thin_pool(struct logical_volume *pool_lv)
 {
@@ -34,9 +36,9 @@ struct logical_volume *data_lv_from_thin_pool(struct logical_volume *pool_lv)
 }
 
 /* TODO: drop unused no_update */
-int attach_pool_message(struct lv_segment *pool_seg, dm_thin_message_t type,
-			struct logical_volume *lv, uint32_t delete_id,
-			int no_update)
+int attach_thin_pool_message(struct lv_segment *pool_seg, dm_thin_message_t type,
+			     struct logical_volume *lv, uint32_t delete_id,
+			     int no_update)
 {
 	struct lv_thin_message *tmsg;
 
@@ -46,7 +48,7 @@ int attach_pool_message(struct lv_segment *pool_seg, dm_thin_message_t type,
 		return 0;
 	}
 
-	if (pool_has_message(pool_seg, lv, delete_id)) {
+	if (thin_pool_has_message(pool_seg, lv, delete_id)) {
 		if (lv)
 			log_error("Message referring LV %s already queued in pool %s.",
 				  display_lvname(lv), display_lvname(pool_seg->lv));
@@ -151,13 +153,13 @@ int lv_is_merging_thin_snapshot(const struct logical_volume *lv)
  * Check whether pool has some message queued for LV or for device_id
  * When LV is NULL and device_id is 0 it just checks for any message.
  */
-int pool_has_message(const struct lv_segment *seg,
-		     const struct logical_volume *lv, uint32_t device_id)
+int thin_pool_has_message(const struct lv_segment *seg,
+			  const struct logical_volume *lv, uint32_t device_id)
 {
 	const struct lv_thin_message *tmsg;
 
 	if (!seg_is_thin_pool(seg)) {
-		log_error(INTERNAL_ERROR "LV %s is not pool.", display_lvname(seg->lv));
+		log_error(INTERNAL_ERROR "LV %s is not a thin pool.", display_lvname(seg->lv));
 		return 0;
 	}
 
@@ -183,13 +185,13 @@ int pool_has_message(const struct lv_segment *seg,
 	return 0;
 }
 
-int pool_is_active(const struct logical_volume *lv)
+int thin_pool_is_active(const struct logical_volume *lv)
 {
 	struct lvinfo info;
 	const struct seg_list *sl;
 
 	if (!lv_is_thin_pool(lv)) {
-		log_error(INTERNAL_ERROR "pool_is_active called with non-pool volume %s.",
+		log_error(INTERNAL_ERROR "thin_pool_is_active called with non thin pool volume %s.",
 			  display_lvname(lv));
 		return 0;
 	}
@@ -233,7 +235,7 @@ int thin_pool_feature_supported(const struct logical_volume *lv, int feature)
 	return (attr & feature) ? 1 : 0;
 }
 
-int pool_metadata_min_threshold(const struct lv_segment *pool_seg)
+int thin_pool_metadata_min_threshold(const struct lv_segment *pool_seg)
 {
 	/*
 	 * Hardcoded minimal requirement for thin pool target.
@@ -252,11 +254,11 @@ int pool_metadata_min_threshold(const struct lv_segment *pool_seg)
 	return DM_PERCENT_100 - meta_free;
 }
 
-int pool_below_threshold(const struct lv_segment *pool_seg)
+int thin_pool_below_threshold(const struct lv_segment *pool_seg)
 {
 	struct cmd_context *cmd = pool_seg->lv->vg->cmd;
 	struct lv_status_thin_pool *thin_pool_status = NULL;
-	dm_percent_t min_threshold = pool_metadata_min_threshold(pool_seg);
+	dm_percent_t min_threshold = thin_pool_metadata_min_threshold(pool_seg);
 	dm_percent_t threshold = DM_PERCENT_1 *
 		find_config_tree_int(cmd, activation_thin_pool_autoextend_threshold_CFG,
 				     lv_config_profile(pool_seg->lv));
@@ -344,7 +346,7 @@ out:
  * Lots of test combined together.
  * Test is not detecting status of dmeventd, too complex for now...
  */
-int pool_check_overprovisioning(const struct logical_volume *lv)
+int thin_pool_check_overprovisioning(const struct logical_volume *lv)
 {
 	const struct lv_list *lvl;
 	const struct seg_list *sl;
@@ -433,7 +435,7 @@ int pool_check_overprovisioning(const struct logical_volume *lv)
 /*
  * Validate given external origin could be used with thin pool
  */
-int pool_supports_external_origin(const struct lv_segment *pool_seg, const struct logical_volume *external_lv)
+int thin_pool_supports_external_origin(const struct lv_segment *pool_seg, const struct logical_volume *external_lv)
 {
 	uint32_t csize = pool_seg->chunk_size;
 
@@ -448,6 +450,73 @@ int pool_supports_external_origin(const struct lv_segment *pool_seg, const struc
 	}
 
 	return 1;
+}
+
+int thin_pool_prepare_metadata(struct logical_volume *metadata_lv,
+			       uint32_t chunk_size,
+			       uint64_t data_blocks,
+			       uint64_t data_begin,
+			       uint64_t data_length)
+{
+	struct cmd_context *cmd = metadata_lv->vg->cmd;
+	char lv_path[PATH_MAX], md_path[64], buffer[512];
+	const char *argv[DEFAULT_MAX_EXEC_ARGS + 7] = {
+		find_config_tree_str_allow_empty(cmd, global_thin_restore_executable_CFG, NULL)
+	};
+	int args = 0;
+	int r = 0;
+	int status;
+	FILE *f;
+
+	if (dm_snprintf(lv_path, sizeof(lv_path), "%s%s/%s", cmd->dev_dir,
+			metadata_lv->vg->name, metadata_lv->name) < 0) {
+		log_error("Failed to create path %s%s/%s", cmd->dev_dir,
+			  metadata_lv->vg->name, metadata_lv->name);
+		return 0;
+	}
+
+	if (!prepare_exec_args(cmd, argv, &args, global_thin_restore_options_CFG))
+		return_0;
+
+	if (test_mode()) {
+		log_verbose("Test mode: Skipping creation of provisioned thin pool metadata.");
+		return 1;
+	}
+
+	/* coverity[secure_temp] until better solution */
+	if (!(f = tmpfile())) {
+		log_error("Cannot create temporary file to prepare metadata.");
+		return 0;
+	}
+
+	/* Build path for 'thin_restore' app with this 'hidden/deleted' tmpfile */
+	(void) dm_snprintf(md_path, sizeof(md_path), "/proc/%u/fd/%u", getpid(), fileno(f));
+
+	argv[++args] = "-i";
+	argv[++args] = md_path;
+
+	argv[++args] = "-o";
+	argv[++args] = lv_path;
+
+	(void) dm_snprintf(buffer, sizeof(buffer),
+			   "<superblock uuid=\"\" time=\"0\" transaction=\"1\" version=\"2\" data_block_size=\"%u\" nr_data_blocks=\"" FMTu64 "\">\n"
+			   " <device dev_id=\"1\" mapped_blocks=\"" FMTu64 "\" transaction=\"0\" creation_time=\"0\" snap_time=\"0\">\n"
+			   "  <range_mapping origin_begin=\"0\" data_begin=\"" FMTu64 "\" length=\"" FMTu64 "\" time=\"0\"/>\n"
+			   " </device>\n</superblock>", chunk_size, data_length, data_blocks, data_begin, data_length);
+
+	log_debug("Preparing thin-pool metadata with thin volume mapping:\n%s", buffer);
+
+	if (fputs(buffer, f) < 0)
+		log_sys_error("fputs", md_path);
+	else if (fflush(f))
+		log_sys_error("fflush", md_path);
+	else if (!(r = exec_cmd(cmd, argv, &status, 1)))
+		stack;
+
+	if (fclose(f))
+		log_sys_debug("fclose", md_path);
+
+	return r;
 }
 
 struct logical_volume *find_pool_lv(const struct logical_volume *lv)
@@ -474,7 +543,7 @@ struct logical_volume *find_pool_lv(const struct logical_volume *lv)
  * FIXME: Improve naive search and keep the value cached
  * and updated during VG lifetime (so no const for lv_segment)
  */
-uint32_t get_free_pool_device_id(struct lv_segment *thin_pool_seg)
+uint32_t get_free_thin_pool_device_id(struct lv_segment *thin_pool_seg)
 {
 	uint32_t max_id = 0;
 	struct seg_list *sl;
@@ -516,7 +585,7 @@ static int _check_pool_create(const struct logical_volume *lv)
 				  display_lvname(lv));
 			return 0;
 		}
-		if (!pool_below_threshold(first_seg(lv))) {
+		if (!thin_pool_below_threshold(first_seg(lv))) {
 			log_error("Free space in pool %s is above threshold, new volumes are not allowed.",
 				  display_lvname(lv));
 			return 0;
@@ -527,13 +596,13 @@ static int _check_pool_create(const struct logical_volume *lv)
 	return 1;
 }
 
-int update_pool_lv(struct logical_volume *lv, int activate)
+int update_thin_pool_lv(struct logical_volume *lv, int activate)
 {
 	int monitored;
 	int ret = 1;
 
 	if (!lv_is_thin_pool(lv)) {
-		log_error(INTERNAL_ERROR "Updated LV %s is not pool.", display_lvname(lv));
+		log_error(INTERNAL_ERROR "Updated LV %s is not thin pool.", display_lvname(lv));
 		return 0;
 	}
 
