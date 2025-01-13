@@ -543,7 +543,7 @@ def round_size(size_bytes):
 	return size_bytes + bs - remainder
 
 
-_ALLOWABLE_CH = string.ascii_letters + string.digits + '#+-.:=@_\/%'
+_ALLOWABLE_CH = string.ascii_letters + string.digits + '#+-.:=@_/%'
 _ALLOWABLE_CH_SET = set(_ALLOWABLE_CH)
 
 _ALLOWABLE_VG_LV_CH = string.ascii_letters + string.digits + '.-_+'
@@ -778,6 +778,7 @@ class LockFile(object):
 
 	def __enter__(self):
 		try:
+			os.makedirs(os.path.dirname(self.lock_file), exist_ok=True)
 			self.fd = os.open(self.lock_file, os.O_CREAT | os.O_RDWR, stat.S_IRUSR | stat.S_IWUSR)
 
 			# Get and set the close on exec and lock the file

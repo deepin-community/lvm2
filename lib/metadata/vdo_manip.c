@@ -22,6 +22,7 @@
 #include "lib/activate/activate.h"
 #include "lib/config/defaults.h"
 #include "lib/misc/lvm-exec.h"
+#include "lib/metadata/lv_alloc.h"
 
 #include <sys/sysinfo.h> // sysinfo
 #include <stdarg.h>
@@ -96,7 +97,7 @@ const char *get_vdo_write_policy_name(enum dm_vdo_write_policy policy)
 
 /*
  * Size of VDO virtual LV is adding header_size in front and back of device
- * to avoid colission with blkid checks.
+ * to avoid collision with blkid checks.
  */
 static uint64_t _get_virtual_size(uint32_t extents, uint32_t extent_size,
 				  uint32_t header_size)
@@ -195,6 +196,7 @@ int parse_vdo_pool_status(struct dm_pool *mem, const struct logical_volume *vdo_
 {
 	struct dm_vdo_status_parse_result result;
 	char *dm_name;
+	uint64_t blocks;
 
 	status->usage = DM_PERCENT_INVALID;
 	status->saving = DM_PERCENT_INVALID;
@@ -216,15 +218,19 @@ int parse_vdo_pool_status(struct dm_pool *mem, const struct logical_volume *vdo_
 	status->vdo = result.status;
 
 	if ((result.status->operating_mode == DM_VDO_MODE_NORMAL) &&
-	    _sysfs_get_kvdo_value(dm_name, dminfo, "statistics/data_blocks_used",
-				  &status->data_blocks_used) &&
-	    _sysfs_get_kvdo_value(dm_name, dminfo, "statistics/logical_blocks_used",
-				  &status->logical_blocks_used)) {
+            ((status->data_blocks_used != ULLONG_MAX) ||
+	     _sysfs_get_kvdo_value(dm_name, dminfo, "statistics/data_blocks_used",
+				   &status->data_blocks_used)) &&
+	    ((status->logical_blocks_used != ULLONG_MAX) ||
+	     _sysfs_get_kvdo_value(dm_name, dminfo, "statistics/logical_blocks_used",
+				   &status->logical_blocks_used))) {
 		status->usage = dm_make_percent(result.status->used_blocks,
 						result.status->total_blocks);
 		status->saving = dm_make_percent(status->logical_blocks_used - status->data_blocks_used,
 						 status->logical_blocks_used);
-		status->data_usage = dm_make_percent(status->data_blocks_used * DM_VDO_BLOCK_SIZE,
+		/* coverity needs to use a local variable to handle check here */
+		status->data_usage = dm_make_percent(((blocks = status->data_blocks_used) < (ULLONG_MAX / DM_VDO_BLOCK_SIZE)) ?
+						     (blocks * DM_VDO_BLOCK_SIZE) : ULLONG_MAX,
 						     first_seg(vdo_pool_lv)->vdo_pool_virtual_extents *
 						     (uint64_t) vdo_pool_lv->vg->extent_size);
 	}
@@ -357,11 +363,11 @@ static int _format_vdo_pool_data_lv(struct logical_volume *data_lv,
  *
  * Returns: old data LV on success (passed data LV becomes VDO LV), NULL on failure
  */
-struct logical_volume *convert_vdo_pool_lv(struct logical_volume *data_lv,
-					   const struct dm_vdo_target_params *vtp,
-					   uint32_t *virtual_extents,
-					   int format,
-					   uint64_t vdo_pool_header_size)
+int convert_vdo_pool_lv(struct logical_volume *data_lv,
+			const struct dm_vdo_target_params *vtp,
+			uint32_t *virtual_extents,
+			int format,
+			uint64_t vdo_pool_header_size)
 {
 	const uint32_t extent_size = data_lv->vg->extent_size;
 	struct cmd_context *cmd = data_lv->vg->cmd;
@@ -372,7 +378,7 @@ struct logical_volume *convert_vdo_pool_lv(struct logical_volume *data_lv,
 	uint64_t adjust;
 
 	if (!(vdo_pool_segtype = get_segtype_from_string(cmd, SEG_TYPE_NAME_VDO_POOL)))
-		return_NULL;
+		return_0;
 
 	adjust = (*virtual_extents * (uint64_t) extent_size) % DM_VDO_BLOCK_SIZE;
 	if (adjust) {
@@ -394,7 +400,7 @@ struct logical_volume *convert_vdo_pool_lv(struct logical_volume *data_lv,
 			log_verbose("Test mode: Skipping formatting of VDO pool volume.");
 		} else if (!_format_vdo_pool_data_lv(data_lv, vtp, &vdo_logical_size)) {
 			log_error("Cannot format VDO pool volume %s.", display_lvname(data_lv));
-			return NULL;
+			return 0;
 		}
 	} else {
 		log_verbose("Skipping VDO formatting %s.", display_lvname(data_lv));
@@ -406,7 +412,7 @@ struct logical_volume *convert_vdo_pool_lv(struct logical_volume *data_lv,
 	if (!deactivate_lv(data_lv->vg->cmd, data_lv)) {
 		log_error("Cannot deactivate formatted VDO pool volume %s.",
 			  display_lvname(data_lv));
-		return NULL;
+		return 0;
 	}
 
 	vdo_logical_size -= 2 * vdo_pool_header_size;
@@ -420,14 +426,15 @@ struct logical_volume *convert_vdo_pool_lv(struct logical_volume *data_lv,
 		log_error("Size %s for VDO volume cannot be smaller then extent size %s.",
 			  display_size(data_lv->vg->cmd, vdo_logical_size),
 			  display_size(data_lv->vg->cmd, extent_size));
-		return NULL;
+		return 0;
 	}
 
 	*virtual_extents = vdo_logical_size / extent_size;
 
 	/* Move segments from existing data_lv into LV_vdata */
+	/* coverity[format_string_injection] lv name is already validated */
 	if (!(data_lv = insert_layer_for_lv(cmd, vdo_pool_lv, 0, "_vdata")))
-		return_NULL;
+		return_0;
 
 	vdo_pool_seg = first_seg(vdo_pool_lv);
 	vdo_pool_seg->segtype = vdo_pool_segtype;
@@ -438,7 +445,116 @@ struct logical_volume *convert_vdo_pool_lv(struct logical_volume *data_lv,
 	vdo_pool_lv->status |= LV_VDO_POOL;
 	data_lv->status |= LV_VDO_POOL_DATA;
 
-	return data_lv;
+	return 1;
+}
+
+/*
+ * Convert LV into vdopool data LV and build virtual VDO LV on top of it.
+ * After this it swaps these two LVs so the returned LV is VDO LV!
+ */
+struct logical_volume *convert_vdo_lv(struct logical_volume *lv,
+				      const struct vdo_convert_params *vcp)
+{
+	struct cmd_context *cmd = lv->vg->cmd;
+	char vdopool_name[NAME_LEN], vdopool_tmpl[NAME_LEN];
+	struct lvcreate_params lvc = {
+		.activate = vcp->activate,
+		.alloc = ALLOC_INHERIT,
+		.lv_name = vcp->lv_name ? : lv->name, /* preserve the name */
+		.major = -1,
+		.minor = -1,
+		.permission = LVM_READ | LVM_WRITE,
+		.pool_name = vdopool_name,
+		.pvh = &lv->vg->pvs,
+		.read_ahead = DM_READ_AHEAD_AUTO,
+		.stripes = 1,
+		.suppress_zero_warn = 1, /* suppress warning for this VDO */
+		.tags = DM_LIST_HEAD_INIT(lvc.tags),
+		.virtual_extents = vcp->virtual_extents ? : lv->le_count, /* same size for Pool and Virtual LV */
+	};
+	struct logical_volume *vdo_lv, tmp_lv = {
+		.segments = DM_LIST_HEAD_INIT(tmp_lv.segments)
+	};
+
+	if (!(lvc.segtype = get_segtype_from_string(cmd, SEG_TYPE_NAME_VDO)))
+		return_NULL;
+
+	if (activation() &&
+	    lvc.segtype->ops->target_present &&
+	    !lvc.segtype->ops->target_present(cmd, NULL, &lvc.target_attr)) {
+		log_error("%s: Required device-mapper target(s) not detected in your kernel.",
+			  lvc.segtype->name);
+		return NULL;
+	}
+
+	if (!vcp->lv_name) {
+		/* TODO: maybe  _vpool would be sufficient */
+		if (dm_snprintf(vdopool_tmpl, sizeof(vdopool_tmpl), "%s_vpool%%d", lv->name) < 0) {
+			log_error("Can't prepare vdo pool name for %s.", display_lvname(lv));
+			return NULL;
+		}
+
+		if (!generate_lv_name(lv->vg, vdopool_tmpl, vdopool_name, sizeof(vdopool_name))) {
+			log_error("Can't generate new name for %s.", vdopool_tmpl);
+			return NULL;
+		}
+
+		/* Rename to use _vpool name and release the passed-in name here */
+		if (!lv_rename_update(cmd, lv, vdopool_name, 1))
+			return_NULL;
+	} else
+		lvc.pool_name = lv->name;
+
+	if (!activate_lv(cmd, lv)) {
+		log_error("Aborting. Failed to activate pool metadata %s.",
+			  display_lvname(lv));
+		return NULL;
+	}
+
+	if (vcp->do_zero) {
+		if (test_mode()) {
+			log_verbose("Test mode: Skipping activation, zeroing and signature wiping.");
+		} else if (!(wipe_lv(lv, (struct wipe_params)
+				     {
+					     .do_zero = 1,
+					     .do_wipe_signatures = vcp->do_wipe_signatures,
+					     .yes = vcp->yes,
+					     .force = vcp->force
+				     }))) {
+			log_error("Aborting. Failed to wipe VDO data store %s.",
+				  display_lvname(lv));
+			return NULL;
+		}
+	}
+
+	if (!convert_vdo_pool_lv(lv, &vcp->vdo_params, &lvc.virtual_extents, vcp->do_zero, vcp->header_size))
+		return_NULL;
+
+        /* Create VDO LV with the name, we just release above */
+	if (!(vdo_lv = lv_create_single(lv->vg, &lvc)))
+		return_NULL;
+
+	if (vcp->lv_name)
+		return vdo_lv;
+
+	/* Swap vdo_lv and lv segment, so passed-in LV appears as virtual VDO_LV */
+	if (!move_lv_segments(&tmp_lv, lv, 0, 0) ||
+	    !move_lv_segments(lv, vdo_lv, 0, 0) ||
+	    !move_lv_segments(vdo_lv, &tmp_lv, 0, 0))
+		return_NULL;
+
+	/* Also swap naming, so the passed in LV keeps the passed-in name */
+	vdo_lv->name = lv->name;
+	lv->name = lvc.lv_name;
+
+	/* Swap segment referencing */
+	if (!remove_seg_from_segs_using_this_lv(lv, first_seg(lv)))
+		return_NULL;
+
+	if (!set_lv_segment_area_lv(first_seg(lv), 0, vdo_lv, 0, 0))
+		return_NULL;
+
+	return lv;
 }
 
 int set_vdo_write_policy(enum dm_vdo_write_policy *vwp, const char *policy)
@@ -455,6 +571,9 @@ int set_vdo_write_policy(enum dm_vdo_write_policy *vwp, const char *policy)
 		log_error("Unknown VDO write policy %s.", policy);
 		return 0;
 	}
+
+	if (*vwp != DM_VDO_WRITE_POLICY_AUTO)
+		log_info("Deprecated VDO setting write_policy specified.");
 
 	return 1;
 }
@@ -510,6 +629,9 @@ int fill_vdo_target_params(struct cmd_context *cmd,
 
 	*vdo_pool_header_size = 2 * find_config_tree_int64(cmd, allocation_vdo_pool_header_size_CFG, profile);
 
+	if (vtp->use_metadata_hints)
+		log_info("Deprecated VDO setting use_metadata_hints specified.");
+
 	return 1;
 }
 
@@ -522,9 +644,9 @@ static int _get_sysinfo_memory(uint64_t *total_mb, uint64_t *available_mb)
 	if (sysinfo(&si) != 0)
 		return 0;
 
-	log_debug("Sysinfo free:%lu  bufferram:%lu  sharedram:%lu  freehigh:%lu  unit:%u.",
-		  si.freeram >> 20, si.bufferram >> 20, si.sharedram >> 20,
-		  si.freehigh >> 20, si.mem_unit);
+	log_debug("Sysinfo free:%llu  bufferram:%llu  sharedram:%llu  freehigh:%llu  unit:%u.",
+		  (unsigned long long)si.freeram >> 20, (unsigned long long)si.bufferram >> 20, (unsigned long long)si.sharedram >> 20,
+		  (unsigned long long)si.freehigh >> 20, si.mem_unit);
 
 	*available_mb = ((uint64_t)(si.freeram + si.bufferram) * si.mem_unit) >> 30;
 	*total_mb = si.totalram >> 30;
@@ -541,9 +663,9 @@ static int _compare_mem_table_s(const void *a, const void *b){
 	return strcmp(((const mem_table_t*)a)->name, ((const mem_table_t*)b)->name);
 }
 
-static int _get_memory_info(uint64_t *total_mb, uint64_t *available_mb)
+static int _get_memory_info(struct cmd_context *cmd, uint64_t *total_mb, uint64_t *available_mb)
 {
-	uint64_t anon_pages, mem_available, mem_free, mem_total, shmem, swap_free;
+	uint64_t anon_pages = 0, mem_available = 0, mem_free = 0, mem_total = 0, shmem = 0, swap_free = 0;
 	uint64_t can_swap;
 	mem_table_t mt[] = {
 		{ "AnonPages",    &anon_pages },
@@ -555,11 +677,14 @@ static int _get_memory_info(uint64_t *total_mb, uint64_t *available_mb)
 	};
 
 	char line[128], namebuf[32], *e, *tail;
+	char proc_meminfo[PATH_MAX];
 	FILE *fp;
 	mem_table_t findme = { namebuf, NULL };
 	mem_table_t *found;
 
-	if (!(fp = fopen("/proc/meminfo", "r")))
+	if ((dm_snprintf(proc_meminfo, sizeof(proc_meminfo),
+			 "%s/meminfo", cmd->proc_dir) < 0) ||
+	    !(fp = fopen(proc_meminfo, "r")))
 		return _get_sysinfo_memory(total_mb, available_mb);
 
 	while (fgets(line, sizeof(line), fp)) {
@@ -569,7 +694,7 @@ static int _get_memory_info(uint64_t *total_mb, uint64_t *available_mb)
 		if ((unsigned)(++e - line) > sizeof(namebuf))
 			continue; // something too long
 
-		(void)dm_strncpy((char*)findme.name, line, e - line);
+		dm_strncpy((char*)findme.name, line, e - line);
 
 		found = bsearch(&findme, mt, DM_ARRAY_SIZE(mt), sizeof(mem_table_t),
 				_compare_mem_table_s);
@@ -632,7 +757,7 @@ static int _vdo_snprintf(char **buf, size_t *bufsize, const char *format, ...)
 
 int check_vdo_constrains(struct cmd_context *cmd, const struct vdo_pool_size_config *cfg)
 {
-	static const char *_split[] = { "", " and", ",", "," };
+	static const char _vdo_split[][4] = { "", " and", ",", "," };
 	uint64_t req_mb, total_mb, available_mb;
 	uint64_t phy_mb = _round_sectors_to_tib(UINT64_C(268) * cfg->physical_size); // 268 MiB per 1 TiB of physical size
 	uint64_t virt_mb = _round_1024(UINT64_C(1638) * _round_sectors_to_tib(cfg->virtual_size)); // 1.6 MiB per 1 TiB
@@ -648,7 +773,7 @@ int check_vdo_constrains(struct cmd_context *cmd, const struct vdo_pool_size_con
 	// total required memory for VDO target
 	req_mb = 38 + cfg->index_memory_size_mb + virt_mb + phy_mb + cache_mb;
 
-	_get_memory_info(&total_mb, &available_mb);
+	_get_memory_info(cmd, &total_mb, &available_mb);
 
 	has_cnt = cnt = (phy_mb ? 1 : 0) +
 			 (virt_mb ? 1 : 0) +
@@ -658,18 +783,18 @@ int check_vdo_constrains(struct cmd_context *cmd, const struct vdo_pool_size_con
 	if (phy_mb)
 		(void)_vdo_snprintf(&pmsg, &mlen, " %s RAM for physical volume size %s%s",
 				    display_size(cmd, phy_mb << (20 - SECTOR_SHIFT)),
-				    display_size(cmd, cfg->physical_size), _split[--cnt]);
+				    display_size(cmd, cfg->physical_size), _vdo_split[--cnt]);
 
 	if (virt_mb)
 		(void)_vdo_snprintf(&pmsg, &mlen, " %s RAM for virtual volume size %s%s",
 				    display_size(cmd, virt_mb << (20 - SECTOR_SHIFT)),
-				    display_size(cmd, cfg->virtual_size), _split[--cnt]);
+				    display_size(cmd, cfg->virtual_size), _vdo_split[--cnt]);
 
 	if (cfg->block_map_cache_size_mb)
 		(void)_vdo_snprintf(&pmsg, &mlen, " %s RAM for block map cache size %s%s",
 				    display_size(cmd, cache_mb << (20 - SECTOR_SHIFT)),
 				    display_size(cmd, ((uint64_t)cfg->block_map_cache_size_mb) << (20 - SECTOR_SHIFT)),
-				    _split[--cnt]);
+				    _vdo_split[--cnt]);
 
 	if (cfg->index_memory_size_mb)
 		(void)_vdo_snprintf(&pmsg, &mlen, " %s RAM for index memory",

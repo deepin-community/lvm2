@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2016 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2005-2023 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -121,6 +121,14 @@ static int _linear_type_requested(const char *type_str)
 static int _striped_type_requested(const char *type_str)
 {
 	return (!strcmp(type_str, SEG_TYPE_NAME_STRIPED) || _linear_type_requested(type_str));
+}
+
+static int _get_wipe_signatures(struct cmd_context *cmd)
+{
+	/* use option from cmdline and fallback to lvm.conf settings */
+	return arg_is_set(cmd, wipesignatures_ARG) ?
+		arg_int_value(cmd, wipesignatures_ARG, 0) :
+	find_config_tree_bool(cmd, allocation_wipe_signatures_when_zeroing_new_lvs_CFG, NULL);
 }
 
 static int _read_conversion_type(struct cmd_context *cmd,
@@ -277,17 +285,17 @@ static int _read_params(struct cmd_context *cmd, struct lvconvert_params *lp)
 }
 
 
-static struct poll_functions _lvconvert_mirror_fns = {
+static const struct poll_functions _lvconvert_mirror_fns = {
 	.poll_progress = poll_mirror_progress,
 	.finish_copy = lvconvert_mirror_finish,
 };
 
-static struct poll_functions _lvconvert_merge_fns = {
+static const struct poll_functions _lvconvert_merge_fns = {
 	.poll_progress = poll_merge_progress,
 	.finish_copy = lvconvert_merge_finish,
 };
 
-static struct poll_functions _lvconvert_thin_merge_fns = {
+static const struct poll_functions _lvconvert_thin_merge_fns = {
 	.poll_progress = poll_thin_merge_progress,
 	.finish_copy = lvconvert_merge_finish,
 };
@@ -477,7 +485,7 @@ static struct dm_list *_failed_pv_list(struct volume_group *vg)
 		 * But we only want remove these which are output of repair,
 		 * Do not count these which are already empty here.
 		 * FIXME: code should traverse PV in LV not in whole VG.
-		 * FIXME: layer violation? should it depend on vgreduce --removemising?
+		 * FIXME: layer violation? should it depend on vgreduce --removemissing?
 		 */
 		if (pvl->pv->pe_alloc_count == 0)
 			continue;
@@ -654,7 +662,7 @@ static int _lv_update_log_type(struct cmd_context *cmd,
 }
 
 /*
- * Reomove missing and empty PVs from VG, if are also in provided list
+ * Remove missing and empty PVs from VG, if are also in provided list
  */
 static void _remove_missing_empty_pv(struct volume_group *vg, struct dm_list *remove_pvs)
 {
@@ -1170,7 +1178,7 @@ static int _raid_split_image_conversion(struct logical_volume *lv)
 
 	if (lv_is_raid_image(lv) &&
 	    (s = strstr(lv->name, "_rimage_"))) {
-		(void) dm_strncpy(raidlv_name, lv->name, s - lv->name);
+		dm_strncpy(raidlv_name, lv->name, s - lv->name);
 
 		if (!(tmp_lv = find_lv(lv->vg, raidlv_name))) {
 			log_error("Failed to find RaidLV of RAID subvolume %s.",
@@ -1352,7 +1360,7 @@ static int _lvconvert_raid(struct logical_volume *lv, struct lvconvert_params *l
 		else
 			image_count = lp->mirrors + 1;
 
-		images_reduced = (image_count < lv_raid_image_count(lv));
+		images_reduced = (image_count < (int) lv_raid_image_count(lv));
 
 		if (image_count < 1) {
 			log_error("Unable to %s images by specified amount.",
@@ -2046,9 +2054,12 @@ static int _lvconvert_snapshot(struct cmd_context *cmd,
 			       const char *origin_name)
 {
 	struct logical_volume *org;
-	const char *snap_name = display_lvname(lv);
+	const char *snap_name;
 	uint32_t chunk_size;
 	int zero;
+
+	if (!(snap_name = dm_pool_strdup(lv->vg->vgmem, (display_lvname(lv) ? : ""))))
+		return_0;
 
 	if (strcmp(lv->name, origin_name) == 0) {
 		log_error("Unable to use %s as both snapshot and origin.", snap_name);
@@ -2148,7 +2159,11 @@ static int _lvconvert_merge_old_snapshot(struct cmd_context *cmd,
 	if (!snap_seg)
 		return_0;
 
-	origin = origin_from_cow(lv);
+	if (!(origin = origin_from_cow(lv))) {
+		log_error(INTERNAL_ERROR "Cannot get origin from %s COW.",
+			  display_lvname(lv));
+		return 0;
+	}
 
 	/* Check if merge is possible */
 	if (lv_is_merging_origin(origin)) {
@@ -2199,7 +2214,7 @@ static int _lvconvert_merge_old_snapshot(struct cmd_context *cmd,
 	 * activation if either the origin or snapshot LV are currently
 	 * open.
 	 *
-	 * FIXME testing open_count is racey; snapshot-merge target's
+	 * FIXME testing open_count is racy; snapshot-merge target's
 	 * constructor and DM should prevent appropriate devices from
 	 * being open.
 	 */
@@ -2332,6 +2347,17 @@ static int _lvconvert_merge_thin_snapshot(struct cmd_context *cmd,
 	return 1;
 }
 
+static void _swap_lv_uuid(struct logical_volume *lv1, struct logical_volume *lv2)
+{
+	union lvid lvid;
+
+	if (lv1 && lv2) {
+		lvid = lv1->lvid;
+		lv1->lvid = lv2->lvid;
+		lv2->lvid = lvid;
+	}
+}
+
 static int _lvconvert_thin_pool_repair(struct cmd_context *cmd,
 				       struct logical_volume *pool_lv,
 				       struct dm_list *pvh, int poolmetadataspare)
@@ -2424,7 +2450,7 @@ static int _lvconvert_thin_pool_repair(struct cmd_context *cmd,
 			log_warn("WARNING: Cannot read output from %s %s.", thin_dump, pms_path);
 		else {
 			/*
-			 * Scan only the 1st. line for transation id.
+			 * Scan only the 1st. line for transaction id.
 			 * Watch out, if the thin_dump format changes
 			 */
 			if (fgets(meta_path, sizeof(meta_path), f) &&
@@ -2499,6 +2525,9 @@ deactivate_pmslv:
 	/* Used _tmeta (now _pmspare) becomes _meta%d */
 	if (!lv_rename_update(cmd, mlv, pms_path, 0))
 		return_0;
+
+	/* Preserve UUID for _pmspare if possible */
+	_swap_lv_uuid(mlv, mlv->vg->pool_metadata_spare_lv);
 
 	if (!vg_write(pool_lv->vg) || !vg_commit(pool_lv->vg))
 		return_0;
@@ -2657,6 +2686,9 @@ deactivate_pmslv:
 	if (!lv_rename_update(cmd, mlv, pms_path, 0))
 		return_0;
 
+	/* Preserve UUID for _pmspare if possible */
+	_swap_lv_uuid(mlv, mlv->vg->pool_metadata_spare_lv);
+
 	if (!vg_write(cache_lv->vg) || !vg_commit(cache_lv->vg))
 		return_0;
 
@@ -2679,7 +2711,7 @@ static int _lvconvert_to_thin_with_external(struct cmd_context *cmd,
 	struct volume_group *vg = lv->vg;
 	struct logical_volume *thin_lv;
 	const char *origin_name;
-
+	int lv_was_active;
 	struct lvcreate_params lvc = {
 		.activate = CHANGE_AEY,
 		.alloc = ALLOC_INHERIT,
@@ -2692,6 +2724,7 @@ static int _lvconvert_to_thin_with_external(struct cmd_context *cmd,
 		.read_ahead = DM_READ_AHEAD_AUTO,
 		.stripes = 1,
 		.virtual_extents = lv->le_count,
+		.tags = DM_LIST_HEAD_INIT(lvc.tags),
 	};
 
 	if (!_raid_split_image_conversion(lv))
@@ -2729,13 +2762,22 @@ static int _lvconvert_to_thin_with_external(struct cmd_context *cmd,
 		return 0;
 	}
 
-	dm_list_init(&lvc.tags);
-
 	if (!thin_pool_supports_external_origin(first_seg(thinpool_lv), lv))
 		return_0;
 
 	if (!(lvc.segtype = get_segtype_from_string(cmd, SEG_TYPE_NAME_THIN)))
 		return_0;
+
+	lv_was_active = lv_is_active(lv);
+
+	/* When converted LV is not holding lock, but some other LV keeps it
+	 * 'active' i.e. being an external origin for such LV, activate this LV
+	 * so the reload of table can properly update device tree.  */
+	if (!lv_was_active && (lv != lv_lock_holder(lv)) && !activate_lv(cmd, lv)) {
+		log_error("Failed to activate %s. Conversion cannot proceed.",
+			  display_lvname(lv));
+		return 0;
+	}
 
 	/*
 	 * New thin LV needs to be created (all messages sent to pool) In this
@@ -2752,28 +2794,42 @@ static int _lvconvert_to_thin_with_external(struct cmd_context *cmd,
 	if (!(thin_lv = lv_create_single(vg, &lvc)))
 		return_0;
 
-	if (!deactivate_lv(cmd, thin_lv)) {
-		log_error("Aborting. Unable to deactivate new LV. "
-			  "Manual intervention required.");
-		return 0;
+	/*
+	 * Only for converted active thick snapshot origin leave
+	 * created thin LV active (locked) so it can be converted to new
+	 * read-only 'snapshot-origin' with the consequent update and reload.
+	 *
+	 * Note: New thin LV is read-only so it can't be written.
+	 */
+	if (!lv_is_origin(lv) || !lv_was_active) {
+		if (!deactivate_lv(cmd, thin_lv)) {
+			log_error("Aborting. Failed to deactivate new thin LV. "
+				  "Manual intervention required.");
+			return 0;
+		}
+		if (!sync_local_dev_names(cmd)) {
+			log_error("Failed to sync local devices before conversion.");
+			goto revert_new_lv;
+		}
 	}
 
 	/*
 	 * Crashing till this point will leave plain thin volume
 	 * which could be easily removed by the user after i.e. power-off
 	 */
-
 	if (!swap_lv_identifiers(cmd, thin_lv, lv)) {
-		stack;
-		goto revert_new_lv;
+		log_error("Aborting. Failed to swap identifiers. "
+			  "Manual intervention required.");
+		return 0; /* runtime corruption */
 	}
 
 	/* Preserve read-write status of original LV here */
 	thin_lv->status |= (lv->status & LVM_WRITE);
 
 	if (!attach_thin_external_origin(first_seg(thin_lv), lv)) {
-		stack;
-		goto revert_new_lv;
+		log_error("Aborting. Failed to attach external origin. "
+			  "Manual intervention required.");
+		return 0; /* runtime corruption */
 	}
 
 	if (!lv_update_and_reload(thin_lv)) {
@@ -2784,20 +2840,26 @@ static int _lvconvert_to_thin_with_external(struct cmd_context *cmd,
 	log_print_unless_silent("Converted %s to thin volume with external origin %s.",
 				display_lvname(thin_lv), display_lvname(lv));
 
-	return 1;
-
-deactivate_and_revert_new_lv:
-	if (!swap_lv_identifiers(cmd, thin_lv, lv))
-		stack;
-
-	if (!deactivate_lv(cmd, thin_lv)) {
-		log_error("Unable to deactivate failed new LV. "
-			  "Manual intervention required.");
+	/* Restore previous state */
+	if (!lv_was_active && !deactivate_lv(cmd, thin_lv)) {
+		log_error("Failed to deactivate thin LV %s.", display_lvname(thin_lv));
 		return 0;
 	}
 
+	return 1;
+
+deactivate_and_revert_new_lv:
 	if (!detach_thin_external_origin(first_seg(thin_lv)))
 		return_0;
+
+	if (!swap_lv_identifiers(cmd, thin_lv, lv))
+		return_0;
+
+	if (!deactivate_lv(cmd, thin_lv)) {
+		log_error("Failed to deactivate thin LV. "
+			  "Manual intervention required.");
+		return 0;
+	}
 
 revert_new_lv:
 	/* FIXME Better to revert to backup of metadata? */
@@ -2815,9 +2877,9 @@ static int _lvconvert_swap_pool_metadata(struct cmd_context *cmd,
 	struct volume_group *vg = lv->vg;
 	struct logical_volume *prev_metadata_lv;
 	struct lv_segment *seg;
-	struct lv_type *lvtype;
+	const struct lv_type *lvtype;
 	char meta_name[NAME_LEN];
-	const char *swap_name;
+	const char *swap_lock_args = NULL;
 	uint32_t chunk_size;
 	int is_thinpool;
 	int is_cachepool;
@@ -2872,19 +2934,29 @@ static int _lvconvert_swap_pool_metadata(struct cmd_context *cmd,
 	if (!lockd_lv(cmd, lv, "ex", 0))
 		return 0;
 
+	/* If new metadata LV is inactive here, ensure it's not active elsewhere */
+	if (!lockd_lv(cmd, metadata_lv, "ex", 0)) {
+		log_error("New pool metadata LV %s cannot be locked.", display_lvname(metadata_lv));
+		return 0;
+	}
+
 	if (!deactivate_lv(cmd, metadata_lv)) {
 		log_error("Aborting. Failed to deactivate %s.",
 			  display_lvname(metadata_lv));
 		return 0;
 	}
 
-	if (!lockd_lv(cmd, metadata_lv, "un", 0)) {
-		log_error("Failed to unlock LV %s.", display_lvname(metadata_lv));
-		return 0;
+	/*
+	 * metadata_lv is currently an independent LV with its own lockd lock allocated.
+	 * A pool metadata LV does not have its own lockd lock (only the pool LV does.)
+	 * Since the LV name and uuid are exchanged between the old and new metadata LVs,
+	 * the lvmlockd lock can just be moved between the two LVs, so the new independent
+	 * LV (former metadata LV) gets the lock that was used for old independent LV.
+	 */
+	if (vg_is_shared(vg) && metadata_lv->lock_args) {
+		swap_lock_args = metadata_lv->lock_args;
+		metadata_lv->lock_args = NULL;
 	}
-
-        metadata_lv->lock_args = NULL;
-
 
 	seg = first_seg(lv);
 
@@ -2932,23 +3004,18 @@ static int _lvconvert_swap_pool_metadata(struct cmd_context *cmd,
 	if (!detach_pool_metadata_lv(seg, &prev_metadata_lv))
 		return_0;
 
-	swap_name = metadata_lv->name;
-
-	if (!lv_rename_update(cmd, metadata_lv, "pvmove_tmeta", 0))
-		return_0;
-
-	/* Give the previous metadata LV the name of the LV replacing it. */
-
-	if (!lv_rename_update(cmd, prev_metadata_lv, swap_name, 0))
-		return_0;
-
-	/* Rename deactivated metadata LV to have _tmeta suffix */
-
-	if (!lv_rename_update(cmd, metadata_lv, meta_name, 0))
-		return_0;
+	if (!swap_lv_identifiers(cmd, metadata_lv, prev_metadata_lv))
+                return_0;
 
 	if (!attach_pool_metadata_lv(seg, metadata_lv))
 		return_0;
+
+	/*
+	 * The previous metadata LV will now be an independent LV so it now
+	 * requires a lockd lock, and gets the lock from the LV that's becoming
+	 * the new metadata LV.
+	 */
+	prev_metadata_lv->lock_args = swap_lock_args;
 
 	if (!vg_write(vg) || !vg_commit(vg))
 		return_0;
@@ -2966,9 +3033,22 @@ static struct logical_volume *_lvconvert_insert_thin_layer(struct logical_volume
 	if (!(thin_segtype = get_segtype_from_string(vg->cmd, SEG_TYPE_NAME_THIN)))
 		return_NULL;
 
+	/*
+	 * input lv foo (often linear)
+	 * creates new lv foo_tpoolN (no seg)
+	 * segment from foo is moved to foo_tpoolN
+	 * new linear segment is created for foo that maps to foo_tpoolN
+	 * returns foo_tpoolN
+	 *
+	 * In spite of the "pool" variable naming, pool_lv foo_tpoolN is *not*
+	 * yet a pool type, but rather is whatever type the input lv was.
+	 */
 	if (!(pool_lv = insert_layer_for_lv(vg->cmd, lv, 0, "_tpool%d")))
 		return_NULL;
 
+	/*
+	 * change lv foo to a thin LV using foo_tpoolN
+	 */
 	lv->status |= THIN_VOLUME | VIRTUAL;
 	lv_set_visible(pool_lv);
 
@@ -2981,36 +3061,6 @@ static struct logical_volume *_lvconvert_insert_thin_layer(struct logical_volume
 	seg->transaction_id = 0;
 
 	return pool_lv;
-}
-
-static int _lvconvert_attach_metadata_to_pool(struct lv_segment *pool_seg,
-					      struct logical_volume *metadata_lv)
-{
-	struct cmd_context *cmd = metadata_lv->vg->cmd;
-	char name[NAME_LEN];                   /* generated sub lv name */
-
-	if (!deactivate_lv(cmd, metadata_lv)) {
-		log_error("Aborting. Failed to deactivate metadata lv. "
-			  "Manual intervention required.");
-		return 0;
-	}
-
-	if ((dm_snprintf(name, sizeof(name), "%s%s", pool_seg->lv->name,
-			 seg_is_thin_pool(pool_seg) ? "_tmeta" : "_cmeta") < 0)) {
-		log_error("Failed to create internal lv names, %s name is too long.",
-			  pool_seg->lv->name);
-		return 0;
-	}
-
-	/* Rename LVs to the pool _[ct]meta LV naming scheme. */
-	if ((strcmp(metadata_lv->name, name) != 0) &&
-	    !lv_rename_update(cmd, metadata_lv, name, 0))
-		return_0;
-
-	if (!attach_pool_metadata_lv(pool_seg, metadata_lv))
-		return_0;
-
-	return 1;
 }
 
 /*
@@ -3034,13 +3084,15 @@ static int _lvconvert_to_pool(struct cmd_context *cmd,
 	struct volume_group *vg = lv->vg;
 	struct logical_volume *metadata_lv = NULL;  /* existing or created */
 	struct logical_volume *data_lv;             /* lv arg renamed */
-	struct logical_volume *pool_lv;             /* new lv created here */
+	struct logical_volume *pool_lv = NULL;             /* new lv created here */
 	const char *pool_metadata_name;             /* user-specified lv name */
-	char converted_names[3*NAME_LEN];	    /* preserve names of converted lv */
+	char converted_names[3*NAME_LEN] = { 0 };   /* preserve names of converted lv */
 	struct segment_type *pool_segtype;          /* thinpool or cachepool */
+	const char *str_seg_type = to_cachepool ? SEG_TYPE_NAME_CACHE_POOL : SEG_TYPE_NAME_THIN_POOL;
 	struct lv_segment *seg;
 	unsigned int target_attr = ~0;
 	unsigned int activate_pool;
+	unsigned int lock_active_pool_done = 0;
 	unsigned int zero_metadata;
 	uint64_t meta_size;
 	uint32_t meta_extents;
@@ -3055,16 +3107,27 @@ static int _lvconvert_to_pool(struct cmd_context *cmd,
 	thin_discards_t discards;
 	thin_zero_t zero_new_blocks;
 	int error_when_full;
-	int r = 0;
+	int data_vdo;
+	uint64_t vdo_pool_header_size;
+	struct vdo_convert_params vcp = {
+		.activate = CHANGE_AN,
+		.do_zero = 1,
+		.do_wipe_signatures = _get_wipe_signatures(cmd),
+		.force = arg_count(cmd, force_ARG),
+		.yes = arg_count(cmd, yes_ARG),
+	};
+	int is_active;
+	int ret = 1;
 
 	/* for handling lvmlockd cases */
 	char *lockd_data_args = NULL;
 	char *lockd_meta_args = NULL;
 	char *lockd_data_name = NULL;
 	char *lockd_meta_name = NULL;
+	uint32_t lockd_data_flags = 0;
+	uint32_t lockd_meta_flags = 0;
 	struct id lockd_data_id;
 	struct id lockd_meta_id;
-	const char *str_seg_type = to_cachepool ? SEG_TYPE_NAME_CACHE_POOL : SEG_TYPE_NAME_THIN_POOL;
 
 	if (!_raid_split_image_conversion(lv))
 		return_0;
@@ -3083,22 +3146,16 @@ static int _lvconvert_to_pool(struct cmd_context *cmd,
 		return 0;
 	}
 
-	/* Allow to have only thinpool active and restore it's active state. */
-	activate_pool = to_thinpool && lv_is_active(lv);
-
-	/* Wipe metadata_lv by default, but allow skipping this for cache pools. */
-	zero_metadata = (to_cachepool) ? arg_int_value(cmd, zero_ARG, 1) : 1;
-
-	/* An existing LV needs to have its lock freed once it becomes a data LV. */
-	if (vg_is_shared(vg) && lv->lock_args) {
-		lockd_data_args = dm_pool_strdup(cmd->mem, lv->lock_args);
-		lockd_data_name = dm_pool_strdup(cmd->mem, lv->name);
-		memcpy(&lockd_data_id, &lv->lvid.id[1], sizeof(struct id));
-	}
-
 	/* If LV is inactive here, ensure it's not active elsewhere. */
 	if (!lockd_lv(cmd, lv, "ex", 0))
 		return 0;
+
+	is_active = lv_is_active(lv);
+
+	activate_pool = to_thinpool && is_active;
+
+	/* Wipe metadata_lv by default, but allow skipping this for cache pools. */
+	zero_metadata = (to_cachepool) ? arg_int_value(cmd, zero_ARG, 1) : 1;
 
 	/*
 	 * If an existing LV is to be used as the metadata LV,
@@ -3116,13 +3173,6 @@ static int _lvconvert_to_pool(struct cmd_context *cmd,
 		if (!(metadata_lv = find_lv(vg, pool_metadata_name))) {
 			log_error("Unknown pool metadata LV %s.", pool_metadata_name);
 			return 0;
-		}
-
-		/* An existing LV needs to have its lock freed once it becomes a meta LV. */
-		if (vg_is_shared(vg) && metadata_lv->lock_args) {
-			lockd_meta_args = dm_pool_strdup(cmd->mem, metadata_lv->lock_args);
-			lockd_meta_name = dm_pool_strdup(cmd->mem, metadata_lv->name);
-			memcpy(&lockd_meta_id, &metadata_lv->lvid.id[1], sizeof(struct id));
 		}
 
 		if (metadata_lv == lv) {
@@ -3171,10 +3221,25 @@ static int _lvconvert_to_pool(struct cmd_context *cmd,
 		/* If LV is inactive here, ensure it's not active elsewhere. */
 		if (!lockd_lv(cmd, metadata_lv, "ex", 0))
 			return 0;
+
+		/* An existing LV needs to have its lock freed once it becomes a meta LV. */
+		if (vg_is_shared(vg) && metadata_lv->lock_args) {
+			lockd_meta_args = dm_pool_strdup(vg->vgmem, metadata_lv->lock_args);
+			lockd_meta_name = dm_pool_strdup(vg->vgmem, metadata_lv->name);
+			lockd_meta_flags = lv_is_active(metadata_lv) ? LDLV_PERSISTENT : 0;
+			lockd_meta_id = metadata_lv->lvid.id[1];
+		}
+	}
+
+	if (vg_is_shared(vg) && lv->lock_args) {
+		lockd_data_args = dm_pool_strdup(vg->vgmem, lv->lock_args);
+		lockd_data_name = dm_pool_strdup(vg->vgmem, lv->name);
+		lockd_data_flags = is_active ? LDLV_PERSISTENT : 0;
+		lockd_data_id = lv->lvid.id[1];
 	}
 
 	if (!get_pool_params(cmd, pool_segtype,
-			     &meta_size, &pool_metadata_spare,
+			     &data_vdo, &meta_size, &pool_metadata_spare,
 			     &chunk_size, &discards, &zero_new_blocks))
 		goto_bad;
 
@@ -3316,19 +3381,27 @@ static int _lvconvert_to_pool(struct cmd_context *cmd,
 	}
 
 	/*
-	 * When the LV referenced by the original function arg "lv"
-	 * is layered
-	 *
-	 * pool_name    pool name taken from lv arg
-	 * data_name    sub lv name, generated
-	 * meta_name    sub lv name, generated
-	 *
-	 * pool_lv      new lv for pool object, created here
-	 * data_lv      sub lv, was lv arg, now renamed
-	 * metadata_lv  sub lv, existing or created here
+	 * Before starting a real conversion, prepare  _pmspare volume.
+	 * If there is already one present in a VG, make sure the size is right
+	 */
+	if (!handle_pool_metadata_spare(vg, metadata_lv->le_count, use_pvh, pool_metadata_spare)) {
+		log_error("Failed to set up spare metadata LV for pool.");
+		goto bad;
+	}
+	/*
+	 * After _pmspare handling is finished there are unwritten VG metadata
+	 * that will get written with the next mda update.
+	 * If there is any failure and such new metadata would not be written,
+	 * a user is then left with 'regular' volume he can normally  'lvremove'.
+	 * If there was _pmspare already existing, the size of such LV is already changed
+	 * and is committed to disk. A user may only remove such volume and create a new one.
 	 */
 
 	if (to_thin) {
+		/*
+		 * pool_lv is not yet a pool, when returned, pool_lv contains
+		 * the segment that belonged to "lv".
+		 */
 		if (!(pool_lv = _lvconvert_insert_thin_layer(lv)))
 			goto_bad;
 	} else {
@@ -3339,9 +3412,43 @@ static int _lvconvert_to_pool(struct cmd_context *cmd,
 			goto bad;
 		}
 
+		if (data_vdo) {
+			if (lv_is_vdo(lv)) {
+				if ((seg = first_seg(lv)))
+					seg = first_seg(seg_lv(seg, 0)); // vdopool
+				/* Update existing VDOPOOL parameters if possible, VDOPOOL is offline */
+				if (seg && !get_vdo_settings(cmd, &seg->vdo_params, NULL))
+					goto_bad;
+
+				log_print_unless_silent("Volume %s is already VDO volume, skipping VDO conversion.",
+							display_lvname(lv));
+			} else {
+				if (!fill_vdo_target_params(cmd, &vcp.vdo_params, &vdo_pool_header_size, vg->profile))
+					goto_bad;
+
+				if (!get_vdo_settings(cmd, &vcp.vdo_params, NULL))
+					goto_bad;
+
+				if (!convert_vdo_lv(lv, &vcp))
+					goto_bad;
+			}
+		}
+
 		pool_lv = lv;
 	}
 
+	/*
+	 * starts with pool_lv foo (not a pool yet)
+	 * creates new data_lv foo_tdata
+	 * segment from pool_lv foo is moved to data_lv foo_tdata
+	 * pool_lv foo linear segment is created that maps to foo_tdata
+	 * returns data_lv foo_tdata
+	 *
+	 * (In the to_thin case, the segment from the original lv is first
+	 * moved to pool_lv by _lvconvert_insert_thin_layer, and now is
+	 * moved to data_lv.)
+	 */
+	/* coverity[format_string_injection] lv name is already validated */
 	if (!(data_lv = insert_layer_for_lv(cmd, pool_lv, 0,
 					    (to_cachepool ? "_cdata" : "_tdata"))))
 		goto_bad;
@@ -3349,55 +3456,34 @@ static int _lvconvert_to_pool(struct cmd_context *cmd,
 	data_lv->status |= (to_cachepool) ? CACHE_POOL_DATA : THIN_POOL_DATA;
 	data_lv->status |= LVM_WRITE;  /* Pool data LV is writable */
 
+	/*
+	 * pool_lv now becomes a pool type.
+	 * FIXME: change variable naming to avoid this confusion.
+	 */
 	pool_lv->status |= (to_cachepool) ? CACHE_POOL : THIN_POOL;
 
 	seg = first_seg(pool_lv);
 	seg->segtype = pool_segtype;
-
-	/*
-	 * Create a new lock for a thin pool LV.  A cache pool LV has no lock.
-	 * Locks are removed from existing LVs that are being converted to
-	 * data and meta LVs (they are unlocked and deleted below.)
-	 */
-	if (vg_is_shared(vg)) {
-		lv->lock_args = NULL;
-		pool_lv->lock_args = NULL;
-		data_lv->lock_args = NULL;
-		metadata_lv->lock_args = NULL;
-
-		if (!to_cachepool) {
-			if (!strcmp(vg->lock_type, "sanlock"))
-				pool_lv->lock_args = "pending";
-			else if (!strcmp(vg->lock_type, "dlm"))
-				pool_lv->lock_args = "dlm";
-			else if (!strcmp(vg->lock_type, "idm"))
-				pool_lv->lock_args = "idm";
-			/* The lock_args will be set in vg_write(). */
-		}
-	}
 
 	/* Apply settings to the new pool seg */
 	if (to_cachepool) {
 		if (!cache_set_params(seg, chunk_size, cache_metadata_format, cache_mode, policy_name, policy_settings))
 			goto_bad;
 	} else {
-		seg->transaction_id = 0;
-		seg->crop_metadata = crop_metadata;
-		seg->chunk_size = chunk_size;
-		seg->discards = discards;
-		seg->zero_new_blocks = zero_new_blocks;
-		if (crop_metadata == THIN_CROP_METADATA_NO)
-			pool_lv->status |= LV_CROP_METADATA;
-		if (!recalculate_pool_chunk_size_with_dev_hints(pool_lv, data_lv, chunk_calc))
-			goto_bad;
-
 		/* Error when full */
 		if (arg_is_set(cmd, errorwhenfull_ARG))
-			error_when_full = arg_uint_value(cmd, errorwhenfull_ARG, 0);
+			error_when_full = arg_int_value(cmd, errorwhenfull_ARG, 0);
 		else
 			error_when_full = find_config_tree_bool(cmd, activation_error_when_full_CFG, vg->profile);
-		if (error_when_full)
-			pool_lv->status |= LV_ERROR_WHEN_FULL;
+
+		if (!thin_pool_set_params(seg,
+					  error_when_full,
+					  crop_metadata,
+					  chunk_calc,
+					  chunk_size,
+					  discards,
+					  zero_new_blocks))
+			goto_bad;
 
 		if (to_thin) {
 			if (!thin_pool_prepare_metadata(metadata_lv, seg->chunk_size,
@@ -3409,90 +3495,118 @@ static int _lvconvert_to_pool(struct cmd_context *cmd,
 		}
 	}
 
-	if (!_lvconvert_attach_metadata_to_pool(seg, metadata_lv))
+	if (!add_metadata_to_pool(seg, metadata_lv))
 		goto_bad;
 
-	if (!handle_pool_metadata_spare(vg,
-					metadata_lv->le_count,
-					use_pvh, pool_metadata_spare))
-		goto_bad;
+	/*
+	 * If the input LV is being converted to a thin pool, the input LV lock
+	 * is used for the thin pool LV.  If the input LV is being converted to
+	 * a thin LV, a new lock is created for the thin pool and the lock from
+	 * the input LV is freed.  A cache pool LV has no lock, so the lock for
+	 * the input LV is freed.
+	 */
+	if (vg_is_shared(vg)) {
+		lv->lock_args = NULL;
+		pool_lv->lock_args = NULL;
+		data_lv->lock_args = NULL;
+		metadata_lv->lock_args = NULL;
+
+		if (to_thin) {
+			if (!lockd_init_lv_args(cmd, vg, pool_lv, vg->lock_type, &pool_lv->lock_args)) {
+				log_error("Cannot allocate lock for new pool LV.");
+				goto bad;
+			}
+		} else if (to_thinpool) {
+			pool_lv->lock_args = lockd_data_args;
+			/* Don't free this lock below. */
+			lockd_data_args = NULL;
+			lockd_data_name = NULL;
+		}
+
+		/* Acquire the thin pool lock if the pool will remain active. */
+		if ((to_thin || to_thinpool) && is_active) {
+			if (!lockd_lv(cmd, pool_lv, "ex", LDLV_PERSISTENT)) {
+				log_error("Failed to lock new pool LV %s.", display_lvname(pool_lv));
+				goto bad;
+			}
+			lock_active_pool_done = 1;
+		}
+	}
 
 	if (to_thin) {
-		if (!lockd_lv(cmd, pool_lv, "ex", LDLV_PERSISTENT)) {
-			log_error("Failed to lock pool LV %s.", display_lvname(pool_lv));
-			goto out;
-		}
 		if (!lv_update_and_reload(lv))
 			goto_bad;
 	} else {
 		if (!vg_write(vg) || !vg_commit(vg))
 			goto_bad;
+	}
 
-		if (activate_pool) {
-			if (!lockd_lv(cmd, pool_lv, "ex", LDLV_PERSISTENT)) {
-				log_error("Failed to lock pool LV %s.", display_lvname(pool_lv));
-				goto out;
-			}
+	/*
+	 * The main conversion is successfully committed.  If any subsequent
+	 * steps fail (creating spare, activating, unlocking), we do not
+	 * currently have the ability to undo the changes committed up to this
+	 * point.  Failures in the remaining steps can print an error and cause
+	 * the command to exit with an error, but no partial revert of the
+	 * completed steps is attempted.
+	 */
+	log_print_unless_silent("Converted %s to %s %s.", converted_names,
+				 (to_cachepool) ? "cache" : "thin",
+				 (to_thin) ? "volume" : "pool");
 
-			if (!activate_lv(cmd, pool_lv)) {
-				log_error("Failed to activate pool logical volume %s.",
-					  display_lvname(pool_lv));
+	if (activate_pool && !activate_lv(cmd, pool_lv)) {
+		log_error("Failed to activate pool logical volume %s.", display_lvname(pool_lv));
+		ret = 0;
+	}
 
-				/* Deactivate subvolumes */
-				if (!deactivate_lv(cmd, seg_lv(seg, 0)))
-					log_error("Failed to deactivate pool data logical volume %s.",
-						  display_lvname(seg_lv(seg, 0)));
-				if (!deactivate_lv(cmd, seg->metadata_lv))
-					log_error("Failed to deactivate pool metadata logical volume %s.",
-						  display_lvname(seg->metadata_lv));
-				goto out;
-			}
+	/*
+	 * Unlock and free locks that are no longer used.
+	 */
+	if (lockd_data_name) {
+		if (!lockd_lv_name(cmd, vg, lockd_data_name, &lockd_data_id, lockd_data_args, "un", lockd_data_flags)) {
+			log_error("Failed to unlock pool data LV %s/%s", vg->name, lockd_data_name);
+			ret = 0;
+		}
+		if (!lockd_free_lv(cmd, vg, lockd_data_name, &lockd_data_id, lockd_data_args)) {
+			log_error("Failed to free lock for pool data LV %s/%s", vg->name, lockd_data_name);
+			ret = 0;
+		}
+	}
+	if (lockd_meta_name) {
+		if (!lockd_lv_name(cmd, vg, lockd_meta_name, &lockd_meta_id, lockd_meta_args, "un", lockd_meta_flags)) {
+			log_error("Failed to unlock pool metadata LV %s/%s", vg->name, lockd_meta_name);
+			ret = 0;
+		}
+		if (!lockd_free_lv(cmd, vg, lockd_meta_name, &lockd_meta_id, lockd_meta_args)) {
+			log_error("Failed to free lock for pool metadata LV %s/%s", vg->name, lockd_meta_name);
+			ret = 0;
 		}
 	}
 
-	r = 1;
-
-out:
-	if (r)
-		log_print_unless_silent("Converted %s to %s %s.",
-					converted_names, (to_cachepool) ? "cache" : "thin",
-					(to_thin) ? "volume" : "pool");
-
-	/*
-	 * Unlock and free the locks from existing LVs that became pool data
-	 * and meta LVs.
-	 */
-	if (lockd_data_name) {
-		if (!lockd_lv_name(cmd, vg, lockd_data_name, &lockd_data_id, lockd_data_args, "un", LDLV_PERSISTENT))
-			log_error("Failed to unlock pool data LV %s/%s", vg->name, lockd_data_name);
-		lockd_free_lv(cmd, vg, lockd_data_name, &lockd_data_id, lockd_data_args);
-	}
-
-	if (lockd_meta_name) {
-		if (!lockd_lv_name(cmd, vg, lockd_meta_name, &lockd_meta_id, lockd_meta_args, "un", LDLV_PERSISTENT))
-			log_error("Failed to unlock pool metadata LV %s/%s", vg->name, lockd_meta_name);
-		lockd_free_lv(cmd, vg, lockd_meta_name, &lockd_meta_id, lockd_meta_args);
-	}
-bad:
 	if (policy_settings)
 		dm_config_destroy(policy_settings);
 
-	return r;
-#if 0
-revert_new_lv:
-	/* TBD */
-	if (!pool_metadata_lv_name) {
-		if (!deactivate_lv(cmd, metadata_lv)) {
-			log_error("Failed to deactivate metadata lv.");
-			return 0;
-		}
-		if (!lv_remove(metadata_lv) || !vg_write(vg) || !vg_commit(vg))
-			log_error("Manual intervention may be required to remove "
-				  "abandoned LV(s) before retrying.");
+	if (!ret)
+		log_error("Manual intervention may be required to handle reported errors.");
+
+	return ret;
+
+	/*
+	 * Error exit path for failures that occur before the main conversion
+	 * is committed.  Failures that occur after the main conversion is
+	 * committed should not exit here.  There is some cleanup missing here.
+	 */
+bad:
+	if (vg_is_shared(vg)) {
+		if (lock_active_pool_done)
+			lockd_lv(cmd, pool_lv, "un", LDLV_PERSISTENT);
+		if (pool_lv && pool_lv->lock_args && pool_lv->new_lock_args)
+			lockd_free_lv(cmd, vg, pool_lv->name, &pool_lv->lvid.id[1], pool_lv->lock_args);
 	}
 
+	if (policy_settings)
+		dm_config_destroy(policy_settings);
+
 	return 0;
-#endif
 }
 
 static int _cache_vol_attach(struct cmd_context *cmd,
@@ -3526,9 +3640,9 @@ static int _cache_vol_attach(struct cmd_context *cmd,
 	 * lock does not need to be created for it again.)
 	 */
 	if (vg_is_shared(vg) && lv_fast->lock_args) {
-		lockd_fast_args = dm_pool_strdup(cmd->mem, lv_fast->lock_args);
-		lockd_fast_name = dm_pool_strdup(cmd->mem, lv_fast->name);
-		memcpy(&lockd_fast_id, &lv_fast->lvid.id[1], sizeof(struct id));
+		lockd_fast_args = dm_pool_strdup(lv_fast->vg->vgmem, lv_fast->lock_args);
+		lockd_fast_name = dm_pool_strdup(lv_fast->vg->vgmem, lv_fast->name);
+		lockd_fast_id = lv_fast->lvid.id[1];
 	}
 
 	/*
@@ -4127,7 +4241,7 @@ int lvconvert_combine_split_snapshot_cmd(struct cmd_context *cmd, int argc, char
 	int vglv_sz;
 
 	/*
-	 * Hack to accomodate an old parsing quirk that allowed the
+	 * Hack to accommodate an old parsing quirk that allowed the
 	 * the VG name to be attached to only the LV in arg pos 1,
 	 * i.e. lvconvert -s vgname/lvname lvname
 	 *
@@ -4521,7 +4635,7 @@ static int _lvconvert_cachepool_attach_single(struct cmd_context *cmd,
 
 	if (!lv_is_cache_pool(cachepool_lv)) {
 		int lvt_enum = get_lvt_enum(cachepool_lv);
-		struct lv_type *lvtype = get_lv_type(lvt_enum);
+		const struct lv_type *lvtype = get_lv_type(lvt_enum);
 
 		if (lvt_enum != striped_LVT && lvt_enum != linear_LVT && lvt_enum != raid_LVT) {
 			log_error("LV %s with type %s cannot be converted to a cache pool.",
@@ -4627,7 +4741,7 @@ static int _lvconvert_to_thin_with_external_single(struct cmd_context *cmd,
 
 	if (!lv_is_thin_pool(thinpool_lv)) {
 		int lvt_enum = get_lvt_enum(thinpool_lv);
-		struct lv_type *lvtype = get_lv_type(lvt_enum);
+		const struct lv_type *lvtype = get_lv_type(lvt_enum);
 
 		if (lvt_enum != striped_LVT && lvt_enum != linear_LVT && lvt_enum != raid_LVT) {
 			log_error("LV %s with type %s cannot be converted to a thin pool.",
@@ -4703,8 +4817,7 @@ static int _lvconvert_to_thin_with_data(struct cmd_context *cmd,
 					struct logical_volume *lv,
 					struct processing_handle *handle)
 {
-	struct volume_group *vg = lv->vg;
-	struct dm_list *use_pvh = NULL;
+	struct dm_list *use_pvh;
 
 	if (cmd->position_argc > 1) {
 		/* First pos arg is required LV, remaining are optional PVs. */
@@ -4714,7 +4827,7 @@ static int _lvconvert_to_thin_with_data(struct cmd_context *cmd,
 	} else
 		use_pvh = &lv->vg->pvs;
 
-	if (!_lvconvert_to_pool(cmd, lv, lv, 1, 0, 1, &vg->pvs)) {
+	if (!_lvconvert_to_pool(cmd, lv, lv, 1, 0, 1, use_pvh)) {
 		log_error("LV %s could not be converted to a thin volume.",
 			  display_lvname(lv));
 		return ECMD_FAILED;
@@ -4777,7 +4890,7 @@ static int _lvconvert_to_pool_or_swap_metadata_single(struct cmd_context *cmd,
 	int to_thinpool = 0;
 	int to_cachepool = 0;
 	int lvt_enum = get_lvt_enum(lv);
-	struct lv_type *lvtype;
+	const struct lv_type *lvtype;
 
 	switch (cmd->command->command_enum) {
 	case lvconvert_to_thinpool_or_swap_metadata_CMD:
@@ -4810,6 +4923,7 @@ static int _lvconvert_to_pool_or_swap_metadata_single(struct cmd_context *cmd,
 	case striped_LVT:
 	case error_LVT:
 	case zero_LVT:
+	case vdo_LVT:
 		break;
 	default:
 bad:
@@ -5107,7 +5221,7 @@ static int _lvconvert_raid_types_check(struct cmd_context *cmd, struct logical_v
 			int lv_is_named_arg)
 {
 	int lvt_enum = get_lvt_enum(lv);
-	struct lv_type *lvtype = get_lv_type(lvt_enum);
+	const struct lv_type *lvtype = get_lv_type(lvt_enum);
 
 	if (!lv_is_visible(lv)) {
 		if (!lv_is_cache_pool_metadata(lv) &&
@@ -5352,7 +5466,7 @@ static int _lvconvert_merge_mirror_images_single(struct cmd_context *cmd,
 int lvconvert_merge_mirror_images_cmd(struct cmd_context *cmd, int argc, char **argv)
 {
 	/* arg can be a VG name, which is the standard option usage */
-	cmd->cname->flags &= ~GET_VGNAME_FROM_OPTIONS;
+	cmd->get_vgname_from_options = 0;
 
 	return process_each_lv(cmd, cmd->position_argc, cmd->position_argv, NULL, NULL, READ_FOR_UPDATE,
 			       NULL, &_lvconvert_visible_check, &_lvconvert_merge_mirror_images_single);
@@ -5392,7 +5506,7 @@ int lvconvert_merge_cmd(struct cmd_context *cmd, int argc, char **argv)
 
 	handle->custom_handle = &lr;
 
-	cmd->cname->flags &= ~GET_VGNAME_FROM_OPTIONS;
+	cmd->get_vgname_from_options = 0;
 
 	ret = process_each_lv(cmd, cmd->position_argc, cmd->position_argv, NULL, NULL, READ_FOR_UPDATE,
 			      handle, NULL, &_lvconvert_merge_generic_single);
@@ -5416,96 +5530,54 @@ static int _lvconvert_to_vdopool_single(struct cmd_context *cmd,
 					struct logical_volume *lv,
 					struct processing_handle *handle)
 {
-	const char *vg_name = NULL;
-	unsigned int vdo_pool_zero;
-	uint64_t vdo_pool_header_size;
 	struct volume_group *vg = lv->vg;
 	struct logical_volume *vdo_lv;
-	struct dm_vdo_target_params vdo_params; /* vdo */
-	struct lvcreate_params lvc = {
+	const char *vg_name = NULL;
+	struct vdo_convert_params vcp = {
 		.activate = CHANGE_AEY,
-		.alloc = ALLOC_INHERIT,
-		.major = -1,
-		.minor = -1,
-		.suppress_zero_warn = 1, /* Suppress warning for this VDO */
-		.permission = LVM_READ | LVM_WRITE,
-		.pool_name = lv->name,
-		.pvh = &vg->pvs,
-		.read_ahead = arg_uint_value(cmd, readahead_ARG, DM_READ_AHEAD_AUTO),
-		.stripes = 1,
 		.lv_name = arg_str_value(cmd, name_ARG, NULL),
+		.virtual_extents = extents_from_size(cmd,
+						     arg_uint64_value(cmd, virtualsize_ARG, UINT64_C(0)),
+						     vg->extent_size),
+		.do_zero = arg_int_value(cmd, zero_ARG, 1),
+		.do_wipe_signatures = _get_wipe_signatures(cmd),
+		.yes = arg_count(cmd, yes_ARG),
+		.force = arg_count(cmd, force_ARG)
 	};
 
-	if (lvc.lv_name &&
-	    !validate_restricted_lvname_param(cmd, &vg_name, &lvc.lv_name))
+	if (vcp.lv_name) {
+		if (!validate_restricted_lvname_param(cmd, &vg_name, &vcp.lv_name))
+			goto_out;
+	} else
+		vcp.lv_name = "lvol%d";
+
+	if (!fill_vdo_target_params(cmd, &vcp.vdo_params, &vcp.header_size, vg->profile))
 		goto_out;
 
-	lvc.virtual_extents = extents_from_size(cmd,
-						arg_uint64_value(cmd, virtualsize_ARG, UINT64_C(0)),
-						vg->extent_size);
-
-	if (!(lvc.segtype = get_segtype_from_string(cmd, SEG_TYPE_NAME_VDO)))
-		goto_out;
-
-	if (activation() && lvc.segtype->ops->target_present) {
-		if (!lvc.segtype->ops->target_present(cmd, NULL, &lvc.target_attr)) {
-			log_error("%s: Required device-mapper target(s) not detected in your kernel.",
-				  lvc.segtype->name);
-			goto out;
-		}
-	}
-
-	if (!fill_vdo_target_params(cmd, &vdo_params, &vdo_pool_header_size, vg->profile))
-		goto_out;
-
-	if (!get_vdo_settings(cmd, &vdo_params, NULL))
+	if (!get_vdo_settings(cmd, &vcp.vdo_params, NULL))
 		goto_out;
 
 	/* If LV is inactive here, ensure it's not active elsewhere. */
 	if (!lockd_lv(cmd, lv, "ex", 0))
 		goto_out;
 
-	if (!activate_lv(cmd, lv)) {
-		log_error("Cannot activate %s.", display_lvname(lv));
-		goto out;
-	}
-
-	vdo_pool_zero = arg_int_value(cmd, zero_ARG, 1);
-
 	log_warn("WARNING: Converting logical volume %s to VDO pool volume %s formatting.",
-		 display_lvname(lv), vdo_pool_zero ? "with" : "WITHOUT");
+		 display_lvname(lv), vcp.do_zero ? "with" : "WITHOUT");
 
-	if (vdo_pool_zero)
+	if (vcp.do_zero)
 		log_warn("THIS WILL DESTROY CONTENT OF LOGICAL VOLUME (filesystem etc.)");
 	else
 		log_warn("WARNING: Using invalid VDO pool data MAY DESTROY YOUR DATA!");
 
-	if (!arg_count(cmd, yes_ARG) &&
+	if (!vcp.yes &&
 	    yes_no_prompt("Do you really want to convert %s? [y/n]: ",
 			  display_lvname(lv)) == 'n') {
 		log_error("Conversion aborted.");
 		goto out;
 	}
 
-	if (vdo_pool_zero) {
-		if (test_mode()) {
-			log_verbose("Test mode: Skipping activation, zeroing and signature wiping.");
-		} else if (!wipe_lv(lv, (struct wipe_params) { .do_zero = 1, .do_wipe_signatures = 1,
-			     .yes = arg_count(cmd, yes_ARG),
-			     .force = arg_count(cmd, force_ARG)})) {
-			log_error("Aborting. Failed to wipe VDO data store.");
-			goto out;
-		}
-	}
-
-	if (!convert_vdo_pool_lv(lv, &vdo_params, &lvc.virtual_extents,
-				 vdo_pool_zero, vdo_pool_header_size))
+	if (!(vdo_lv = convert_vdo_lv(lv, &vcp)))
 		goto_out;
-
-	dm_list_init(&lvc.tags);
-
-	if (!(vdo_lv = lv_create_single(vg, &lvc)))
-		goto_out; /* FIXME: hmmm what to do now */
 
 	log_print_unless_silent("Converted %s to VDO pool volume and created virtual %s VDO volume.",
 				display_lvname(lv), display_lvname(vdo_lv));
@@ -5601,7 +5673,7 @@ static int _lvconvert_detach_writecache(struct cmd_context *cmd,
 		/*
 		 * --cachesettings cleaner=0 means to skip the use of the cleaner
 		 * and go directly to detach which will use a flush message.
-		 * (This is currently the only cachesetting used during detach.)
+		 * (This is currently the only cachesettings used during detach.)
 		 */
 		if (settings.cleaner_set && !settings.cleaner) {
 			log_print_unless_silent("Detaching writecache skipping cleaner...");
@@ -5638,7 +5710,7 @@ static int _lvconvert_detach_writecache(struct cmd_context *cmd,
 		log_print_unless_silent("Detaching writecache setting cleaner.");
 
 		if (!lv_writecache_set_cleaner(lv)) {
-			log_error("Failed to set cleaner cachesetting to flush cache.");
+			log_error("Failed to set cleaner cachesettings to flush cache.");
 			log_error("See lvchange --cachesettings cleaner=1");
 
 			if (!active_begin && active_clean && !deactivate_lv(cmd, lv))
@@ -5648,7 +5720,7 @@ static int _lvconvert_detach_writecache(struct cmd_context *cmd,
 
 		/*
 		 * The cache may have been nearly clean and will be empty with
-		 * a short dely.
+		 * a short delay.
 		 */
 		usleep(10000);
 		if (lv_writecache_is_clean(cmd, lv, NULL)) {
@@ -5717,10 +5789,17 @@ static int _lvconvert_detach_writecache_when_clean(struct cmd_context *cmd,
 	struct logical_volume *lv_fast;
 	uint32_t lockd_state, error_flags;
 	uint64_t dirty;
+	int is_lockd;
 	int ret = 0;
+
+	if (dm_list_empty(&lr->poll_idls)) {
+		log_error(INTERNAL_ERROR "Cannot detach writecache.");
+		return 0;
+	}
 
 	idl = dm_list_item(dm_list_first(&lr->poll_idls), struct convert_poll_id_list);
 	id = idl->id;
+	is_lockd = lvmcache_vg_is_lockd_type(cmd, id->vg_name, NULL);
 
 	/*
 	 * TODO: we should be able to save info about the dm device for this LV
@@ -5735,7 +5814,7 @@ static int _lvconvert_detach_writecache_when_clean(struct cmd_context *cmd,
 	lockd_state = 0;
 	error_flags = 0;
 
-	if (!lockd_vg(cmd, id->vg_name, "ex", 0, &lockd_state)) {
+	if (is_lockd && !lockd_vg(cmd, id->vg_name, "ex", 0, &lockd_state)) {
 		log_error("Detaching writecache interrupted - locking VG failed.");
 		return 0;
 	}
@@ -5772,7 +5851,7 @@ static int _lvconvert_detach_writecache_when_clean(struct cmd_context *cmd,
 	if (!lv_writecache_is_clean(cmd, lv, &dirty)) {
 		unlock_and_release_vg(cmd, vg, vg->name);
 
-		if (!lockd_vg(cmd, id->vg_name, "un", 0, &lockd_state))
+		if (is_lockd && !lockd_vg(cmd, id->vg_name, "un", 0, &lockd_state))
 			stack;
 
 		log_print_unless_silent("Detaching writecache cleaning %llu blocks", (unsigned long long)dirty);
@@ -5825,7 +5904,7 @@ out_release:
 	unlock_and_release_vg(cmd, vg, vg->name);
 
 out_lockd:
-	if (!lockd_vg(cmd, id->vg_name, "un", 0, &lockd_state))
+	if (is_lockd && !lockd_vg(cmd, id->vg_name, "un", 0, &lockd_state))
 		stack;
 
 	return ret;
@@ -6084,15 +6163,27 @@ static int _check_writecache_memory(struct cmd_context *cmd, struct logical_volu
 	uint64_t need_mem_gb;
 	uint64_t proc_mem_gb;
 	unsigned long long proc_mem_kb = 0;
+	char proc_meminfo[PATH_MAX];
 
-	if (!(fp = fopen("/proc/meminfo", "r")))
+	if (*cmd->proc_dir)
+		goto skip_proc;
+
+	if (dm_snprintf(proc_meminfo, sizeof(proc_meminfo),
+			"%s/meminfo", cmd->proc_dir) < 0) {
+		stack;
+		goto skip_proc;
+	}
+
+	if (!(fp = fopen(proc_meminfo, "r")))
 		goto skip_proc;
 
 	while (fgets(line, sizeof(line), fp)) {
 		if (strncmp(line, "MemTotal:", 9))
 			continue;
-		if (sscanf(line, "%*s%llu%*s", &proc_mem_kb) != 1)
+		if (sscanf(line, "%*s%llu%*s", &proc_mem_kb) != 1) {
+			stack;
 			break;
+		}
 		break;
 	}
 	(void)fclose(fp);
@@ -6249,14 +6340,14 @@ int lvconvert_writecache_attach_single(struct cmd_context *cmd,
 	 * lv_wcorig gets no lock.
 	 */
 	if (vg_is_shared(vg) && lv_fast->lock_args) {
-		lockd_fast_args = dm_pool_strdup(cmd->mem, lv_fast->lock_args);
-		lockd_fast_name = dm_pool_strdup(cmd->mem, lv_fast->name);
-		memcpy(&lockd_fast_id, &lv_fast->lvid.id[1], sizeof(struct id));
+		lockd_fast_args = dm_pool_strdup(lv_fast->vg->vgmem, lv_fast->lock_args);
+		lockd_fast_name = dm_pool_strdup(lv_fast->vg->vgmem, lv_fast->name);
+		lockd_fast_id = lv_fast->lvid.id[1];
 	}
 
 	if (!_writecache_zero(cmd, lv_fast)) {
 		log_error("LV %s could not be zeroed.", display_lvname(lv_fast));
-		return ECMD_FAILED;
+		goto bad;
 	}
 
 	/*
@@ -6266,10 +6357,10 @@ int lvconvert_writecache_attach_single(struct cmd_context *cmd,
 	 */
 	if (dm_snprintf(cvol_name, sizeof(cvol_name), "%s_cvol", lv_fast->name) < 0) {
 		log_error("Can't prepare new metadata name for %s.", display_lvname(lv_fast));
-		return ECMD_FAILED;
+		goto bad;
 	}
 	if (!lv_rename_update(cmd, lv_fast, cvol_name, 0))
-		return_ECMD_FAILED;
+		goto_bad;
 
 	lv_fast->status |= LV_CACHE_VOL;
 
@@ -6334,7 +6425,7 @@ int lvconvert_to_writecache_cmd(struct cmd_context *cmd, int argc, char **argv)
 
 	handle->custom_handle = &lr;
 
-	cmd->cname->flags &= ~GET_VGNAME_FROM_OPTIONS;
+	cmd->get_vgname_from_options = 0;
 
 	ret = process_each_lv(cmd, cmd->position_argc, cmd->position_argv, NULL, NULL, READ_FOR_UPDATE, handle, NULL,
 			      &lvconvert_writecache_attach_single);
@@ -6357,7 +6448,7 @@ int lvconvert_to_cache_with_cachevol_cmd(struct cmd_context *cmd, int argc, char
 
 	handle->custom_handle = &lr;
 
-	cmd->cname->flags &= ~GET_VGNAME_FROM_OPTIONS;
+	cmd->get_vgname_from_options = 0;
 
 	ret = process_each_lv(cmd, cmd->position_argc, cmd->position_argv, NULL, NULL, READ_FOR_UPDATE, handle, NULL,
 			      &lvconvert_cachevol_attach_single);
@@ -6369,24 +6460,26 @@ int lvconvert_to_cache_with_cachevol_cmd(struct cmd_context *cmd, int argc, char
 
 static int _lvconvert_integrity_remove(struct cmd_context *cmd, struct logical_volume *lv)
 {
-	int ret = 0;
-
 	if (!lv_is_integrity(lv) && !lv_is_raid(lv)) {
-		log_error("LV does not have integrity.");
-		return ECMD_FAILED;
+		log_error("LV %s does not have integrity.", display_lvname(lv));
+		return 0;
+	}
+
+	if (!lv_is_raid(lv)) {
+		log_error("Cannot remove integrity from non raid type LV %s.",
+			  display_lvname(lv));
+		return 0;
 	}
 
 	/* ensure it's not active elsewhere. */
 	if (!lockd_lv(cmd, lv, "ex", 0))
-		return_ECMD_FAILED;
+		return_0;
 
-	if (lv_is_raid(lv))
-		ret = lv_remove_integrity_from_raid(lv);
-	if (!ret)
-		return_ECMD_FAILED;
+	if (!lv_remove_integrity_from_raid(lv))
+		return_0;
 
 	log_print_unless_silent("Logical volume %s has removed integrity.", display_lvname(lv));
-	return ECMD_PROCESSED;
+	return 1;
 }
 
 static int _lvconvert_integrity_add(struct cmd_context *cmd, struct logical_volume *lv,
@@ -6394,7 +6487,6 @@ static int _lvconvert_integrity_add(struct cmd_context *cmd, struct logical_volu
 {
 	struct volume_group *vg = lv->vg;
 	struct dm_list *use_pvh;
-	int ret = 0;
 
 	/* ensure it's not active elsewhere. */
 	if (!lockd_lv(cmd, lv, "ex", 0))
@@ -6412,9 +6504,13 @@ static int _lvconvert_integrity_add(struct cmd_context *cmd, struct logical_volu
 		return 0;
 	}
 
-	if (lv_is_raid(lv))
-		ret = lv_add_integrity_to_raid(lv, set, use_pvh, NULL);
-	if (!ret)
+	if (!lv_is_raid(lv)) {
+		log_error("Cannot add integrity to non raid type LV %s.",
+			  display_lvname(lv));
+		return 0;
+	}
+
+	if (!lv_add_integrity_to_raid(lv, set, use_pvh, NULL))
 		return_0;
 
 	log_print_unless_silent("Logical volume %s has added integrity.", display_lvname(lv));
@@ -6425,10 +6521,13 @@ static int _lvconvert_integrity_single(struct cmd_context *cmd,
 					struct logical_volume *lv,
 					struct processing_handle *handle)
 {
-	struct integrity_settings settings;
-	int ret = 0;
+	struct integrity_settings settings = { .tag_size = 0 };
+	int ret;
 
-	memset(&settings, 0, sizeof(settings));
+	if (arg_is_set(cmd, integritysettings_ARG)) {
+		if (!get_integrity_settings(cmd, &settings))
+			return_ECMD_FAILED;
+	}
 
 	if (!integrity_mode_set(arg_str_value(cmd, raidintegritymode_ARG, NULL), &settings))
 		return_ECMD_FAILED;
@@ -6442,7 +6541,8 @@ static int _lvconvert_integrity_single(struct cmd_context *cmd,
 		ret = _lvconvert_integrity_remove(cmd, lv);
 
 	if (!ret)
-		return ECMD_FAILED;
+		return_ECMD_FAILED;
+
 	return ECMD_PROCESSED;
 }
 
@@ -6459,7 +6559,7 @@ int lvconvert_integrity_cmd(struct cmd_context *cmd, int argc, char **argv)
 	/* Want to be able to remove integrity from partial LV */
 	cmd->handles_missing_pvs = 1;
 
-	cmd->cname->flags &= ~GET_VGNAME_FROM_OPTIONS;
+	cmd->get_vgname_from_options = 0;
 
 	ret = process_each_lv(cmd, cmd->position_argc, cmd->position_argv, NULL, NULL, READ_FOR_UPDATE, handle, NULL,
 			      &_lvconvert_integrity_single);
@@ -6477,6 +6577,6 @@ int lvconvert_integrity_cmd(struct cmd_context *cmd, int argc, char **argv)
 int lvconvert(struct cmd_context *cmd, int argc, char **argv)
 {
 	log_error(INTERNAL_ERROR "Missing function for command definition %d:%s.",
-		  cmd->command->command_index, cmd->command->command_id);
+		  cmd->command->command_index, command_enum(cmd->command->command_enum));
 	return ECMD_FAILED;
 }

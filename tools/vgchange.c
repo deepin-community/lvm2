@@ -21,6 +21,7 @@ struct vgchange_params {
 	int lock_start_count;
 	unsigned int lock_start_sanlock : 1;
 	unsigned int vg_complete_to_activate : 1;
+	char *root_dm_uuid; /* dm uuid of LV under root fs */
 };
 
 /*
@@ -143,7 +144,7 @@ static int _activate_lvs_in_vg(struct cmd_context *cmd, struct volume_group *vg,
 			    count, vg->name);
 
 	/*
-	 * After sucessfull activation we need to initialise polling
+	 * After successful activation we need to initialise polling
 	 * for all activated LVs in a VG. Possible enhancement would
 	 * be adding --poll y|n cmdline option for pvscan and call
 	 * init_background_polling routine in autoactivation handler.
@@ -197,7 +198,7 @@ int vgchange_background_polling(struct cmd_context *cmd, struct volume_group *vg
 }
 
 int vgchange_activate(struct cmd_context *cmd, struct volume_group *vg,
-		      activation_change_t activate, int vg_complete_to_activate)
+		      activation_change_t activate, int vg_complete_to_activate, char *root_dm_uuid)
 {
 	int lv_open, active, monitored = 0, r = 1;
 	const struct lv_list *lvl;
@@ -279,6 +280,43 @@ int vgchange_activate(struct cmd_context *cmd, struct volume_group *vg,
 		r = 0;
 	}
 
+	/*
+	 * Possibly trigger auto-generation of system.devices:
+	 * - if root_dm_uuid contains vg->id, and
+	 * - /etc/lvm/devices/auto-import-rootvg exists, and
+	 * - /etc/lvm/devices/system.devices does not exist, then
+	 * - create /run/lvm/lvm-devices-import to
+	 *   trigger lvm-devices-import.path and .service
+	 * - lvm-devices-import will run vgimportdevices --rootvg
+	 *   to create system.devices
+	 */
+	if (root_dm_uuid) {
+		char path[PATH_MAX];
+		struct stat info;
+		FILE *fp;
+
+		if (memcmp(root_dm_uuid + 4, &vg->id, ID_LEN))
+			goto out;
+
+		if (cmd->enable_devices_file || devices_file_exists(cmd))
+			goto out;
+
+		if (dm_snprintf(path, sizeof(path), "%s/devices/auto-import-rootvg", cmd->system_dir) < 0)
+			goto out;
+
+		if (stat(path, &info) < 0)
+			goto out;
+
+		log_debug("Found %s creating %s", path, DEVICES_IMPORT_PATH);
+
+		if (!(fp = fopen(DEVICES_IMPORT_PATH, "w"))) {
+			log_debug("failed to create %s", DEVICES_IMPORT_PATH);
+			goto out;
+		}
+		if (fclose(fp))
+			stack;
+	}
+out:
 	/* Print message only if there was not found a missing VG */
 	log_print_unless_silent("%d logical volume(s) in volume group \"%s\" now active",
 				lvs_in_vg_activated(vg), vg->name);
@@ -428,7 +466,7 @@ static int _vgchange_uuid(struct cmd_context *cmd __attribute__((unused)),
 	struct id old_vg_id;
 
 	if (lvs_in_vg_activated(vg)) {
-		log_error("Volume group has active logical volumes");
+		log_error("Volume group has active logical volumes.");
 		return 0;
 	}
 
@@ -588,12 +626,12 @@ static int _passes_lock_start_filter(struct cmd_context *cmd,
 		if (cv->type == DM_CFG_EMPTY_ARRAY)
 			break;
 		if (cv->type != DM_CFG_STRING) {
-			log_error("Ignoring invalid string in lock_start list");
+			log_error("Ignoring invalid string in lock_start list.");
 			continue;
 		}
 		str = cv->v.str;
 		if (!*str) {
-			log_error("Ignoring empty string in config file");
+			log_error("Ignoring empty string in config file.");
 			continue;
 		}
 
@@ -609,7 +647,6 @@ static int _passes_lock_start_filter(struct cmd_context *cmd,
 static int _vgchange_lock_start(struct cmd_context *cmd, struct volume_group *vg,
 				struct vgchange_params *vp)
 {
-	const char *start_opt = arg_str_value(cmd, lockopt_ARG, NULL);
 	int auto_opt = 0;
 	int exists = 0;
 	int r;
@@ -621,10 +658,9 @@ static int _vgchange_lock_start(struct cmd_context *cmd, struct volume_group *vg
 		goto do_start;
 
 	/*
-	 * Recognize both "auto" and "autonowait" options.
 	 * Any waiting is done at the end of vgchange.
 	 */
-	if (start_opt && !strncmp(start_opt, "auto", 4))
+	if ((cmd->lockopt & LOCKOPT_AUTO) || (cmd->lockopt & LOCKOPT_AUTONOWAIT))
 		auto_opt = 1;
 
 	if (!_passes_lock_start_filter(cmd, vg, activation_lock_start_list_CFG)) {
@@ -638,7 +674,7 @@ static int _vgchange_lock_start(struct cmd_context *cmd, struct volume_group *vg
 	}
 
 do_start:
-	r = lockd_start_vg(cmd, vg, 0, &exists);
+	r = lockd_start_vg(cmd, vg, &exists);
 
 	if (r)
 		vp->lock_start_count++;
@@ -709,12 +745,12 @@ static int _vgchange_single(struct cmd_context *cmd, const char *vg_name,
 		if (!vg_write(vg) || !vg_commit(vg))
 			return_ECMD_FAILED;
 
-		log_print_unless_silent("Volume group \"%s\" successfully changed", vg->name);
+		log_print_unless_silent("Volume group \"%s\" successfully changed.", vg->name);
 	}
 
 	if (arg_is_set(cmd, activate_ARG)) {
 		activate = (activation_change_t) arg_uint_value(cmd, activate_ARG, 0);
-		if (!vgchange_activate(cmd, vg, activate, vp->vg_complete_to_activate))
+		if (!vgchange_activate(cmd, vg, activate, vp->vg_complete_to_activate, vp->root_dm_uuid))
 			return_ECMD_FAILED;
 	} else if (arg_is_set(cmd, refresh_ARG)) {
 		/* refreshes the visible LVs (which starts polling) */
@@ -726,13 +762,89 @@ static int _vgchange_single(struct cmd_context *cmd, const char *vg_name,
 		    !_vgchange_monitoring(cmd, vg))
 			return_ECMD_FAILED;
 
-		/* When explicitelly specified --poll */
+		/* When explicitly specified --poll */
 		if (arg_is_set(cmd, poll_ARG) &&
 		    !vgchange_background_polling(cmd, vg))
 			return_ECMD_FAILED;
 	}
 
 	return ret;
+}
+
+/*
+ * Automatic creation of system.devices for root VG on first boot
+ * is useful for OS images where the OS installer is not used to
+ * customize the OS for system.
+ *
+ * - OS image prep:
+ *   . rm /etc/lvm/devices/system.devices (if it exists)
+ *   . touch /etc/lvm/devices/auto-import-rootvg
+ *   . enable lvm-devices-import.path
+ *   . enable lvm-devices-import.service
+ *
+ * - lvchange -ay <rootvg>/<rootlv>
+ *   . run by initrd so root fs can be mounted
+ *   . does not use system.devices
+ *   . named <rootvg>/<rootlv> comes from kernel command line rd.lvm
+ *   . uses first device that appears containing the named root LV
+ *
+ * - vgchange -aay <rootvg>
+ *   . triggered by udev when all PVs from root VG are online
+ *   . activate LVs in root VG (in addition to the already active root LV)
+ *   . check for /etc/lvm/devices/auto-import-rootvg (found)
+ *   . check for /etc/lvm/devices/system.devices (not found)
+ *   . create /run/lvm/lvm-devices-import because
+ *     auto-import-rootvg was found and system.devices was not found
+ *
+ * - lvm-devices-import.path
+ *   . triggered by /run/lvm/lvm-devices-import
+ *   . start lvm-devices-import.service
+ *
+ * - lvm-devices-import.service
+ *   . check for /etc/lvm/devices/system.devices, do nothing if found
+ *   . run vgimportdevices --rootvg --auto
+ *
+ * - vgimportdevices --rootvg --auto
+ *   . check for /etc/lvm/devices/auto-import-rootvg (found)
+ *   . check for /etc/lvm/devices/system.devices (not found)
+ *   . creates /etc/lvm/devices/system.devices for PVs in root VG
+ *   . removes /etc/lvm/devices/auto-import-rootvg
+ *   . removes /run/lvm/lvm-devices-import
+ *
+ * On future startup, /etc/lvm/devices/system.devices will exist,
+ * and /etc/lvm/devices/auto-import-rootvg will not exist, so
+ * vgchange -aay <rootvg> will not create /run/lvm/lvm-devices-import,
+ * and lvm-devices-import.path and lvm-device-import.service will not run.
+ *
+ * lvm-devices-import.path:
+ * [Path]
+ * PathExists=/run/lvm/lvm-devices-import
+ * Unit=lvm-devices-import.service
+ * ConditionPathExists=!/etc/lvm/devices/system.devices
+ *
+ * lvm-devices-import.service:
+ * [Service]
+ * Type=oneshot
+ * RemainAfterExit=no
+ * ExecStart=/usr/sbin/vgimportdevices --rootvg --auto
+ * ConditionPathExists=!/etc/lvm/devices/system.devices
+ */
+static void _get_rootvg_dev(struct cmd_context *cmd, char **dm_uuid_out)
+{
+	char path[PATH_MAX];
+	struct stat info;
+
+	if (cmd->enable_devices_file || devices_file_exists(cmd))
+		return;
+
+	if (dm_snprintf(path, sizeof(path), "%s/devices/auto-import-rootvg", cmd->system_dir) < 0)
+		return;
+
+	if (stat(path, &info) < 0)
+		return;
+
+	if (!get_rootvg_dev_uuid(cmd, dm_uuid_out))
+		stack;
 }
 
 static int _vgchange_autoactivation_setup(struct cmd_context *cmd,
@@ -777,6 +889,8 @@ static int _vgchange_autoactivation_setup(struct cmd_context *cmd,
 		return_0;
 
 	get_single_vgname_cmd_arg(cmd, NULL, &vgname);
+
+	_get_rootvg_dev(cmd, &vp->root_dm_uuid);
 
 	/*
 	 * Lock the VG before scanning the PVs so _vg_read can avoid the normal
@@ -843,7 +957,7 @@ static int _vgchange_autoactivation_setup(struct cmd_context *cmd,
 	 * look for all PVs in the VG.  (No optimization used.)
 	 */
 	if (found_incomplete) {
-		log_print("PVs online incomplete for VG %s, using all devicess.", vgname);
+		log_print("PVs online incomplete for VG %s, using all devices.", vgname);
 		goto bad;
 	}
 
@@ -921,7 +1035,7 @@ int vgchange(struct cmd_context *cmd, int argc, char **argv)
 
 	if ((arg_is_set(cmd, ignorelockingfailure_ARG) ||
 	     arg_is_set(cmd, sysinit_ARG)) && update) {
-		log_error("Only -a permitted with --ignorelockingfailure and --sysinit");
+		log_error("Only -a permitted with --ignorelockingfailure and --sysinit.");
 		return EINVALID_CMD_LINE;
 	}
 
@@ -940,13 +1054,13 @@ int vgchange(struct cmd_context *cmd, int argc, char **argv)
 
 	if (arg_is_set(cmd, maxphysicalvolumes_ARG) &&
 	    arg_sign_value(cmd, maxphysicalvolumes_ARG, SIGN_NONE) == SIGN_MINUS) {
-		log_error("MaxPhysicalVolumes may not be negative");
+		log_error("MaxPhysicalVolumes may not be negative.");
 		return EINVALID_CMD_LINE;
 	}
 
 	if (arg_is_set(cmd, physicalextentsize_ARG) &&
 	    arg_sign_value(cmd, physicalextentsize_ARG, SIGN_NONE) == SIGN_MINUS) {
-		log_error("Physical extent size may not be negative");
+		log_error("Physical extent size may not be negative.");
 		return EINVALID_CMD_LINE;
 	}
 
@@ -1008,7 +1122,8 @@ int vgchange(struct cmd_context *cmd, int argc, char **argv)
 
 	if (update)
 		flags |= READ_FOR_UPDATE;
-	else if (arg_is_set(cmd, activate_ARG))
+	else if (arg_is_set(cmd, activate_ARG) ||
+		 arg_is_set(cmd, refresh_ARG))
 		flags |= READ_FOR_ACTIVATE;
 
 	if (!(handle = init_processing_handle(cmd, NULL))) {
@@ -1024,16 +1139,15 @@ int vgchange(struct cmd_context *cmd, int argc, char **argv)
 	return ret;
 }
 
-static int _vgchange_locktype(struct cmd_context *cmd, struct volume_group *vg)
+static int _vgchange_locktype(struct cmd_context *cmd, struct volume_group *vg, int *no_change)
 {
 	const char *lock_type = arg_str_value(cmd, locktype_ARG, NULL);
-	const char *lockopt = arg_str_value(cmd, lockopt_ARG, NULL);
 	struct lv_list *lvl;
 	struct logical_volume *lv;
 	int lv_lock_count = 0;
 
 	/* Special recovery case. */
-	if (lock_type && lockopt && !strcmp(lock_type, "none") && !strcmp(lockopt, "force")) {
+	if (lock_type && !strcmp(lock_type, "none") && (cmd->lockopt & LOCKOPT_FORCE)) {
 		vg->status &= ~CLUSTERED;
 		vg->lock_type = "none";
 		vg->lock_args = NULL;
@@ -1054,6 +1168,7 @@ static int _vgchange_locktype(struct cmd_context *cmd, struct volume_group *vg)
 	if (lock_type && !strcmp(vg->lock_type, lock_type)) {
 		log_warn("WARNING: New lock type %s matches the current lock type %s.",
 			 lock_type, vg->lock_type);
+		*no_change = 1;
 		return 1;
 	}
 
@@ -1097,7 +1212,7 @@ static int _vgchange_locktype(struct cmd_context *cmd, struct volume_group *vg)
 	 * lockd type to ..., first undo lockd type
 	 */
 	if (is_lockd_type(vg->lock_type)) {
-		if (!lockd_free_vg_before(cmd, vg, 1))
+		if (!lockd_free_vg_before(cmd, vg, 1, 0))
 			return 0;
 
 		lockd_free_vg_final(cmd, vg);
@@ -1192,8 +1307,13 @@ static int _vgchange_locktype_single(struct cmd_context *cmd, const char *vg_nam
 			             struct volume_group *vg,
 			             struct processing_handle *handle)
 {
-	if (!_vgchange_locktype(cmd, vg))
+	int no_change = 0;
+
+	if (!_vgchange_locktype(cmd, vg, &no_change))
 		return_ECMD_FAILED;
+
+	if (no_change)
+		return ECMD_PROCESSED;
 
 	if (!vg_write(vg) || !vg_commit(vg))
 		return_ECMD_FAILED;
@@ -1209,13 +1329,13 @@ static int _vgchange_locktype_single(struct cmd_context *cmd, const char *vg_nam
 	if (vg->lock_type && !strcmp(vg->lock_type, "sanlock") &&
 	    (cmd->command->command_enum == vgchange_locktype_CMD)) {
 		if (!deactivate_lv(cmd, vg->sanlock_lv)) {
-			log_error("Failed to deativate %s.",
+			log_error("Failed to deactivate %s.",
 				  display_lvname(vg->sanlock_lv));
 			return ECMD_FAILED;
 		}
 	}
 
-	log_print_unless_silent("Volume group \"%s\" successfully changed", vg->name);
+	log_print_unless_silent("Volume group \"%s\" successfully changed.", vg->name);
 
 	return ECMD_PROCESSED;
 }
@@ -1224,8 +1344,8 @@ int vgchange_locktype_cmd(struct cmd_context *cmd, int argc, char **argv)
 {
 	struct processing_handle *handle;
 	const char *lock_type = arg_str_value(cmd, locktype_ARG, NULL);
-	const char *lockopt = arg_str_value(cmd, lockopt_ARG, NULL);
 	int ret;
+
 
 	/*
 	 * vgchange --locktype none --lockopt force VG
@@ -1249,14 +1369,9 @@ int vgchange_locktype_cmd(struct cmd_context *cmd, int argc, char **argv)
 	 * disable locking.  lockd_gl(), lockd_vg() and lockd_lv() will
 	 * just return success when they see the disable flag set.
 	 */
-	if (lockopt && !strcmp(lockopt, "force")) {
-		if (lock_type && strcmp(lock_type, "none")) {
-			log_error("Lock type can only be forced to \"none\" for recovery.");
-			return 0;
-		}
-
+	if (cmd->lockopt & LOCKOPT_FORCE) {
 		if (!arg_is_set(cmd, yes_ARG) &&
-		     yes_no_prompt("Forcibly change VG lock type to none? [y/n]: ") == 'n') {
+		     yes_no_prompt("Forcibly change VG lock type to %s? [y/n]: ", lock_type) == 'n') {
 			log_error("VG lock type not changed.");
 			return 0;
 		}
@@ -1339,14 +1454,14 @@ int vgchange_lock_start_stop_cmd(struct cmd_context *cmd, int argc, char **argv)
 	 * to do, so disable VG locks.  Try to acquire the global lock sh to
 	 * validate the cache (if no gl is available, lockd_gl will force a
 	 * cache validation).  If the global lock is available, it can be
-	 * benficial to hold sh to serialize lock-start with vgremove of the
+	 * beneficial to hold sh to serialize lock-start with vgremove of the
 	 * same VG from another host.
 	 */
 	if (arg_is_set(cmd, lockstart_ARG)) {
 		cmd->lockd_vg_disable = 1;
 
 		if (!lockd_global(cmd, "sh"))
-			log_debug("No global lock for lock start");
+			log_debug("No global lock for lock start.");
 
 		/* Disable the lockd_gl in process_each_vg. */
 		cmd->lockd_gl_disable = 1;
@@ -1362,19 +1477,17 @@ int vgchange_lock_start_stop_cmd(struct cmd_context *cmd, int argc, char **argv)
 	/* Wait for lock-start ops that were initiated in vgchange_lockstart. */
 
 	if (arg_is_set(cmd, lockstart_ARG) && vp.lock_start_count) {
-		const char *start_opt = arg_str_value(cmd, lockopt_ARG, NULL);
-
 		if (!lockd_global(cmd, "un"))
 			stack;
 
-		if (!start_opt || !strcmp(start_opt, "auto")) {
+		if ((cmd->lockopt & LOCKOPT_NOWAIT) || (cmd->lockopt & LOCKOPT_AUTONOWAIT)) {
+			log_print_unless_silent("Starting locking.  VG can only be read until locks are ready.");
+		} else {
 			if (vp.lock_start_sanlock)
-				log_print_unless_silent("Starting locking.  Waiting for sanlock may take 20 sec to 3 min...");
+				log_print_unless_silent("Starting locking.  Waiting for sanlock may take a few seconds to 3 min...");
 			else
 				log_print_unless_silent("Starting locking.  Waiting until locks are ready...");
 			lockd_start_wait(cmd);
-		} else if (!strcmp(start_opt, "nowait") || !strcmp(start_opt, "autonowait")) {
-			log_print_unless_silent("Starting locking.  VG can only be read until locks are ready.");
 		}
 	}
 
@@ -1398,7 +1511,7 @@ static int _vgchange_systemid_single(struct cmd_context *cmd, const char *vg_nam
 				found_pvs++;
 		}
 		if (found_pvs <= missing_pvs) {
-			log_error("Cannot change system ID without the majority of PVs (found %d of %d)",
+			log_error("Cannot change system ID without the majority of PVs (found %d of %d).",
 				  found_pvs, found_pvs+missing_pvs);
 			return ECMD_FAILED;
 		}
@@ -1410,7 +1523,7 @@ static int _vgchange_systemid_single(struct cmd_context *cmd, const char *vg_nam
 	if (!vg_write(vg) || !vg_commit(vg))
 		return_ECMD_FAILED;
 
-	log_print_unless_silent("Volume group \"%s\" successfully changed", vg->name);
+	log_print_unless_silent("Volume group \"%s\" successfully changed.", vg->name);
 
 	return ECMD_PROCESSED;
 }
@@ -1419,17 +1532,6 @@ int vgchange_systemid_cmd(struct cmd_context *cmd, int argc, char **argv)
 {
 	struct processing_handle *handle;
 	int ret;
-
-	/*
-	 * This is a special case where taking the global lock is
-	 * not needed to protect global state, because the change is
-	 * only to an existing VG.  But, taking the global lock ex is
-	 * helpful in this case to trigger a global cache validation
-	 * on other hosts, to cause them to see the new system_id or
-	 * lock_type.
-	 */
-	if (!lockd_global(cmd, "ex"))
-		return 0;
 
 	if (!(handle = init_processing_handle(cmd, NULL))) {
 		log_error("Failed to initialize processing handle.");

@@ -51,24 +51,25 @@ LDFLAGS += -L$(top_builddir)/libdaemon/server $(EXTRA_EXEC_LDFLAGS) $(ELDFLAGS)
 LIBS += $(DAEMON_LIBS) $(PTHREAD_LIBS)
 
 ifneq (,$(firstword $(LIBSYSTEMD_LIBS)))
-	CFLAGS += $(LIBSYSTEMD_CFLAGS) -DUSE_SD_NOTIFY
+	DEFS += -DUSE_SD_NOTIFY
+	CFLAGS += $(LIBSYSTEMD_CFLAGS)
 	LIBS += $(LIBSYSTEMD_LIBS)
 endif
 
 lvmlockd: $(OBJECTS) $(top_builddir)/libdaemon/server/libdaemonserver.a $(INTERNAL_LIBS)
-	@echo "    [CC] $@"
+	$(SHOW) "    [CC] $@"
 	$(Q) $(CC) $(CFLAGS) $(LDFLAGS) -o $@ $+ $(LOCK_LIBS) $(LIBS)
 
 lvmlockctl: lvmlockctl.o $(INTERNAL_LIBS)
-	@echo "    [CC] $@"
+	$(SHOW) "    [CC] $@"
 	$(Q) $(CC) $(CFLAGS) $(LDFLAGS) -o $@ $+ $(LIBS)
 
 install_lvmlockd: lvmlockd
-	@echo "    [INSTALL] $<"
+	$(SHOW) "    [INSTALL] $<"
 	$(Q) $(INSTALL_PROGRAM) -D $< $(sbindir)/$(<F)
 
 install_lvmlockctl: lvmlockctl
-	@echo "    [INSTALL] $<"
+	$(SHOW) "    [INSTALL] $<"
 	$(Q) $(INSTALL_PROGRAM) -D $< $(sbindir)/$(<F)
 
 install_lvm2: install_lvmlockd install_lvmlockctl

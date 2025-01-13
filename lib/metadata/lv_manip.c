@@ -49,10 +49,10 @@ typedef enum {
 #define RAID_METADATA_AREA_LEN 1
 
 /* FIXME These ended up getting used differently from first intended.  Refactor. */
-/* Only one of A_CONTIGUOUS_TO_LVSEG, A_CLING_TO_LVSEG, A_CLING_TO_ALLOCED may be set */
+/* Only one of A_CONTIGUOUS_TO_LVSEG, A_CLING_TO_LVSEG, A_CLING_TO_ALLOCATED may be set */
 #define A_CONTIGUOUS_TO_LVSEG	0x01	/* Must be contiguous to an existing segment */
 #define A_CLING_TO_LVSEG	0x02	/* Must use same disks as existing LV segment */
-#define A_CLING_TO_ALLOCED	0x04	/* Must use same disks as already-allocated segment */
+#define A_CLING_TO_ALLOCATED	0x04	/* Must use same disks as already-allocated segment */
 
 #define A_CLING_BY_TAGS		0x08	/* Must match tags against existing segment */
 #define A_CAN_SPLIT		0x10
@@ -145,7 +145,7 @@ enum {
 	LV_TYPE_INTEGRITYORIGIN
 };
 
-static const char *_lv_type_names[] = {
+static const char _lv_type_names[][24] = {
 	[LV_TYPE_UNKNOWN] =				"unknown",
 	[LV_TYPE_NONE] =				"none",
 	[LV_TYPE_PUBLIC] =				"public",
@@ -967,30 +967,6 @@ static struct seg_pvs *_find_seg_pvs_by_le(struct dm_list *list, uint32_t le)
 	return NULL;
 }
 
-/*
- * Find first unused LV number.
- */
-uint32_t find_free_lvnum(struct logical_volume *lv)
-{
-	int lvnum_used[MAX_RESTRICTED_LVS + 1] = { 0 };
-	uint32_t i = 0;
-	struct lv_list *lvl;
-	int lvnum;
-
-	dm_list_iterate_items(lvl, &lv->vg->lvs) {
-		lvnum = lvnum_from_lvid(&lvl->lv->lvid);
-		if (lvnum <= MAX_RESTRICTED_LVS)
-			lvnum_used[lvnum] = 1;
-	}
-
-	while (lvnum_used[i])
-		i++;
-
-	/* FIXME What if none are free? */
-
-	return i;
-}
-
 dm_percent_t copy_percent(const struct logical_volume *lv)
 {
 	uint32_t numerator = 0u, denominator = 0u;
@@ -1068,7 +1044,7 @@ struct lv_segment *alloc_lv_segment(const struct segment_type *segtype,
 
 	if (segtype_is_raid_with_meta(segtype) &&
 	    !(seg->meta_areas = dm_pool_zalloc(mem, areas_sz))) {
-		dm_pool_free(mem, seg); /* frees everything alloced since seg */
+		dm_pool_free(mem, seg); /* frees everything allocated since seg */
 		return_NULL;
 	}
 
@@ -1474,7 +1450,7 @@ static struct logical_volume *_get_resizable_layer_lv(struct logical_volume *lv)
 
 /* Check if LV is component of resizable LV.
  * When resize changes size of LV this also changes the size whole stack upward.
- * Support syntax suggar - so user can pick any LV in stack for resize. */
+ * Support syntax sugar - so user can pick any LV in stack for resize. */
 static int _is_layered_lv(struct logical_volume *lv)
 {
 	return (lv_is_cache_origin(lv) ||
@@ -1760,7 +1736,7 @@ int lv_refresh_suspend_resume(const struct logical_volume *lv)
 
 	/*
 	 * Remove any transiently activated error
-	 * devices which arean't used any more.
+	 * devices which aren't used any more.
 	 */
 	if (lv_is_raid(lv) && !lv_deactivate_any_missing_subdevs(lv)) {
 		log_error("Failed to remove temporary SubLVs from %s", display_lvname(lv));
@@ -1870,7 +1846,7 @@ int lv_remove(struct logical_volume *lv)
 /*
  * A set of contiguous physical extents allocated
  */
-struct alloced_area {
+struct allocated_area {
 	struct dm_list list;
 
 	struct physical_volume *pv;
@@ -1921,7 +1897,7 @@ struct alloc_handle {
 	 * Contains area_count lists of areas allocated to data stripes
 	 * followed by log_area_count lists of areas allocated to log stripes.
 	 */
-	struct dm_list alloced_areas[];
+	struct dm_list allocated_areas[];
 };
 
 /*
@@ -1983,7 +1959,7 @@ static uint32_t _stripes_per_mimage(struct lv_segment *seg)
 
 	if (seg_is_mirrored(seg) && seg->area_count && seg_type(seg, 0) == AREA_LV) {
 		last_lvseg = dm_list_item(dm_list_last(&seg_lv(seg, 0)->segments), struct lv_segment);
-		if (seg_is_striped(last_lvseg))
+		if (last_lvseg && seg_is_striped(last_lvseg))
 			return last_lvseg->area_count;
 	}
 
@@ -2025,7 +2001,7 @@ static void _init_alloc_parms(struct alloc_handle *ah,
 		 */
 		if ((alloc_parms->alloc == ALLOC_CLING) ||
 		    (alloc_parms->alloc == ALLOC_CLING_BY_TAGS)) {
-			alloc_parms->flags |= A_CLING_TO_ALLOCED;
+			alloc_parms->flags |= A_CLING_TO_ALLOCATED;
 			alloc_parms->flags |= A_POSITIONAL_FILL;
 		}
 
@@ -2045,17 +2021,17 @@ static void _init_alloc_parms(struct alloc_handle *ah,
 	if (ah->maximise_cling &&
 	    (alloc_parms->alloc == ALLOC_NORMAL) &&
 	    (allocated != alloc_parms->extents_still_needed))
-		alloc_parms->flags |= A_CLING_TO_ALLOCED;
+		alloc_parms->flags |= A_CLING_TO_ALLOCATED;
 
 	if (can_split)
 		alloc_parms->flags |= A_CAN_SPLIT;
 }
 
-static int _setup_alloced_segment(struct logical_volume *lv, uint64_t status,
+static int _setup_allocated_segment(struct logical_volume *lv, uint64_t status,
 				  uint32_t area_count,
 				  uint32_t stripe_size,
 				  const struct segment_type *segtype,
-				  struct alloced_area *aa,
+				  struct allocated_area *aa,
 				  uint32_t region_size)
 {
 	uint32_t s, extents, area_multiple;
@@ -2086,18 +2062,18 @@ static int _setup_alloced_segment(struct logical_volume *lv, uint64_t status,
 	return 1;
 }
 
-static int _setup_alloced_segments(struct logical_volume *lv,
-				   struct dm_list *alloced_areas,
+static int _setup_allocated_segments(struct logical_volume *lv,
+				   struct dm_list *allocated_areas,
 				   uint32_t area_count,
 				   uint64_t status,
 				   uint32_t stripe_size,
 				   const struct segment_type *segtype,
 				   uint32_t region_size)
 {
-	struct alloced_area *aa;
+	struct allocated_area *aa;
 
-	dm_list_iterate_items(aa, &alloced_areas[0]) {
-		if (!_setup_alloced_segment(lv, status, area_count,
+	dm_list_iterate_items(aa, &allocated_areas[0]) {
+		if (!_setup_allocated_segment(lv, status, area_count,
 					    stripe_size, segtype, aa,
 					    region_size))
 			return_0;
@@ -2118,7 +2094,7 @@ static int _alloc_parallel_area(struct alloc_handle *ah, uint32_t max_to_allocat
 	uint32_t s, smeta;
 	uint32_t ix_log_skip = 0; /* How many areas to skip in middle of array to reach log areas */
 	uint32_t total_area_count;
-	struct alloced_area *aa;
+	struct allocated_area *aa;
 	struct pv_area *pva;
 
 	total_area_count = ah->area_count + ah->parity_count + alloc_state->log_area_count_still_needed;
@@ -2137,7 +2113,7 @@ static int _alloc_parallel_area(struct alloc_handle *ah, uint32_t max_to_allocat
 	len = (ah->alloc_and_split_meta && !ah->split_metadata_is_allocated) ? total_area_count * 2 : total_area_count;
 	len *= sizeof(*aa);
 	if (!(aa = dm_pool_alloc(ah->mem, len))) {
-		log_error("alloced_area allocation failed");
+		log_error("allocated_area allocation failed");
 		return 0;
 	}
 
@@ -2180,7 +2156,7 @@ static int _alloc_parallel_area(struct alloc_handle *ah, uint32_t max_to_allocat
 					aa[smeta].len);
 
 			consume_pv_area(pva, aa[smeta].len);
-			dm_list_add(&ah->alloced_areas[smeta], &aa[smeta].list);
+			dm_list_add(&ah->allocated_areas[smeta], &aa[smeta].list);
 		}
 		aa[s].len = (ah->alloc_and_split_meta && !ah->split_metadata_is_allocated) ? len - ah->log_len : len;
 		/* Skip empty allocations */
@@ -2196,7 +2172,7 @@ static int _alloc_parallel_area(struct alloc_handle *ah, uint32_t max_to_allocat
 
 		consume_pv_area(pva, aa[s].len);
 
-		dm_list_add(&ah->alloced_areas[s], &aa[s].list);
+		dm_list_add(&ah->allocated_areas[s], &aa[s].list);
 	}
 
 	/* Only need to alloc metadata from the first batch */
@@ -2752,11 +2728,11 @@ static int _check_contiguous(struct alloc_handle *ah,
 /*
  * Is pva on same PV as any areas already used in this allocation attempt?
  */
-static int _check_cling_to_alloced(struct alloc_handle *ah, const struct dm_config_node *cling_tag_list_cn,
+static int _check_cling_to_allocated(struct alloc_handle *ah, const struct dm_config_node *cling_tag_list_cn,
 				   struct pv_area *pva, struct alloc_state *alloc_state)
 {
 	unsigned s;
-	struct alloced_area *aa;
+	struct allocated_area *aa;
 	int positional = alloc_state->alloc_parms->flags & A_POSITIONAL_FILL;
 
 	/*
@@ -2769,7 +2745,7 @@ static int _check_cling_to_alloced(struct alloc_handle *ah, const struct dm_conf
 	for (s = 0; s < ah->area_count; s++) {
 		if (positional && alloc_state->areas[s].pva)
 			continue;	/* Area already assigned */
-		dm_list_iterate_items(aa, &ah->alloced_areas[s]) {
+		dm_list_iterate_items(aa, &ah->allocated_areas[s]) {
 			if ((!cling_tag_list_cn && (pva->map->pv == aa[0].pv)) ||
 			    (cling_tag_list_cn && _pvs_have_matching_tag(cling_tag_list_cn, pva->map->pv, aa[0].pv, 0))) {
 				if (positional &&
@@ -2826,7 +2802,7 @@ static area_use_t _check_pva(struct alloc_handle *ah, struct pv_area *pva, uint3
 				return NEXT_AREA;
 
 	/* If maximise_cling is set, perform several checks, otherwise perform exactly one. */
-	if (!iteration_count && !log_iteration_count && alloc_parms->flags & (A_CONTIGUOUS_TO_LVSEG | A_CLING_TO_LVSEG | A_CLING_TO_ALLOCED)) {
+	if (!iteration_count && !log_iteration_count && alloc_parms->flags & (A_CONTIGUOUS_TO_LVSEG | A_CLING_TO_LVSEG | A_CLING_TO_ALLOCATED)) {
 		/* Contiguous? */
 		if (((alloc_parms->flags & A_CONTIGUOUS_TO_LVSEG) ||
 		     (ah->maximise_cling && (alloc_parms->flags & A_AREA_COUNT_MATCHES))) &&
@@ -2844,9 +2820,9 @@ static area_use_t _check_pva(struct alloc_handle *ah, struct pv_area *pva, uint3
 			/* If this PV is suitable, use this first area */
 			goto found;
 
-		/* Cling_to_alloced? */
-		if ((alloc_parms->flags & A_CLING_TO_ALLOCED) &&
-		    _check_cling_to_alloced(ah, NULL, pva, alloc_state))
+		/* Cling_to_allocated? */
+		if ((alloc_parms->flags & A_CLING_TO_ALLOCATED) &&
+		    _check_cling_to_allocated(ah, NULL, pva, alloc_state))
 			goto found;
 
 		/* Cling_by_tags? */
@@ -2856,7 +2832,7 @@ static area_use_t _check_pva(struct alloc_handle *ah, struct pv_area *pva, uint3
 		if ((alloc_parms->flags & A_AREA_COUNT_MATCHES)) {
 			if (_check_cling(ah, ah->cling_tag_list_cn, alloc_parms->prev_lvseg, pva, alloc_state))
 				goto found;
-		} else if (_check_cling_to_alloced(ah, ah->cling_tag_list_cn, pva, alloc_state))
+		} else if (_check_cling_to_allocated(ah, ah->cling_tag_list_cn, pva, alloc_state))
 			goto found;
 
 		/* All areas on this PV give same result so pointless checking more */
@@ -3017,9 +2993,9 @@ static int _find_some_parallel_space(struct alloc_handle *ah,
 	unsigned already_found_one;
 	unsigned ix_log_offset; /* Offset to start of areas to use for log */
 	unsigned too_small_for_log_count; /* How many too small for log? */
-	unsigned iteration_count = 0; /* cling_to_alloced may need 2 iterations */
+	unsigned iteration_count = 0; /* cling_to_allocated may need 2 iterations */
 	unsigned log_iteration_count = 0; /* extra iteration for logs on data devices */
-	struct alloced_area *aa;
+	struct allocated_area *aa;
 	uint32_t s;
 	uint32_t devices_needed = ah->area_count + ah->parity_count;
 	uint32_t required;
@@ -3029,17 +3005,17 @@ static int _find_some_parallel_space(struct alloc_handle *ah,
 
 	/* num_positional_areas holds the number of parallel allocations that must be contiguous/cling */
 	/* These appear first in the array, so it is also the offset to the non-preferred allocations */
-	/* At most one of A_CONTIGUOUS_TO_LVSEG, A_CLING_TO_LVSEG or A_CLING_TO_ALLOCED may be set */
+	/* At most one of A_CONTIGUOUS_TO_LVSEG, A_CLING_TO_LVSEG or A_CLING_TO_ALLOCATED may be set */
 	if (!(alloc_parms->flags & A_POSITIONAL_FILL))
 		alloc_state->num_positional_areas = 0;
 	else if (alloc_parms->flags & (A_CONTIGUOUS_TO_LVSEG | A_CLING_TO_LVSEG))
 		alloc_state->num_positional_areas = _stripes_per_mimage(alloc_parms->prev_lvseg) * alloc_parms->prev_lvseg->area_count;
-	else if (alloc_parms->flags & A_CLING_TO_ALLOCED)
+	else if (alloc_parms->flags & A_CLING_TO_ALLOCATED)
 		alloc_state->num_positional_areas = ah->area_count;
 
-	if (alloc_parms->alloc == ALLOC_NORMAL || (alloc_parms->flags & A_CLING_TO_ALLOCED))
+	if (alloc_parms->alloc == ALLOC_NORMAL || (alloc_parms->flags & A_CLING_TO_ALLOCATED))
 		log_debug_alloc("Cling_to_allocated is %sset",
-				alloc_parms->flags & A_CLING_TO_ALLOCED ? "" : "not ");
+				alloc_parms->flags & A_CLING_TO_ALLOCATED ? "" : "not ");
 
 	if (alloc_parms->flags & A_POSITIONAL_FILL)
 		log_debug_alloc("%u preferred area(s) to be filled positionally.", alloc_state->num_positional_areas);
@@ -3077,13 +3053,13 @@ static int _find_some_parallel_space(struct alloc_handle *ah,
 			if (alloc_parms->alloc != ALLOC_ANYWHERE) {
 				/* Don't allocate onto the log PVs */
 				if (ah->log_area_count)
-					dm_list_iterate_items(aa, &ah->alloced_areas[ah->area_count])
+					dm_list_iterate_items(aa, &ah->allocated_areas[ah->area_count])
 						for (s = 0; s < ah->log_area_count; s++)
 							if (!aa[s].pv)
 								goto next_pv;
 
 				/* FIXME Split into log and non-log parallel_pvs and only check the log ones if log_iteration? */
-				/* (I've temporatily disabled the check.) */
+				/* (I've temporarily disabled the check.) */
 				/* Avoid PVs used by existing parallel areas */
 				if (!log_iteration_count && parallel_pvs && _pv_is_parallel(pvm->pv, parallel_pvs, ah->cling_tag_list_cn))
 					goto next_pv;
@@ -3160,17 +3136,17 @@ static int _find_some_parallel_space(struct alloc_handle *ah,
 				break;
 		}
 	} while ((alloc_parms->alloc == ALLOC_ANYWHERE && last_ix != ix && ix < devices_needed + alloc_state->log_area_count_still_needed) ||
-		/* With cling_to_alloced and normal, if there were gaps in the preferred areas, have a second iteration */
+		/* With cling_to_allocated and normal, if there were gaps in the preferred areas, have a second iteration */
 		 (alloc_parms->alloc == ALLOC_NORMAL && preferred_count &&
 		  (preferred_count < alloc_state->num_positional_areas || alloc_state->log_area_count_still_needed) &&
-		  (alloc_parms->flags & A_CLING_TO_ALLOCED) && !iteration_count++) ||
+		  (alloc_parms->flags & A_CLING_TO_ALLOCATED) && !iteration_count++) ||
 		/* Extra iteration needed to fill log areas on PVs already used? */
 		 (alloc_parms->alloc == ALLOC_NORMAL && preferred_count == alloc_state->num_positional_areas && !ah->mirror_logs_separate &&
 		  (ix + preferred_count >= devices_needed) &&
 		  (ix + preferred_count < devices_needed + alloc_state->log_area_count_still_needed) && !log_iteration_count++));
 
 	/* Non-zero ix means at least one USE_AREA was returned */
-	if (preferred_count < alloc_state->num_positional_areas && !(alloc_parms->flags & A_CLING_TO_ALLOCED) && !ix)
+	if (preferred_count < alloc_state->num_positional_areas && !(alloc_parms->flags & A_CLING_TO_ALLOCATED) && !ix)
 		return 1;
 
 	if (ix + preferred_count < devices_needed + alloc_state->log_area_count_still_needed)
@@ -3337,7 +3313,7 @@ static int _find_max_parallel_space_for_one_policy(struct alloc_handle *ah, stru
 		 * set we allow two passes, first with A_POSITIONAL_FILL then without.
 		 *
 		 * If we didn't allocate anything this time with ALLOC_NORMAL and had
-		 * A_CLING_TO_ALLOCED set, try again without it.
+		 * A_CLING_TO_ALLOCATED set, try again without it.
 		 *
 		 * For ALLOC_NORMAL, if we did allocate something without the
 		 * flag set, set it and continue so that further allocations
@@ -3347,13 +3323,13 @@ static int _find_max_parallel_space_for_one_policy(struct alloc_handle *ah, stru
 			if (ah->maximise_cling && ((alloc_parms->alloc == ALLOC_CLING) || (alloc_parms->alloc == ALLOC_CLING_BY_TAGS)) &&
 			    (alloc_parms->flags & A_CLING_TO_LVSEG) && (alloc_parms->flags & A_POSITIONAL_FILL))
 				alloc_parms->flags &= ~A_POSITIONAL_FILL;
-			else if ((alloc_parms->alloc == ALLOC_NORMAL) && (alloc_parms->flags & A_CLING_TO_ALLOCED))
-				alloc_parms->flags &= ~A_CLING_TO_ALLOCED;
+			else if ((alloc_parms->alloc == ALLOC_NORMAL) && (alloc_parms->flags & A_CLING_TO_ALLOCATED))
+				alloc_parms->flags &= ~A_CLING_TO_ALLOCATED;
 			else
 				break;	/* Give up */
 		} else if (ah->maximise_cling && alloc_parms->alloc == ALLOC_NORMAL &&
-			   !(alloc_parms->flags & A_CLING_TO_ALLOCED))
-			alloc_parms->flags |= A_CLING_TO_ALLOCED;
+			   !(alloc_parms->flags & A_CLING_TO_ALLOCATED))
+			alloc_parms->flags |= A_CLING_TO_ALLOCATED;
 	} while ((alloc_parms->alloc != ALLOC_CONTIGUOUS) && alloc_state->allocated != alloc_parms->extents_still_needed && (alloc_parms->flags & A_CAN_SPLIT) && (!ah->approx_alloc || pv_maps_size(pvms)));
 
 	return 1;
@@ -3540,8 +3516,8 @@ static int _lv_add_vdo_segment(struct logical_volume *lv, uint64_t status,
 		dm_list_add(&lv->segments, &seg->list);
 	}
 
-	lv->le_count += extents;
-	lv->size += (uint64_t) extents * lv->vg->extent_size;
+	if (!_setup_lv_size(lv, lv->le_count + extents))
+		return_0;
 
 	if (seg_lv(seg, 0) &&
 	    !update_vdo_pool_virtual_size(first_seg(seg_lv(seg, 0))))
@@ -3646,7 +3622,7 @@ static struct alloc_handle *_alloc_init(struct cmd_context *cmd,
 		/* mirrors specify their exact log count */
 		alloc_count += metadata_area_count;
 
-	size += sizeof(ah->alloced_areas[0]) * alloc_count;
+	size += sizeof(ah->allocated_areas[0]) * alloc_count;
 
 	if (!(mem = dm_pool_create("allocation", 1024))) {
 		log_error("allocation pool creation failed");
@@ -3751,7 +3727,7 @@ static struct alloc_handle *_alloc_init(struct cmd_context *cmd,
 	ah->new_extents = total_extents;
 
 	for (s = 0; s < alloc_count; s++)
-		dm_list_init(&ah->alloced_areas[s]);
+		dm_list_init(&ah->allocated_areas[s]);
 
 	ah->parallel_areas = parallel_areas;
 
@@ -3849,7 +3825,7 @@ int lv_add_segment(struct alloc_handle *ah,
 		return 0;
 	}
 
-	if (!_setup_alloced_segments(lv, &ah->alloced_areas[first_area],
+	if (!_setup_allocated_segments(lv, &ah->allocated_areas[first_area],
 				     num_areas, status,
 				     stripe_size, segtype,
 				     region_size))
@@ -3922,7 +3898,7 @@ int lv_add_segmented_mirror_image(struct alloc_handle *ah,
 				  uint32_t region_size)
 {
 	char *image_name;
-	struct alloced_area *aa;
+	struct allocated_area *aa;
 	struct lv_segment *seg, *new_seg;
 	uint32_t current_le = le;
 	uint32_t s;
@@ -3947,7 +3923,7 @@ int lv_add_segmented_mirror_image(struct alloc_handle *ah,
 	 * single segment of the original LV, that LV segment must be
 	 * split up to match.
 	 */
-	dm_list_iterate_items(aa, &ah->alloced_areas[0]) {
+	dm_list_iterate_items(aa, &ah->allocated_areas[0]) {
 		if (!(seg = find_seg_by_le(lv, current_le))) {
 			log_error("Failed to find segment for %s extent " FMTu32 ".",
 				  display_lvname(lv), current_le);
@@ -3989,7 +3965,7 @@ int lv_add_segmented_mirror_image(struct alloc_handle *ah,
 	if (!(segtype = get_segtype_from_string(lv->vg->cmd, SEG_TYPE_NAME_STRIPED)))
 		return_0;
 
-	dm_list_iterate_items(aa, &ah->alloced_areas[0]) {
+	dm_list_iterate_items(aa, &ah->allocated_areas[0]) {
 		if (!(seg = find_seg_by_le(orig_lv, current_le))) {
 			log_error("Failed to find segment for %s extent " FMTu32 ".",
 				  display_lvname(lv), current_le);
@@ -4031,12 +4007,12 @@ int lv_add_mirror_areas(struct alloc_handle *ah,
 			struct logical_volume *lv, uint32_t le,
 			uint32_t region_size)
 {
-	struct alloced_area *aa;
+	struct allocated_area *aa;
 	struct lv_segment *seg;
 	uint32_t current_le = le;
 	uint32_t s, old_area_count, new_area_count;
 
-	dm_list_iterate_items(aa, &ah->alloced_areas[0]) {
+	dm_list_iterate_items(aa, &ah->allocated_areas[0]) {
 		if (!(seg = find_seg_by_le(lv, current_le))) {
 			log_error("Failed to find segment for %s extent " FMTu32 ".",
 				  display_lvname(lv), current_le);
@@ -4135,7 +4111,7 @@ int lv_add_mirror_lvs(struct logical_volume *lv,
  * FIXME: Mirrored logs are built inefficiently.
  * A mirrored log currently uses the same layout that a mirror
  * LV uses.  The mirror layer sits on top of AREA_LVs which form the
- * legs, rather on AREA_PVs.  This is done to allow re-use of the
+ * legs, rather on AREA_PVs.  This is done to allow reuse of the
  * various mirror functions to also handle the mirrored LV that makes
  * up the log.
  *
@@ -4439,6 +4415,7 @@ static int _lv_extend_layered_lv(struct alloc_handle *ah,
 					log_error("Failed to remove LV");
 				else if (!vg_write(vg) || !vg_commit(vg))
 					log_error("Failed to commit VG %s", vg->name);
+				dm_pool_free(vg->vgmem, lvl);
 				return_0;
 			}
 
@@ -4595,7 +4572,7 @@ int lv_extend(struct logical_volume *lv,
 		    alloc != ALLOC_ANYWHERE &&
 		    !(r = _lv_raid_redundant_allocation(lv, allocatable_pvs))) {
 			log_error("Insufficient suitable allocatable extents for logical volume %s", display_lvname(lv));
-			if (!lv_remove(lv) || !vg_write(lv->vg) || !vg_commit(lv->vg))
+			if (!old_extents && (!lv_remove(lv) || !vg_write(lv->vg) || !vg_commit(lv->vg)))
 				return_0;
 			goto out;
 		}
@@ -4622,7 +4599,7 @@ int lv_extend(struct logical_volume *lv,
 					  "is not locally active.", display_lvname(lv));
 				/* FIXME Support --force */
 				if (yes_no_prompt("Do full resync of extended "
-						  "portion of %s?  [y/n]: ",
+						  "portion of %s? [y/n]: ",
 						  display_lvname(lv)) == 'n') {
 					r = 0;
 					goto_out;
@@ -5036,6 +5013,9 @@ static int _fsadm_cmd(enum fsadm_cmd_e fcmd,
 		find_config_tree_str(cmd, global_fsadm_executable_CFG, NULL)
 	};
 
+	if (status)
+		*status = -1;
+
 	if (!argv[0] || !*argv[0]) {
 		log_error("Cannot use misconfigured fsadm executable to resize %s.", display_lvname(lv));
 		return 0;
@@ -5054,9 +5034,6 @@ static int _fsadm_cmd(enum fsadm_cmd_e fcmd,
 		argv[i++] = "--force";
 
 	argv[i++] = (fcmd == FSADM_CMD_RESIZE) ? "resize" : "check";
-
-	if (status)
-		*status = -1;
 
 	if (dm_snprintf(lv_path, sizeof(lv_path), "%s%s/%s", cmd->dev_dir,
 			vg->name, lv->name) < 0) {
@@ -5085,7 +5062,7 @@ static uint32_t _adjust_amount(dm_percent_t percent, int policy_threshold, int p
 	    percent <= (policy_threshold * DM_PERCENT_1))
 		return 0; /* nothing to do */
 	/*
-	 * Evaluate the minimal amount needed to get bellow threshold.
+	 * Evaluate the minimal amount needed to get below threshold.
 	 * Keep using DM_PERCENT_1 units for better precision.
 	 * Round-up to needed percentage value
 	 */
@@ -5138,7 +5115,7 @@ int lv_extend_policy_calculate_percent(struct logical_volume *lv,
 		policy_amount =
 			find_config_tree_int(cmd, activation_snapshot_autoextend_percent_CFG, NULL);
 		if (policy_threshold < 50) {
-			log_warn("WARNING: Snapshot autoextend threshold %d%% is set bellow "
+			log_warn("WARNING: Snapshot autoextend threshold %d%% is set below "
 				 "minimal supported value 50%%.", policy_threshold);
 			policy_threshold = 50;
 		}
@@ -5315,7 +5292,7 @@ static int _lvresize_extents_from_percent(const struct logical_volume *lv,
 					lp->extents = percent_of_extents(lp->extents, pv_extent_count,
 								 (lp->sign != SIGN_MINUS));
 				} else if (lp->percent_value) {
-					/* lvresize has PVs args and no size of exents options */
+					/* lvresize has PVs args and no size of extents options */
 					old_extents = lp->percent_value;
 					lp->extents = percent_of_extents(lp->percent_value, pv_extent_count,
 								 (lp->sign != SIGN_MINUS));
@@ -5481,6 +5458,9 @@ static int _lvresize_adjust_extents(struct logical_volume *lv,
 			/* FIXME Warn if command line values are being overridden? */
 			lp->stripes = seg_last->area_count / seg_mirrors;
 			lp->stripe_size = seg_last->stripe_size;
+		} else if (seg_is_raid0(seg_last)) {
+			lp->stripes = seg_last->area_count;
+			lp->stripe_size = seg_last->stripe_size;
 		} else if (!(lp->stripes == 1 || (lp->stripes > 1 && lp->stripe_size))) {
 			/* If extending, find stripes, stripesize & size of last segment */
 			/* FIXME Don't assume mirror seg will always be AREA_LV */
@@ -5555,7 +5535,7 @@ static int _lvresize_adjust_extents(struct logical_volume *lv,
 
 				if (new_extents > seg_size) {
 					/* Notify user about extra increase of extension */
-					log_print_unless_silent("Increasing incremention size from %s to %s to fit new VDO slab.",
+					log_print_unless_silent("Increasing incremental size from %s to %s to fit new VDO slab.",
 								display_size(cmd, (uint64_t)seg_size * vg->extent_size),
 								display_size(cmd, (uint64_t)new_extents * vg->extent_size));
 					seg_size = new_extents;
@@ -5786,7 +5766,6 @@ static int _lv_reduce_vdo_discard(struct cmd_context *cmd,
 	if (!dev_discard_max_bytes(cmd->dev_types, dev) ||
 	    !dev_discard_granularity(cmd->dev_types, dev)) {
 		log_error("%s: max bytes and granularity query fails.", name);
-		dev_destroy_file(dev);
 		return 0;
 	}
 
@@ -5797,11 +5776,9 @@ static int _lv_reduce_vdo_discard(struct cmd_context *cmd,
 	if (!dev_discard_blocks(dev, ((uint64_t)lp->extents * vg->extent_size) << SECTOR_SHIFT,
 				((uint64_t)(lv->le_count - lp->extents) * vg->extent_size) << SECTOR_SHIFT)) {
 		log_error("%s: discarding failed.", name);
-		dev_destroy_file(dev);
 		return 0;
 	}
 
-	dev_destroy_file(dev);
 	return 1;
 }
 
@@ -5912,8 +5889,8 @@ static int _lv_resize_volume(struct logical_volume *lv,
 	alloc_policy_t alloc = lp->alloc ? : lv->alloc;
 
 	old_extents = lv->le_count;
-	log_verbose("%sing logical volume %s to %s%s",
-		    (lp->resize == LV_REDUCE) ? "Reduc" : "Extend",
+	log_verbose("%s logical volume %s to %s%s",
+		    (lp->resize == LV_REDUCE) ? "Reducing" : "Extending",
 		    display_lvname(lv), lp->approx_alloc ? "up to " : "",
 		    display_size(cmd, (uint64_t) lp->extents * vg->extent_size));
 
@@ -6057,7 +6034,7 @@ static int _lv_resize_check_used(struct logical_volume *lv)
  *		fs or lv if the fs resize would require mounting or unmounting.
  *
  * --fs resize --fsmode offline: resize the fs only while it's unmounted
- *		unmounting the fs if needed.  fail the commandn without
+ *		unmounting the fs if needed.  fail the command without
  *		reducing the fs or lv if the fs resize would require having
  *		the fs mounted.
  *
@@ -6167,6 +6144,8 @@ static int _fs_reduce_allow(struct cmd_context *cmd, struct logical_volume *lv,
 		if (fsi->mounted)
 			fsi->needs_unmount = 1;
 
+		fsi->needs_reduce = 1;
+	} else if (!strcmp(fsi->fstype, "swap")) {
 		fsi->needs_reduce = 1;
 	} else {
 		/*
@@ -6337,6 +6316,8 @@ static int _fs_extend_allow(struct cmd_context *cmd, struct logical_volume *lv,
 		if (lp->nofsck)
 			fsi->needs_fsck = 0;
 
+	} else if (!strcmp(fsi->fstype, "swap")) {
+		fsi->needs_extend = 1;
 	} else if (!strcmp(fsi->fstype, "xfs")) {
 		fs_extend_cmd = " xfs_growfs";
 
@@ -6445,7 +6426,7 @@ static int _fs_reduce(struct cmd_context *cmd, struct logical_volume *lv,
 	}
 
 	/* extent_size units is SECTOR_SIZE (512) */
-	newsize_bytes_lv = lp->extents * lv->vg->extent_size * SECTOR_SIZE;
+	newsize_bytes_lv = (uint64_t) lp->extents * lv->vg->extent_size * SECTOR_SIZE;
 	newsize_bytes_fs = newsize_bytes_lv;
 
 	/*
@@ -6591,7 +6572,7 @@ static int _fs_extend(struct cmd_context *cmd, struct logical_volume *lv,
 	 */
 
 	/* extent_size units is SECTOR_SIZE (512) */
-	newsize_bytes_lv = lp->extents * lv->vg->extent_size * SECTOR_SIZE;
+	newsize_bytes_lv = (uint64_t) lp->extents * lv->vg->extent_size * SECTOR_SIZE;
 	newsize_bytes_fs = newsize_bytes_lv;
 	if (fsinfo.needs_crypt) {
 		newsize_bytes_fs -= fsinfo.crypt_offset_bytes;
@@ -6754,7 +6735,7 @@ int lv_resize(struct cmd_context *cmd, struct logical_volume *lv,
 		lp_meta.size = lp->poolmetadata_size;
 		lp_meta.sign = lp->poolmetadata_sign;
 		lp->poolmetadata_size = 0;
-		lp->poolmetadata_sign = 0;
+		lp->poolmetadata_sign = SIGN_NONE;
 
 	} else if (lv_is_thin_pool(lv) && lp->poolmetadata_size) {
 		/* extend both thin pool data and metadata */
@@ -6766,7 +6747,7 @@ int lv_resize(struct cmd_context *cmd, struct logical_volume *lv,
 		lp_meta.size = lp->poolmetadata_size;
 		lp_meta.sign = lp->poolmetadata_sign;
 		lp->poolmetadata_size = 0;
-		lp->poolmetadata_sign = 0;
+		lp->poolmetadata_sign = SIGN_NONE;
 
 	} else if (lv_is_thin_pool_metadata(lv)) {
 		/* extend only thin pool metadata */
@@ -6778,7 +6759,7 @@ int lv_resize(struct cmd_context *cmd, struct logical_volume *lv,
 			lp_meta.size = lp->poolmetadata_size;
 			lp_meta.size = lp->poolmetadata_sign;
 			lp->poolmetadata_size = 0;
-			lp->poolmetadata_sign = 0;
+			lp->poolmetadata_sign = SIGN_NONE;
 		}
 		/* else lp_meta.extents|size from lp->extents|size above */
 
@@ -6910,6 +6891,10 @@ int lv_resize(struct cmd_context *cmd, struct logical_volume *lv,
 	/*
 	 * If the LV is locked due to being active, this lock call is a no-op.
 	 * Otherwise, this acquires a transient lock on the lv (not PERSISTENT)
+	 * FIXME: should probably use a persistent lock in case the command
+	 * crashes while the lv is active, in which case we'd want the active
+	 * lv to remain locked. This means then adding lockd_lv("un") at the
+	 * end.
 	 */
 	if (!lockd_lv_resize(cmd, lv_top, "ex", 0, lp))
 		return_0;
@@ -7017,8 +7002,29 @@ int lv_resize(struct cmd_context *cmd, struct logical_volume *lv,
 	/*
 	 * Warn and confirm if checksize has been disabled for reduce.
 	 */
-	if (is_reduce && !lp->fsopt[0] && !_lv_reduce_confirmation(lv_top, lp))
-		goto_out;
+	if (!lp->fsopt[0] && is_reduce) {
+		int nofs = 0;
+
+		if (is_active) {
+			/* When active, prompt only for confirmation when FS is detected */
+			char lv_path[PATH_MAX];
+			char fstype[FSTYPE_MAX];
+
+			if (dm_snprintf(lv_path, sizeof(lv_path), "%s%s/%s", cmd->dev_dir,
+					lv_top->vg->name, lv_top->name) < 0) {
+				log_error("Couldn't create LV path for %s.", display_lvname(lv_top));
+				goto out;
+			}
+
+			if (!fs_block_size_and_type(lv_path, NULL, fstype, &nofs)) {
+				stack; /* Continue as if FS would have been detected */
+				nofs = 0;
+			}
+		}
+
+		if (!nofs && !_lv_reduce_confirmation(lv_top, lp))
+			goto_out;
+	}
 
 	/* Part of old approach to fs handling using fsadm.  */
 	if (!strcmp(lp->fsopt, "resize_fsadm") && !lp->nofsck &&
@@ -7170,6 +7176,8 @@ char *generate_lv_name(struct volume_group *vg, const char *format,
 			high = i;
 	}
 
+	/* only internally passed %d are supported */
+	/* coverity[non_const_printf_format_string] */
 	if (dm_snprintf(buffer, len, format, high + 1) < 0)
 		return NULL;
 
@@ -7549,6 +7557,7 @@ int lv_remove_single(struct cmd_context *cmd, struct logical_volume *lv,
 	int visible, historical;
 	struct logical_volume *pool_lv = NULL;
 	struct logical_volume *lock_lv = lv;
+	struct logical_volume *lockd_pool = NULL;
 	struct lv_segment *cache_seg = NULL;
 	struct seg_list *sl;
 	struct lv_segment *seg = first_seg(lv);
@@ -7613,8 +7622,21 @@ int lv_remove_single(struct cmd_context *cmd, struct logical_volume *lv,
 		return 0;
 	}
 
-	if (!lockd_lv(cmd, lock_lv, "ex", LDLV_PERSISTENT))
-		return_0;
+	if (vg_is_shared(vg)) {
+		if (lv_is_thin_type(lv)) {
+			/* FIXME: is this also needed for other types? */
+			/* Thin is special because it needs to be active and locked to remove. */
+			if (lv_is_thin_volume(lv))
+				lockd_pool = first_seg(lv)->pool_lv;
+			else if (lv_is_thin_pool(lv))
+				lockd_pool = lv;
+			if (!lockd_lv(cmd, lock_lv, "ex", LDLV_PERSISTENT))
+				return_0;
+		} else {
+			if (!lockd_lv(cmd, lock_lv, "ex", LDLV_PERSISTENT))
+				return_0;
+		}
+	}
 
 	if (!lv_is_cache_vol(lv)) {
 		if (!_lv_remove_check_in_use(lv, force))
@@ -7753,7 +7775,7 @@ int lv_remove_single(struct cmd_context *cmd, struct logical_volume *lv,
 		return_0;
 
 	/* Release unneeded blocks in thin pool */
-	/* TODO: defer when multiple LVs relased at once */
+	/* TODO: defer when multiple LVs released at once */
 	if (pool_lv && !update_thin_pool_lv(pool_lv, 1)) {
 		if (force < DONT_PROMPT_OVERRIDE) {
 			log_error("Failed to update thin pool %s.", display_lvname(pool_lv));
@@ -7763,8 +7785,13 @@ int lv_remove_single(struct cmd_context *cmd, struct logical_volume *lv,
 					display_lvname(pool_lv));
 	}
 
-	if (!lockd_lv(cmd, lv, "un", LDLV_PERSISTENT))
-		log_warn("WARNING: Failed to unlock %s.", display_lvname(lv));
+	if (lockd_pool && !thin_pool_is_active(lockd_pool)) {
+		if (!lockd_lv_name(cmd, vg, lockd_pool->name, &lockd_pool->lvid.id[1], lockd_pool->lock_args, "un", LDLV_PERSISTENT))
+			log_warn("WARNING: Failed to unlock %s.", display_lvname(lockd_pool));
+	} else {
+		if (!lockd_lv(cmd, lv, "un", LDLV_PERSISTENT))
+			log_warn("WARNING: Failed to unlock %s.", display_lvname(lv));
+	}
 	lockd_free_lv(cmd, vg, lv->name, &lv->lvid.id[1], lv->lock_args);
 
 	if (!suppress_remove_message && (visible || historical)) {
@@ -7911,9 +7938,18 @@ int lv_remove_with_dependencies(struct cmd_context *cmd, struct logical_volume *
 		return 1;
 	}
 
-	if (lv_is_external_origin(lv) &&
-	    !_lv_remove_segs_using_this_lv(cmd, lv, force, level, "external origin"))
-		return_0;
+	if (lv_is_external_origin(lv)) {
+		if (!_lv_remove_check_in_use(lv, force))
+			return_0;
+
+		if (!deactivate_lv(cmd, lv))
+			goto no_remove;
+
+		log_verbose("Removing external origin logical volume %s.", display_lvname(lv));
+
+		if (!_lv_remove_segs_using_this_lv(cmd, lv, force, level, "external origin"))
+			return_0;
+	}
 
 	if (lv_is_used_thin_pool(lv) &&
 	    !_lv_remove_segs_using_this_lv(cmd, lv, force, level, "pool"))
@@ -7982,7 +8018,7 @@ static int _lv_update_and_reload(struct logical_volume *lv, int origin_only)
 				  display_lvname(lock_lv));
 		return 0;
 	} else if (!(r = vg_commit(vg)))
-		stack; /* !vg_commit() has implict vg_revert() */
+		stack; /* !vg_commit() has implicit vg_revert() */
 
 	log_very_verbose("Updating logical volume %s in kernel.",
 			 display_lvname(lock_lv));
@@ -8060,7 +8096,7 @@ static int _split_parent_area(struct lv_segment *seg, uint32_t s,
 }
 
 /*
- * Split the parent LV segments if the layer LV below it is splitted.
+ * Split the parent LV segments if the layer LV below it is split.
  */
 int split_parent_segments_for_layer(struct cmd_context *cmd,
 				    struct logical_volume *layer_lv)
@@ -8294,7 +8330,7 @@ int remove_layer_from_lv(struct logical_volume *lv,
 	 */
 	/* FIXME:
 	 *    These are all INTERNAL_ERROR, but ATM there is
-	 *    some internal API problem and this code is wrongle
+	 *    some internal API problem and this code is wrongly
 	 *    executed with certain mirror manipulations.
 	 *    So we need to fix mirror code first, then switch...
 	 */
@@ -8343,7 +8379,7 @@ int remove_layer_from_lv(struct logical_volume *lv,
 		return_0;
 
 	/*
-	 * recuresively rename sub LVs
+	 * recursively rename sub LVs
 	 *   currently supported only for thin data layer
 	 *   FIXME: without strcmp it breaks mirrors....
 	 */
@@ -8410,7 +8446,7 @@ struct logical_volume *insert_layer_for_lv(struct cmd_context *cmd,
 		/* Temporary tags for activation of the transient LV */
 		dm_list_iterate_items(sl, &lv_where->tags)
 			if (!str_list_add(cmd->mem, &layer_lv->tags, sl->str)) {
-				log_error("Aborting.  Unable to tag"
+				log_error("Aborting. Unable to tag"
 					  " transient mirror layer.");
 				return NULL;
 			}
@@ -8467,7 +8503,7 @@ struct logical_volume *insert_layer_for_lv(struct cmd_context *cmd,
 		lv_where->profile = lv_where->vg->cmd->profile_params->global_metadata_profile;
 
 	/*
-	 * recuresively rename sub LVs
+	 * recursively rename sub LVs
 	 *   currently supported only for thin data layer
 	 *   FIXME: without strcmp it breaks mirrors....
 	 */
@@ -8648,18 +8684,8 @@ int insert_layer_for_segments_on_pv(struct cmd_context *cmd,
 			 layer_lv->name, lv_where->name,
 			 pvl ? pv_dev_name(pvl->pv) : "any");
 
-	/* Temporarily hide layer_lv from vg->lvs list
-	 * so the lv_split_segment() passes  vg_validate()
-	 * since here layer_lv has empty segment list */
-	if (!(lvl = find_lv_in_vg(lv_where->vg, layer_lv->name)))
-		return_0;
-	dm_list_del(&lvl->list);
-
 	if (!_align_segment_boundary_to_pe_range(lv_where, pvl))
 		return_0;
-
-	/* Put back layer_lv in vg->lv */
-	dm_list_add(&lv_where->vg->lvs, &lvl->list);
 
 	/* Work through all segments on the supplied PV */
 	dm_list_iterate_items(seg, &lv_where->segments) {
@@ -8884,7 +8910,7 @@ int activate_and_wipe_lvlist(struct dm_list *lv_list, int commit)
 		if (!(was_active[i++] = lv_is_active(lvl->lv))) {
 			lvl->lv->status |= LV_TEMPORARY;
 			if (!activate_lv(vg->cmd, lvl->lv)) {
-				log_error("Failed to activate localy %s for wiping.",
+				log_error("Failed to activate locally %s for wiping.",
 					  display_lvname(lvl->lv));
 				r = 0;
 				goto out;
@@ -9146,7 +9172,7 @@ static struct logical_volume *_lv_create_an_lv(struct volume_group *vg,
 		}
 		/* Does LV need to be zeroed? */
 		if (lp->zero) {
-			log_warn("WARNING: Skipping zeroing and wipping, compiled without activation support.");
+			log_warn("WARNING: Skipping zeroing and wiping, compiled without activation support.");
 			lp->zero = 0;
 			lp->wipe_signatures = 0;
 		}
@@ -9219,7 +9245,7 @@ static struct logical_volume *_lv_create_an_lv(struct volume_group *vg,
 		}
 
 		if (seg_is_thin_volume(lp)) {
-			/* Validate volume size to to aling on chunk for small extents */
+			/* Validate volume size to to align on chunk for small extents */
 			size = first_seg(pool_lv)->chunk_size;
 			if (size > vg->extent_size) {
 				/* Align extents on chunk boundary size */
@@ -9232,12 +9258,23 @@ static struct logical_volume *_lv_create_an_lv(struct volume_group *vg,
 				}
 			}
 
-			thin_pool_was_active = lv_is_active(pool_lv);
-			if (lv_is_new_thin_pool(pool_lv)) {
+			thin_pool_was_active = (lp->create_pool || lv_is_active(pool_lv));
+			if  (lp->create_pool) {
+				/* When we just created new thin-pool we know it's not active
+				 * and we can skip check for pool being empty.
+				 * When command is finished we will make sure thin-pool will
+				 * be actually left active */
+				;
+			} else if (lv_is_new_thin_pool(pool_lv)) {
 				if (!check_new_thin_pool(pool_lv))
 					return_NULL;
 				/* New pool is now inactive */
 			} else {
+				if (!lockd_lv(cmd, pool_lv, "ex", LDLV_PERSISTENT)) {
+					log_error("Failed to lock thin pool.");
+					return NULL;
+				}
+
 				if (!activate_lv(cmd, pool_lv)) {
 					log_error("Aborting. Failed to locally activate thin pool %s.",
 						  display_lvname(pool_lv));
@@ -9323,24 +9360,10 @@ static struct logical_volume *_lv_create_an_lv(struct volume_group *vg,
 				return NULL;
 			}
 
-			lp->virtual_extents = origin_lv->le_count;
+			if (!validate_thin_external_origin(origin_lv, pool_lv))
+				return_NULL;
 
-			/*
-			 * Check if using 'external origin' or the 'normal' snapshot
-			 * within the same thin pool
-			 */
-			if (first_seg(origin_lv)->pool_lv != pool_lv) {
-				if (!thin_pool_supports_external_origin(first_seg(pool_lv), origin_lv))
-					return_NULL;
-				if (origin_lv->status & LVM_WRITE) {
-					log_error("Cannot use writable LV as the external origin.");
-					return NULL; /* FIXME conversion for inactive */
-				}
-				if (lv_is_active(origin_lv) && !lv_is_external_origin(origin_lv)) {
-					log_error("Cannot use active LV for the external origin.");
-					return NULL; /* We can't be sure device is read-only */
-				}
-			}
+			lp->virtual_extents = origin_lv->le_count;
 		}
 	} else if (lp->snapshot) {
 		if (!lp->virtual_extents) {
@@ -9465,18 +9488,16 @@ static struct logical_volume *_lv_create_an_lv(struct volume_group *vg,
 		first_seg(lv)->min_recovery_rate = lp->min_recovery_rate;
 		first_seg(lv)->max_recovery_rate = lp->max_recovery_rate;
 	} else if (lv_is_thin_pool(lv)) {
-		first_seg(lv)->chunk_size = lp->chunk_size;
-		first_seg(lv)->zero_new_blocks = lp->zero_new_blocks;
-		first_seg(lv)->discards = lp->discards;
-		if ((first_seg(lv)->crop_metadata = lp->crop_metadata) == THIN_CROP_METADATA_NO)
-			lv->status |= LV_CROP_METADATA;
-		if (!recalculate_pool_chunk_size_with_dev_hints(lv, seg_lv(first_seg(lv), 0),
-								lp->thin_chunk_size_calc_policy)) {
+		if (!thin_pool_set_params(first_seg(lv),
+					  lp->error_when_full,
+					  lp->crop_metadata,
+					  lp->thin_chunk_size_calc_policy,
+					  lp->chunk_size,
+					  lp->discards,
+					  lp->zero_new_blocks)) {
 			stack;
 			goto revert_new_lv;
 		}
-		if (lp->error_when_full)
-			lv->status |= LV_ERROR_WHEN_FULL;
 	} else if (pool_lv && lv_is_virtual(lv) && /* not yet thin LV */
 		   (seg = first_seg(lv)) &&
 		   seg_is_thin(seg)) { /* going to be a thin volume */
@@ -9579,11 +9600,14 @@ static struct logical_volume *_lv_create_an_lv(struct volume_group *vg,
 			goto revert_new_lv;
 		}
 	} else if (lv_is_cache_pool(lv)) {
-		/* Cache pool cannot be actived and zeroed */
+		/* Cache pool cannot be activated and zeroed */
 		log_very_verbose("Cache pool is prepared.");
 	} else if (lv_is_thin_volume(lv)) {
-		/* For snapshot, suspend active thin origin first */
-		if (origin_lv && lv_is_thin_volume(origin_lv) && lv_is_active(origin_lv)) {
+		/* Optimize the case when taking a snapshot within same pool and thin origin
+		 * is an active LV, so we can pass thin message with suspend/resume of this LV. */
+		if (origin_lv && lv_is_thin_volume(origin_lv) &&
+		    (first_seg(origin_lv)->pool_lv == pool_lv) &&
+		    lv_is_active(origin_lv)) {
 			if (!(ret = suspend_lv_origin(cmd, origin_lv))) {
 				log_error("Failed to suspend thin snapshot origin %s.",
 					  display_lvname(origin_lv));
@@ -9632,6 +9656,10 @@ static struct logical_volume *_lv_create_an_lv(struct volume_group *vg,
 				/* Avoid multiple thin-pool activations in this case */
 				if (thin_pool_was_active < 0)
 					thin_pool_was_active = 0;
+				if (!lockd_lv(cmd, pool_lv, "ex", LDLV_PERSISTENT)) {
+					log_error("Failed to lock thin pool.");
+					return NULL;
+				}
 				if (!activate_lv(cmd, pool_lv)) {
 					log_error("Failed to activate thin pool %s.",
 						  display_lvname(pool_lv));
@@ -9656,11 +9684,15 @@ static struct logical_volume *_lv_create_an_lv(struct volume_group *vg,
 		}
 
 		/* Restore inactive state if needed */
-		if (!thin_pool_was_active &&
-		    !deactivate_lv(cmd, pool_lv)) {
-			log_error("Failed to deactivate thin pool %s.",
-				  display_lvname(pool_lv));
-			return NULL;
+		if (!thin_pool_was_active) {
+			if (!deactivate_lv(cmd, pool_lv)) {
+				log_error("Failed to deactivate thin pool %s.", display_lvname(pool_lv));
+				return NULL;
+			}
+			if (!lockd_lv(cmd, pool_lv, "un", LDLV_PERSISTENT)) {
+				log_error("Failed to unlock thin pool.");
+				return NULL;
+			}
 		}
 	} else if (lp->snapshot) {
 		lv->status |= LV_TEMPORARY;
@@ -9699,7 +9731,7 @@ static struct logical_volume *_lv_create_an_lv(struct volume_group *vg,
 	}
 
 	if (seg_is_vdo_pool(lp)) {
-		if (!convert_vdo_pool_lv(lv, &lp->vdo_params, &lp->virtual_extents,
+		if (!convert_vdo_pool_lv(lv, &lp->vcp.vdo_params, &lp->virtual_extents,
 					 1, lp->vdo_pool_header_size)) {
 			stack;
 			goto deactivate_and_revert_new_lv;
@@ -9820,7 +9852,7 @@ static struct logical_volume *_lv_create_an_lv(struct volume_group *vg,
 
 			/* Activate spare snapshot once it is a complete LV */
 			if (!lv_active_change(cmd, origin_lv, lp->activate)) {
-				log_error("Failed to activate sparce volume %s.",
+				log_error("Failed to activate sparse volume %s.",
 					  display_lvname(origin_lv));
 				return NULL;
 			}
@@ -9862,6 +9894,7 @@ struct logical_volume *lv_create_single(struct volume_group *vg,
 {
 	const struct segment_type *segtype;
 	struct logical_volume *lv;
+	activation_change_t tmp;
 
 	/* Create pool first if necessary */
 	if (lp->create_pool && !seg_is_pool(lp)) {
@@ -9872,10 +9905,13 @@ struct logical_volume *lv_create_single(struct volume_group *vg,
 
 			/* We want a lockd lock for the new thin pool, but not the thin lv. */
 			lp->needs_lockd_init = 1;
-
+			/* When creating thin volume with new thin-pool avoid activating
+			 * new empty pool so it's not necessary to reactivate is as used thin-pool */
+			tmp = lp->activate;
+			lp->activate = CHANGE_ALN;
 			if (!(lv = _lv_create_an_lv(vg, lp, lp->pool_name)))
 				return_NULL;
-
+			lp->activate = tmp; /* restore activation */
 			lp->needs_lockd_init = 0;
 
 		} else if (seg_is_cache(lp)) {
@@ -9897,7 +9933,7 @@ struct logical_volume *lv_create_single(struct volume_group *vg,
 				return NULL;
 			}
 
-			/* Convertion via lvcreate */
+			/* Conversion via lvcreate */
 			log_print_unless_silent("Logical volume %s is now cached.",
 						display_lvname(lv));
 			return lv;

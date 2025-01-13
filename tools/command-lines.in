@@ -55,7 +55,7 @@
 # LV_raid represents any raidN.  LV_type1_type2_type3 when the LV is
 # limited to multiple specific types.
 #
-# Note that two commands whose required paramters differ only by
+# Note that two commands whose required parameters differ only by
 # the LV types they accept are ambiguous.  That is, they cannot be
 # distinguished by just looking at the command, but require reading
 # the VG to find the LV type.  So, command definitions that differ
@@ -69,7 +69,7 @@
 # If Select is included in pos_arg, it means that the pos_arg
 # may be empty if the --select option is used.
 #
-# --size and --extents are interchangable, but only --size is used
+# --size and --extents are interchangeable, but only --size is used
 # in these definitions to keep them simpler.  --extents is
 # automatically included and recognized as an alternative to --size.
 #
@@ -99,7 +99,7 @@
 #
 # used in definitions below (equivalent but not used in definitions)
 # mirrorlog core (not corelog)
-# resizeable (resizable or allocation)
+# resizable (resizable or allocation)
 # allocatable (allocation)
 # activate (available)
 # rebuild (raidrebuild)
@@ -119,7 +119,7 @@
 # the same thing, but are alternate syntaxes can share the same ID,
 # in which case the implementation would have to sort out which
 # args to look at for the required parameters.  Or, the two commands
-# could use differnet IDs, in which case the implementation would
+# could use different IDs, in which case the implementation would
 # know where to look for each parameter.
 #
 # DESC: A description of the command.  The "DESC:" tags will be
@@ -190,7 +190,7 @@
 # To use this set of options, include it on the OO: line, e.g.
 # OO: --example, OO_NAME
 #
-# which is expaneded to
+# which is expanded to
 # OO: --example, --foo, --bar String
 #
 # Including OO_NAME after a command name on the required line
@@ -210,7 +210,7 @@ OO_ALL: --commandprofile String, --config String, --debug,
 # options for pvs, lvs, vgs, fullreport
 #
 OO_REPORT: --aligned, --all, --binary, --configreport ConfigReport, --foreign,
---ignorelockingfailure, --logonly,
+--headings HeadingsType --ignorelockingfailure, --logonly,
 --nameprefixes, --noheadings, --nosuffix,
 --options String, --readonly, --reportformat ReportFmt, --rows,
 --select String, --separator String, --shared, --sort String,
@@ -244,7 +244,7 @@ OO_LVCHANGE_META: --addtag Tag, --deltag Tag,
 --setautoactivation Bool, --errorwhenfull Bool, --discards Discards, --zero Bool,
 --cachemode CacheMode, --cachepolicy String, --cachesettings String,
 --minrecoveryrate SizeKB, --maxrecoveryrate SizeKB,
---vdosettings String,
+--vdosettings String, --integritysettings String,
 --writebehind Number, --writemostly WriteMostlyPV, --persistent n
 
 # It's unfortunate that activate needs to be optionally allowed here;
@@ -272,13 +272,13 @@ RULE: --alloc --contiguous --metadataprofile --persistent --profile --readahead 
 RULE: --alloc --discards --zero --cachemode --cachepolicy --cachesettings not lv_is_partial
 
 # It's unfortunate that activate needs to be optionally allowed here,
-# like above, it was previouly allowed in combination.
+# like above, it was previously allowed in combination.
 
 lvchange --resync VG|LV_raid_mirror|Tag|Select ...
 OO: --activate Active, OO_LVCHANGE
 IO: --ignoreskippedcluster
 ID: lvchange_resync
-DESC: Resyncronize a mirror or raid LV.
+DESC: Resynchronize a mirror or raid LV.
 DESC: Use to reset 'R' attribute on a not initially synchronized LV.
 RULE: all not lv_is_pvmove lv_is_locked lv_is_raid_with_integrity
 RULE: all not LV_raid0
@@ -332,19 +332,21 @@ RULE: all not LV_thinpool LV_cachepool LV_vdopool
 
 ---
 
-OO_LVCONVERT_POOL: --poolmetadata LV, --poolmetadatasize SizeMB,
---poolmetadataspare Bool, --readahead Readahead, --chunksize SizeKB,
---zero Bool, --metadataprofile String
-
-OO_LVCONVERT_THINPOOL: --discards Discards, --errorwhenfull Bool
+OO_LVCONVERT_POOL: --chunksize SizeKB, --poolmetadata LV,
+--poolmetadatasize SizeMB, --poolmetadataspare Bool, --metadataprofile String,
+--readahead Readahead, --wipesignatures Bool, --zero Bool
 
 OO_LVCONVERT_CACHE: --cachemetadataformat CacheMetadataFormat,
 --cachemode CacheMode, --cachepolicy String,
 --cachesettings String, --zero Bool
 
-OO_LVCONVERT_VDO: --metadataprofile String, --readahead Readahead,
---compression Bool, --deduplication Bool, --vdosettings String,
---zero Bool
+OO_LVCONVERT_VDO: --compression Bool, --deduplication Bool, --vdosettings String
+
+OO_LVCONVERT_VDO_POOL: OO_LVCONVERT_VDO, --metadataprofile String,
+--readahead Readahead, --wipesignatures Bool, --zero Bool
+
+OO_LVCONVERT_THINPOOL: --discards Discards, --errorwhenfull Bool, --pooldatavdo Bool,
+OO_LVCONVERT_VDO, OO_LVCONVERT_POOL
 
 OO_LVCONVERT: --alloc Alloc, --background, --force, --noudevsync
 
@@ -456,6 +458,7 @@ FLAGS: SECONDARY_SYNTAX
 
 lvconvert --type thin --thinpool LV LV_linear_striped_raid_cache_thin_error_zero
 OO: --thin, --originname LV_new, OO_LVCONVERT_POOL, OO_LVCONVERT
+OP: PV ...
 ID: lvconvert_to_thin_with_external
 DESC: Convert LV to a thin LV, using the original LV as an external origin.
 RULE: all and lv_is_visible
@@ -465,6 +468,7 @@ RULE: --poolmetadata not --readahead --stripesize --stripes_long
 # alternate form of lvconvert --type thin
 lvconvert --thin --thinpool LV LV_linear_striped_raid_cache_thin_error_zero
 OO: --originname LV_new, OO_LVCONVERT_POOL, OO_LVCONVERT
+OP: PV ...
 ID: lvconvert_to_thin_with_external
 DESC: Convert LV to a thin LV, using the original LV as an external origin.
 FLAGS: SECONDARY_SYNTAX
@@ -476,6 +480,7 @@ RULE: --poolmetadata not --readahead --stripesize --stripes_long
 # Convert to thin volume
 lvconvert --type thin LV_linear_striped_raid_cache_writecache_vdo_error_zero
 OO: --thin, OO_LVCONVERT_POOL, OO_LVCONVERT
+OP: PV ...
 ID: lvconvert_to_thin_with_data
 DESC: Convert LV to a thin LV, using LV as thin-pool data volume.
 RULE: all and lv_is_visible
@@ -485,6 +490,7 @@ RULE: --poolmetadata not --readahead --stripesize --stripes_long
 # Convert to thin volume
 lvconvert --thin LV_linear_striped_raid_cache_writecache_vdo_error_zero
 OO: OO_LVCONVERT_POOL, OO_LVCONVERT
+OP: PV ...
 ID: lvconvert_to_thin_with_data
 DESC: Convert LV to a thin LV, using LV as thin-pool data volume.
 FLAGS: SECONDARY_SYNTAX
@@ -497,6 +503,7 @@ RULE: --poolmetadata not --readahead --stripesize --stripes_long
 
 lvconvert --type cache --cachepool LV LV_linear_striped_raid_thinpool_vdo_vdopool_vdopooldata_thin_error_zero
 OO: --cache, OO_LVCONVERT_CACHE, OO_LVCONVERT_POOL, OO_LVCONVERT
+OP: PV ...
 ID: lvconvert_to_cache_with_cachepool
 DESC: Attach a cache pool to an LV, converts the LV to type cache.
 RULE: all not lv_is_locked lv_is_merging_origin lv_is_merging_cow lv_is_cow
@@ -505,6 +512,7 @@ RULE: --poolmetadata not --readahead --stripesize --stripes_long
 # alternate form of lvconvert --type cache
 lvconvert --cache --cachepool LV LV_linear_striped_raid_thinpool_vdo_vdopool_vdopooldata_thin_error_zero
 OO: OO_LVCONVERT_CACHE, OO_LVCONVERT_POOL, OO_LVCONVERT
+OP: PV ...
 ID: lvconvert_to_cache_with_cachepool
 DESC: Attach a cache pool to an LV.
 RULE: all not lv_is_locked lv_is_merging_origin lv_is_merging_cow lv_is_cow
@@ -552,9 +560,9 @@ RULE: all and lv_is_visible
 
 ---
 
-lvconvert --type thin-pool LV_linear_striped_raid_cache_writecache_error_zero
+lvconvert --type thin-pool LV_linear_striped_raid_cache_writecache_vdo_error_zero
 OO: --stripes_long Number, --stripesize SizeKB,
-OO_LVCONVERT_THINPOOL, OO_LVCONVERT_POOL, OO_LVCONVERT
+OO_LVCONVERT_THINPOOL, OO_LVCONVERT
 OP: PV ...
 ID: lvconvert_to_thinpool
 DESC: Convert LV to type thin-pool.
@@ -584,9 +592,9 @@ RULE: --poolmetadata not --readahead --stripesize --stripes_long
 # This command syntax is deprecated, and the primary forms
 # of creating a pool or swapping metadata should be used.
 
-lvconvert --thinpool LV_linear_striped_raid_cache_writecache_error_zero_thinpool
+lvconvert --thinpool LV_linear_striped_raid_cache_writecache_vdo_error_zero_thinpool
 OO: --stripes_long Number, --stripesize SizeKB,
-OO_LVCONVERT_THINPOOL, OO_LVCONVERT_POOL, OO_LVCONVERT
+OO_LVCONVERT_THINPOOL, OO_LVCONVERT
 OP: PV ...
 ID: lvconvert_to_thinpool_or_swap_metadata
 DESC: Convert LV to type thin-pool (variant, use --type thin-pool).
@@ -654,14 +662,14 @@ RULE: --poolmetadata not --readahead --stripesize --stripes_long
 ---
 
 lvconvert --type vdo-pool LV_linear_striped_raid_cache
-OO: --name LV_new, --virtualsize SizeMB, OO_LVCONVERT_VDO, OO_LVCONVERT
+OO: --name LV_new, --virtualsize SizeMB, OO_LVCONVERT_VDO_POOL, OO_LVCONVERT
 ID: lvconvert_to_vdopool
 DESC: Convert LV to type vdopool.
-RULE: all and lv_is_visible
+RULE: all and lv_is_visible lv_is_writable
 RULE: all not lv_is_locked lv_is_origin lv_is_merging_origin lv_is_external_origin lv_is_virtual lv_is_raid_with_integrity
 
 lvconvert --vdopool LV_linear_striped_raid_cache
-OO: OO_LVCONVERT_VDO, OO_LVCONVERT, --name LV_new, --virtualsize SizeMB,
+OO: OO_LVCONVERT_VDO_POOL, OO_LVCONVERT, --name LV_new, --virtualsize SizeMB,
 ID: lvconvert_to_vdopool_param
 DESC: Convert LV to type vdopool.
 RULE: all and lv_is_visible
@@ -742,7 +750,7 @@ FLAGS: SECONDARY_SYNTAX
 
 ---
 
-# NB: an unsual use of position args here, the first pos arg
+# NB: an unusual use of position args here, the first pos arg
 # (will become origin LV) is not passed to process_each,
 # the second pos arg (will become cow LV) is given to
 # process_each.  Because the first pos LV is not handled
@@ -771,7 +779,7 @@ AUTOTYPE: snapshot
 
 ---
 
-# lvconvert repair/replace utilitiles
+# lvconvert repair/replace utilities
 # Create a new command set for these and migrate them out of lvconvert?
 
 # FIXME: use specific option names to distinguish these two
@@ -835,7 +843,7 @@ FLAGS: SECONDARY_SYNTAX
 ---
 
 lvconvert --raidintegrity Bool LV_raid
-OO: --raidintegritymode String, --raidintegrityblocksize Number, OO_LVCONVERT
+OO: --raidintegritymode String, --raidintegrityblocksize Number, --integritysettings String, OO_LVCONVERT
 OP: PV ...
 ID: lvconvert_integrity
 DESC: Add or remove data integrity checksums to raid images.
@@ -856,9 +864,13 @@ OO_LVCREATE_CACHE: --cachemode CacheMode, --cachepolicy String, --cachesettings 
 
 OO_LVCREATE_POOL: --poolmetadatasize SizeMB, --poolmetadataspare Bool, --chunksize SizeKB
 
-OO_LVCREATE_THINPOOL: --discards Discards, --errorwhenfull Bool
-
 OO_LVCREATE_VDO: --compression Bool, --deduplication Bool, --vdosettings String
+
+OO_LVCREATE_THINPOOL: --discards Discards, --errorwhenfull Bool, --pooldatavdo Bool, OO_LVCREATE_VDO, OO_LVCREATE_POOL
+
+OO_LVCREATE_RAID: --regionsize RegionSize, --minrecoveryrate SizeKB, --maxrecoveryrate SizeKB,
+--raidintegrity Bool, --raidintegritymode String, --raidintegrityblocksize Number, --integritysettings String
+
 ---
 
 lvcreate --type error --size SizeMB VG
@@ -949,7 +961,7 @@ FLAGS: SECONDARY_SYNTAX
 # R14 (just --mirrors)
 # alternate form of lvcreate --type raid1|mirror
 lvcreate --mirrors PNumber --size SizeMB VG
-OO: --stripesize SizeKB, --mirrorlog MirrorLog, --regionsize RegionSize, --minrecoveryrate SizeKB, --maxrecoveryrate SizeKB, OO_LVCREATE
+OO: --stripesize SizeKB, --mirrorlog MirrorLog, OO_LVCREATE_RAID, OO_LVCREATE
 OP: PV ...
 IO: --stripes 1
 ID: lvcreate_mirror_or_raid1
@@ -959,9 +971,8 @@ AUTOTYPE: mirror
 
 # R9,R10,R11,R12 (--type raid with any use of --stripes/--mirrors)
 lvcreate --type raid --size SizeMB VG
-OO: --stripes Number, --stripesize SizeKB,
---mirrors PNumber, --regionsize RegionSize, --minrecoveryrate SizeKB, --maxrecoveryrate SizeKB,
---raidintegrity Bool, --raidintegritymode String, --raidintegrityblocksize Number, OO_LVCREATE
+OO: --mirrors PNumber, --stripes Number, --stripesize SizeKB,
+OO_LVCREATE_RAID, OO_LVCREATE
 OP: PV ...
 ID: lvcreate_raid_any
 DESC: Create a raid LV (a specific raid level must be used, e.g. raid1).
@@ -970,7 +981,7 @@ DESC: Create a raid LV (a specific raid level must be used, e.g. raid1).
 # FIXME: --mirrors N --stripes 1 is raid1|mirror and should only
 # match the cmd def above for raid1|mirror with IO: --stripes 1
 lvcreate --mirrors PNumber --stripes Number --size SizeMB VG
-OO: --stripesize SizeKB, --regionsize RegionSize, --minrecoveryrate SizeKB, --maxrecoveryrate SizeKB, OO_LVCREATE
+OO: --stripesize SizeKB, OO_LVCREATE_RAID, OO_LVCREATE
 OP: PV ...
 ID: lvcreate_raid_any
 DESC: Create a raid10 LV.
@@ -1016,7 +1027,7 @@ FLAGS: SECONDARY_SYNTAX
 
 lvcreate --type thin-pool --size SizeMB VG
 OO: --thinpool LV_new, --stripes Number, --stripesize SizeKB,
---thin, OO_LVCREATE_THINPOOL, OO_LVCREATE_POOL, OO_LVCREATE
+--thin, OO_LVCREATE_THINPOOL, OO_LVCREATE
 OP: PV ...
 IO: --mirrors 0
 ID: lvcreate_thinpool
@@ -1024,7 +1035,7 @@ DESC: Create a thin pool.
 
 # alternate form of lvcreate --type thin-pool
 lvcreate --thin --size SizeMB VG
-OO: --stripes Number, --stripesize SizeKB, OO_LVCREATE_THINPOOL, OO_LVCREATE_POOL, OO_LVCREATE
+OO: --stripes Number, --stripesize SizeKB, OO_LVCREATE_THINPOOL, OO_LVCREATE
 OP: PV ...
 IO: --mirrors 0
 ID: lvcreate_thinpool
@@ -1035,7 +1046,7 @@ AUTOTYPE: thin-pool
 # alternate form of lvcreate --type thin-pool
 lvcreate --size SizeMB --thinpool LV_new VG
 OO: --stripes Number, --stripesize SizeKB,
---thin, OO_LVCREATE_THINPOOL, OO_LVCREATE_POOL, OO_LVCREATE
+--thin, OO_LVCREATE_THINPOOL, OO_LVCREATE
 OP: PV ...
 IO: --mirrors 0
 ID: lvcreate_thinpool
@@ -1126,7 +1137,9 @@ AUTOTYPE: thin
 
 # alternate form of lvcreate --type thin
 lvcreate --snapshot LV_thin
-OO: --thin, OO_LVCREATE
+# not providing implied --thin option with this OO
+# so we have 2 different command variant
+OO: OO_LVCREATE
 IO: --mirrors 0
 ID: lvcreate_thin_snapshot
 DESC: Create a thin LV that is a snapshot of an existing thin LV.
@@ -1197,7 +1210,7 @@ AUTOTYPE: vdo
 
 lvcreate --type thin --virtualsize SizeMB --size SizeMB --thinpool LV_new VG
 OO: --stripes Number, --stripesize SizeKB,
---thin, OO_LVCREATE_THINPOOL, OO_LVCREATE_POOL, OO_LVCREATE
+--thin, OO_LVCREATE_THINPOOL, OO_LVCREATE
 OP: PV ...
 IO: --mirrors 0
 ID: lvcreate_thin_vol_and_thinpool
@@ -1208,7 +1221,7 @@ FLAGS: SECONDARY_SYNTAX
 # alternate form of lvcreate --type thin
 lvcreate --virtualsize SizeMB --size SizeMB --thinpool LV_new VG
 OO: --stripes Number, --stripesize SizeKB,
---thin, OO_LVCREATE_THINPOOL, OO_LVCREATE_POOL, OO_LVCREATE
+--thin, OO_LVCREATE_THINPOOL, OO_LVCREATE
 OP: PV ...
 IO: --mirrors 0
 ID: lvcreate_thin_vol_and_thinpool
@@ -1220,7 +1233,7 @@ AUTOTYPE: thin
 # alternate form of lvcreate --type thin
 lvcreate --type thin --virtualsize SizeMB --size SizeMB LV_new|VG
 OO: --stripes Number, --stripesize SizeKB,
---thin, OO_LVCREATE_THINPOOL, OO_LVCREATE_POOL, OO_LVCREATE
+--thin, OO_LVCREATE_THINPOOL, OO_LVCREATE
 OP: PV ...
 IO: --mirrors 0
 ID: lvcreate_thin_vol_and_thinpool
@@ -1233,7 +1246,7 @@ FLAGS: SECONDARY_SYNTAX
 # alternate form of lvcreate --type thin
 lvcreate --thin --virtualsize SizeMB --size SizeMB LV_new|VG
 OO: --stripes Number, --stripesize SizeKB,
-OO_LVCREATE_THINPOOL, OO_LVCREATE_POOL, OO_LVCREATE
+OO_LVCREATE_THINPOOL, OO_LVCREATE
 OP: PV ...
 IO: --mirrors 0
 ID: lvcreate_thin_vol_and_thinpool
@@ -1248,7 +1261,7 @@ AUTOTYPE: thin
 
 lvcreate --size SizeMB --virtualsize SizeMB VG
 OO: --stripes Number, --stripesize SizeKB, --snapshot, --thin,
-OO_LVCREATE_THINPOOL, OO_LVCREATE_POOL, OO_LVCREATE
+OO_LVCREATE_THINPOOL, OO_LVCREATE
 OP: PV ...
 IO: --mirrors 0
 ID: lvcreate_thin_vol_with_thinpool_or_sparse_snapshot
@@ -1442,10 +1455,11 @@ DESC: Print devices in the devices file.
 
 lvmdevices --check
 ID: lvmdevices_check
+OO: --refresh
 DESC: Check the devices file and report incorrect values.
 
 lvmdevices --update
-OO: --delnotfound
+OO: --delnotfound, --refresh
 ID: lvmdevices_update
 DESC: Update the devices file to fix incorrect values.
 
@@ -1531,6 +1545,7 @@ OO: --history, --segments, OO_REPORT
 OP: VG|LV|Tag ...
 IO: --partial, --ignoreskippedcluster, --trustcache
 ID: lvs_general
+RULE: --noheadings not --headings
 
 ---
 
@@ -1640,16 +1655,17 @@ ID: pvremove_general
 ---
 
 pvs
-OO: --segments, OO_REPORT
+OO: --segments, --allpvs, OO_REPORT
 OP: PV|Tag ...
 IO: --partial, --ignoreskippedcluster, --trustcache
 ID: pvs_general
+RULE: --noheadings not --headings
 
 ---
 
 pvscan
 OO: --ignorelockingfailure, --reportformat ReportFmt, --exported, --novolumegroup,
---short, --uuid
+--short, --uuid, --allpvs
 ID: pvscan_display
 DESC: Display PV information.
 
@@ -1895,6 +1911,11 @@ OO: --foreign, --reportformat ReportFmt
 ID: vgimportdevices_all
 DESC: Add devices from all accessible VGs to the devices file.
 
+vgimportdevices --rootvg
+OO: --auto, --reportformat ReportFmt
+ID: vgimportdevices_root
+DESC: Add devices from root VG to the devices file.
+
 ---
 
 vgmerge VG VG
@@ -1952,11 +1973,12 @@ OO: OO_REPORT
 OP: VG|Tag ...
 IO: --partial, --ignoreskippedcluster, --trustcache
 ID: vgs_general
+RULE: --noheadings not --headings
 
 ---
 
 vgscan
-OO: --ignorelockingfailure, --mknodes, --notifydbus,
+OO: --ignorelockingfailure, --mknodes, --notifydbus, --refresh,
 --reportformat ReportFmt
 IO: --partial, --cache_long
 ID: vgscan_general
@@ -2007,6 +2029,7 @@ OO: OO_REPORT
 OP: VG ...
 IO: --partial, --ignoreskippedcluster, --trustcache
 ID: fullreport_general
+RULE: --noheadings not --headings
 
 lastlog
 OO: --reportformat ReportFmt, --select String

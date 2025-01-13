@@ -162,7 +162,7 @@ struct load_segment {
 	uint32_t region_size;		/* Mirror + raid */
 	unsigned clustered;		/* Mirror */
 	unsigned mirror_area_count;	/* Mirror */
-	uint32_t flags;			/* Mirror + raid + Cache */
+	uint64_t flags;			/* Mirror + Raid + Cache */
 	char *uuid;			/* Clustered mirror log */
 
 	const char *policy_name;	/* Cache */
@@ -235,7 +235,7 @@ struct load_properties {
 	/*
 	 * Preload tree normally only loads and not resume, but there is
 	 * automatic resume when target is extended, as it's believed
-	 * there can be no i/o flying to this 'new' extedend space
+	 * there can be no i/o flying to this 'new' extended space
 	 * from any device above. Reason is that preloaded target above
 	 * may actually need to see its bigger subdevice before it
 	 * gets suspended. As long as devices are simple linears
@@ -248,8 +248,8 @@ struct load_properties {
 	/*
 	 * Call node_send_messages(), set to 2 if there are messages
 	 * When != 0, it validates matching transaction id, thus thin-pools
-	 * where transation_id is passed as 0 are never validated, this
-	 * allows external managment of thin-pool TID.
+	 * where transaction_id is passed as 0 are never validated, this
+	 * allows external management of thin-pool TID.
 	 */
 	unsigned send_messages;
 	/* Skip suspending node's children, used when sending messages to thin-pool */
@@ -308,7 +308,7 @@ struct dm_tree {
 	int retry_remove;		/* 1 retries remove if not successful */
 	uint32_t cookie;
 	char buf[DM_NAME_LEN + 32];	/* print buffer for device_name (major:minor) */
-	const char **optional_uuid_suffixes;	/* uuid suffixes ignored when matching */
+	const char * const *optional_uuid_suffixes;	/* uuid suffixes ignored when matching */
 };
 
 /*
@@ -550,6 +550,7 @@ void dm_tree_set_optional_uuid_suffixes(struct dm_tree *dtree, const char **opti
 	dtree->optional_uuid_suffixes = optional_uuid_suffixes;
 }
 
+static const char *_node_name(struct dm_tree_node *dnode);
 static struct dm_tree_node *_find_dm_tree_node_by_uuid(struct dm_tree *dtree,
 						       const char *uuid)
 {
@@ -557,28 +558,26 @@ static struct dm_tree_node *_find_dm_tree_node_by_uuid(struct dm_tree *dtree,
 	const char *default_uuid_prefix;
 	size_t default_uuid_prefix_len;
 	const char *suffix, *suffix_position;
-	char uuid_without_suffix[DM_UUID_LEN];
+	char uuid_without_suffix[DM_UUID_LEN + 1];
 	unsigned i = 0;
-	const char **suffix_list = dtree->optional_uuid_suffixes;
+	const char * const *suffix_list = dtree->optional_uuid_suffixes;
 
 	if ((node = dm_hash_lookup(dtree->uuids, uuid))) {
-		log_debug("Matched uuid %s in deptree.", uuid);
+		log_debug_activation("Matched uuid %s %s in deptree.", uuid, _node_name(node));
 		return node;
 	}
-
-	default_uuid_prefix = dm_uuid_prefix();
-	default_uuid_prefix_len = strlen(default_uuid_prefix);
 
 	if (suffix_list && (suffix_position = strrchr(uuid, '-'))) {
 		while ((suffix = suffix_list[i++])) {
 			if (strcmp(suffix_position + 1, suffix))
 				continue;
 
-			(void) strncpy(uuid_without_suffix, uuid, sizeof(uuid_without_suffix));
+			dm_strncpy(uuid_without_suffix, uuid, sizeof(uuid_without_suffix));
 			uuid_without_suffix[suffix_position - uuid] = '\0';
 
 			if ((node = dm_hash_lookup(dtree->uuids, uuid_without_suffix))) {
-				log_debug("Matched uuid %s (missing suffix -%s) in deptree.", uuid_without_suffix, suffix);
+				log_debug_activation("Matched uuid %s %s (missing suffix -%s) in deptree.",
+						     uuid_without_suffix, _node_name(node), suffix);
 				return node;
 			}
 
@@ -586,15 +585,17 @@ static struct dm_tree_node *_find_dm_tree_node_by_uuid(struct dm_tree *dtree,
 		};
 	}
 	
-	if (strncmp(uuid, default_uuid_prefix, default_uuid_prefix_len))
-		return NULL;
+	default_uuid_prefix = dm_uuid_prefix();
+	default_uuid_prefix_len = strlen(default_uuid_prefix);
 
-	if ((node = dm_hash_lookup(dtree->uuids, uuid + default_uuid_prefix_len))) {
-		log_debug("Matched uuid %s (missing prefix) in deptree.", uuid + default_uuid_prefix_len);
+	if ((strncmp(uuid, default_uuid_prefix, default_uuid_prefix_len) == 0) &&
+	    (node = dm_hash_lookup(dtree->uuids, uuid + default_uuid_prefix_len))) {
+		log_debug_activation("Matched uuid %s %s (missing prefix) in deptree.",
+				     uuid + default_uuid_prefix_len, _node_name(node));
 		return node;
 	}
 
-	log_debug("Not matched uuid %s in deptree.", uuid);
+	log_debug_activation("Not matched uuid %s in deptree.", uuid);
 	return NULL;
 }
 
@@ -927,7 +928,7 @@ static int _check_device_not_in_use(const char *name, struct dm_info *info)
 	} else if (dm_device_has_holders(info->major, info->minor))
 		reason = "is used by another device";
 	else if (dm_device_has_mounted_fs(info->major, info->minor))
-		reason = "constains a filesystem in use";
+		reason = "contains a filesystem in use";
 	else
 		return 1;
 
@@ -2024,7 +2025,7 @@ int dm_tree_activate_children(struct dm_tree_node *dnode,
 			/*
 			 * FIXME: Implement delayed error reporting
 			 * activation should be stopped only in the case,
-			 * the submission of transation_id message fails,
+			 * the submission of transaction_id message fails,
 			 * resume should continue further, just whole command
 			 * has to report failure.
 			 */
@@ -2114,7 +2115,7 @@ static int _build_dev_string(char *devbuf, size_t bufsize, struct dm_tree_node *
 	return 1;
 }
 
-/* simplify string emiting code */
+/* simplify string emitting code */
 #define EMIT_PARAMS(p, str...)\
 do {\
 	int w;\
@@ -2923,7 +2924,7 @@ int dm_tree_preload_children(struct dm_tree_node *dnode,
 		if (!child->info.exists && !(node_created = _create_node(child, dnode)))
 			return_0;
 
-		/* Propagate delayed resume from exteded child node */
+		/* Propagate delayed resume from extended child node */
 		if (child->props.delay_resume_if_extended)
 			dnode->props.delay_resume_if_extended = 1;
 
@@ -3356,7 +3357,7 @@ int dm_tree_node_add_raid_target(struct dm_tree_node *node,
  * - maximum 253 legs in a raid set (MD kernel limitation)
  * - delta_disks for disk add/remove reshaping
  * - data_offset for out-of-place reshaping
- * - data_copies to cope witth odd numbers of raid10 disks
+ * - data_copies to cope with odd numbers of raid10 disks
  */
 int dm_tree_node_add_raid_target_with_params_v2(struct dm_tree_node *node,
 					        uint64_t size,
@@ -3404,7 +3405,7 @@ DM_EXPORT_NEW_SYMBOL(int, dm_tree_node_add_cache_target, 1_02_138)
 {
 	struct dm_config_node *cn;
 	struct load_segment *seg;
-	static const uint64_t _modemask =
+	const uint64_t _modemask =
 		DM_CACHE_FEATURE_PASSTHROUGH |
 		DM_CACHE_FEATURE_WRITETHROUGH |
 		DM_CACHE_FEATURE_WRITEBACK;
@@ -3531,7 +3532,7 @@ int dm_tree_node_add_replicator_dev_target(struct dm_tree_node *node,
 					   uint32_t slog_flags,
 					   uint32_t slog_region_size)
 {
-	log_error("Replicator targer is unsupported.");
+	log_error("Replicator target is unsupported.");
 	return 0;
 }
 
@@ -3976,12 +3977,12 @@ int dm_tree_node_add_cache_target_base(struct dm_tree_node *node,
 				       uint32_t data_block_size)
 {
 	/* Old version supported only these FEATURE bits, others were ignored so masked them */
-	static const uint64_t _mask =
+	const uint64_t mask =
 		DM_CACHE_FEATURE_WRITEBACK |
 		DM_CACHE_FEATURE_WRITETHROUGH |
 		DM_CACHE_FEATURE_PASSTHROUGH;
 
-	return dm_tree_node_add_cache_target(node, size, feature_flags & _mask,
+	return dm_tree_node_add_cache_target(node, size, feature_flags & mask,
 					     metadata_uuid, data_uuid, origin_uuid,
 					     policy_name, policy_settings, data_block_size);
 }

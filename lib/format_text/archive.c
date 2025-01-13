@@ -79,7 +79,7 @@ static int _split_vg(const char *filename, char *vgname, size_t vgsize,
 	if (vg_len + 1 > vgsize)
 		return 0;
 
-	(void) dm_strncpy(vgname, filename, vg_len + 1);
+	dm_strncpy(vgname, filename, vg_len + 1);
 
 	return 1;
 }
@@ -209,7 +209,7 @@ static void _remove_expired(const char *dir, const char *vgname,
 			continue;
 
 		log_very_verbose("Expiring archive %s", path);
-		if (unlink(path))
+		if (unlink(path) && (errno != ENOENT))
 			log_sys_debug("unlink", path);
 
 		/* Don't delete any more if we've reached the minimum */
@@ -313,7 +313,7 @@ static void _display_archive(struct cmd_context *cmd, const char *dir, struct ar
 	}
 
 	log_print(" ");
-	log_print("File:\t\t%s/%s", path, af->name);
+	log_print("File:\t\t%s", path);
 	tc.path_live = path;
 
 	fic.type = FMT_INSTANCE_PRIVATE_MDAS;

@@ -128,7 +128,7 @@ int detach_thin_external_origin(struct lv_segment *seg)
 {
 	if (seg->external_lv) {
 		if (!lv_is_external_origin(seg->external_lv)) {
-			log_error(INTERNAL_ERROR "Inconsitent external origin.");
+			log_error(INTERNAL_ERROR "Inconsistent external origin.");
 			return 0;
 		}
 
@@ -342,7 +342,7 @@ out:
 /*
  * Detect overprovisioning and check lvm2 is configured for auto resize.
  *
- * If passed LV is thin volume/pool, check first only this one for overprovisiong.
+ * If passed LV is thin volume/pool, check first only this one for overprovisioning.
  * Lots of test combined together.
  * Test is not detecting status of dmeventd, too complex for now...
  */
@@ -459,7 +459,7 @@ int thin_pool_prepare_metadata(struct logical_volume *metadata_lv,
 			       uint64_t data_length)
 {
 	struct cmd_context *cmd = metadata_lv->vg->cmd;
-	char lv_path[PATH_MAX], md_path[64], buffer[512];
+	char lv_path[PATH_MAX], md_path[PATH_MAX], buffer[512];
 	const char *argv[DEFAULT_MAX_EXEC_ARGS + 7] = {
 		find_config_tree_str_allow_empty(cmd, global_thin_restore_executable_CFG, NULL)
 	};
@@ -490,7 +490,8 @@ int thin_pool_prepare_metadata(struct logical_volume *metadata_lv,
 	}
 
 	/* Build path for 'thin_restore' app with this 'hidden/deleted' tmpfile */
-	(void) dm_snprintf(md_path, sizeof(md_path), "/proc/%u/fd/%u", getpid(), fileno(f));
+	(void) dm_snprintf(md_path, sizeof(md_path), "%s/%u/fd/%u",
+			   cmd->proc_dir, getpid(), fileno(f));
 
 	argv[++args] = "-i";
 	argv[++args] = md_path;
@@ -775,6 +776,32 @@ thin_crop_metadata_t get_thin_pool_crop_metadata(struct cmd_context *cmd,
 	return crop;
 }
 
+int thin_pool_set_params(struct lv_segment *seg,
+			 int error_when_full,
+			 thin_crop_metadata_t crop_metadata,
+			 int thin_chunk_size_calc_policy,
+			 uint32_t chunk_size,
+			 thin_discards_t discards,
+			 thin_zero_t zero_new_blocks)
+{
+	seg->chunk_size = chunk_size;
+	if (!recalculate_pool_chunk_size_with_dev_hints(seg->lv, seg_lv(seg, 0),
+							thin_chunk_size_calc_policy))
+		return_0;
+
+	if (error_when_full)
+		seg->lv->status |= LV_ERROR_WHEN_FULL;
+
+	if ((seg->crop_metadata = crop_metadata) == THIN_CROP_METADATA_NO)
+		seg->lv->status |= LV_CROP_METADATA;
+
+	seg->discards = discards;
+	seg->zero_new_blocks = zero_new_blocks;
+	seg->transaction_id = 0;
+
+	return 1;
+}
+
 int update_thin_pool_params(struct cmd_context *cmd,
 			    struct profile *profile,
 			    uint32_t extent_size,
@@ -991,10 +1018,10 @@ int lv_is_thin_snapshot(const struct logical_volume *lv)
 }
 
 /*
- * Explict check of new thin pool for usability
+ * Explicit check of new thin pool for usability
  *
  * Allow use of thin pools by external apps. When lvm2 metadata has
- * transaction_id == 0 for a new thin pool, it will explicitely validate
+ * transaction_id == 0 for a new thin pool, it will explicitly validate
  * the pool is still unused.
  *
  * To prevent lvm2 to create thin volumes in externally used thin pools
@@ -1073,4 +1100,43 @@ int validate_thin_pool_chunk_size(struct cmd_context *cmd, uint32_t chunk_size)
 uint64_t estimate_thin_pool_metadata_size(uint32_t data_extents, uint32_t extent_size, uint32_t chunk_size)
 {
 	return _estimate_metadata_size(data_extents, extent_size, chunk_size);
+}
+
+/* Validates whether the LV can be used as external origin */
+int validate_thin_external_origin(const struct logical_volume *lv,
+				  const struct logical_volume *pool_lv)
+{
+	const char *type = NULL;
+
+	/*
+	 * Check if using 'external origin' or the 'normal' snapshot
+	 * within the same thin pool
+	 */
+	if (first_seg(lv)->pool_lv == pool_lv)
+		return 1;
+
+	if (!lv_is_visible(lv))
+		type = "internal";
+	else if (lv_is_cow(lv))
+		type = "snapshot";
+	else if (lv_is_pool(lv) || lv_is_vdo_pool(lv))
+		type = "pool";
+	else if (lv->status & LVM_WRITE)
+		type = "writable"; /* TODO: maybe support conversion for inactive */
+
+	if (type) {
+		log_error("Cannot use %s volume %s as external origin.",
+			  type, display_lvname(lv));
+		return 0;
+	}
+
+	if (!thin_pool_supports_external_origin(first_seg(pool_lv), lv))
+		return_0;
+
+	if (!lv_is_external_origin(lv) && lv_is_active(lv)) {
+		log_error("Cannot use active LV for the external origin.");
+		return 0; /* We can't be sure device is read-only */
+	}
+
+	return 1;
 }

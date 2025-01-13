@@ -22,6 +22,9 @@ lvm segtypes 2>/dev/null | grep writecache$ >/dev/null || {
 aux have_cache 1 10 0 || skip
 which mkfs.ext4 || skip
 
+HAVE_WRITECACHE=1
+aux have_writecache 1 0 0 || HAVE_WRITECACHE=0
+
 mount_dir="mnt"
 mkdir -p "$mount_dir"
 
@@ -52,6 +55,13 @@ test_snap_create() {
 	mount "$DM_DEV_DIR/$vg/$lv1" "$mount_dir"
 	cp pattern1 "$mount_dir/pattern1a"
 	lvcreate -s -L 32 -n snap $vg/$lv1
+	if [ "$2" = "--cachevol" ] && [ "$1" = "cache" ]; then
+		# For cachevol ensure -cmeta will have 1 line
+		dm_table $vg-fast_cvol-cmeta | tee out
+		test "$(wc -l < out)" = 1 || {
+			die "More then 1 table line for -cmeta device"
+		}
+	fi
 	cp pattern1 "$mount_dir/pattern1b"
 	mount "$DM_DEV_DIR/$vg/snap" "$mount_dir_snap"
 	not ls "$mount_dir_snap/pattern1b"
@@ -69,7 +79,8 @@ test_snap_create() {
 
 test_snap_create cache --cachepool
 test_snap_create cache --cachevol
-test_snap_create writecache --cachevol
+
+[ "$HAVE_WRITECACHE" = "1" ] && test_snap_create writecache --cachevol
 
 # removing cache|writecache while snapshot exists
 
@@ -90,6 +101,7 @@ test_snap_remove() {
 	lvcreate -s -L 32 -n snap $vg/$lv1
 	cp pattern1 "$mount_dir/pattern1b"
 	lvconvert --splitcache $vg/$lv1
+	fsck -n "$DM_DEV_DIR/$vg/snap"
 	mount "$DM_DEV_DIR/$vg/snap" "$mount_dir_snap"
 	not ls "$mount_dir_snap/pattern1b"
 	rm "$mount_dir/pattern1a"
@@ -105,7 +117,8 @@ test_snap_remove() {
 
 test_snap_remove cache --cachepool
 test_snap_remove cache --cachevol
-test_snap_remove writecache --cachevol
+
+[ "$HAVE_WRITECACHE" = "1" ] && test_snap_remove writecache --cachevol
 
 # adding cache|writecache to an LV that has a snapshot
 
@@ -143,7 +156,8 @@ test_caching_with_snap() {
 
 test_caching_with_snap cache --cachepool
 test_caching_with_snap cache --cachevol
-test_caching_with_snap writecache --cachevol
+
+[ "$HAVE_WRITECACHE" = "1" ] && test_caching_with_snap writecache --cachevol
 
 # adding cache|writecache to a snapshot is not allowed
 

@@ -92,13 +92,13 @@ static struct dm_list *_format_pvsegs(struct dm_pool *mem, const struct lv_segme
 			if (dm_snprintf(extent_str, sizeof(extent_str),
 					":%" PRIu32 "-%" PRIu32,
 					extent, extent + seg_len - 1) < 0) {
-				log_error("_format_pvseggs: extent range dm_snprintf failed");
+				log_error("_format_pvsegs: extent range dm_snprintf failed.");
 				goto bad;
 			}
 		} else {
 			if (dm_snprintf(extent_str, sizeof(extent_str),
 					"(%" PRIu32 ")", extent) < 0) {
-				log_error("_format_pvsegs: extent number dm_snprintf failed");
+				log_error("_format_pvsegs: extent number dm_snprintf failed.");
 				goto bad;
 			}
 		}
@@ -117,7 +117,7 @@ static struct dm_list *_format_pvsegs(struct dm_pool *mem, const struct lv_segme
 				name,
 				(!visible && mark_hidden) ? "]" : "",
 				extent_str) < 0) {
-			log_error("_format_pvsegs: list item dmsnprintf failed");
+			log_error("_format_pvsegs: list item dm_snprintf failed");
 			goto bad;
 		}
 
@@ -383,7 +383,7 @@ dm_percent_t lvseg_percent_with_info_and_seg_status(const struct lv_with_info_an
 	 * TODO:
 	 *   Later move to segment methods, instead of using single place.
 	 *   Also handle logic for mirror segments and it total_* summing
-	 *   Esentially rework  _target_percent API for segtype.
+	 *   Essentially rework  _target_percent API for segtype.
 	 */
 	switch (s->type) {
 	case SEG_STATUS_INTEGRITY:
@@ -1152,6 +1152,79 @@ int lv_raid_image_in_sync(const struct logical_volume *lv)
 	return 0;
 }
 
+static int lv_raid_integrity_image_in_sync(const struct logical_volume *lv_iorig)
+{
+	struct logical_volume *lv_image = NULL;
+	struct logical_volume *lv_raid = NULL;
+	struct lv_segment *raid_seg = NULL;
+	const struct seg_list *sl;
+	char *raid_health;
+	unsigned int s;
+	int found = 0;
+
+	if (!lv_is_active(lv_iorig))
+		return 0;  /* Assume not in-sync */
+
+	/* Get top level raid LV from lv_iorig. */
+
+	/* step 1: get lv_image from lv_iorig */
+	dm_list_iterate_items(sl, &lv_iorig->segs_using_this_lv) {
+		if (!sl->seg || !sl->seg->lv || !sl->seg->origin)
+			continue;
+		if (lv_is_integrity(sl->seg->lv) && (sl->seg->origin == lv_iorig)) {
+			lv_image = sl->seg->lv;
+			break;
+		}
+	}
+
+	if (!lv_image) {
+		log_error("No lv_image found for lv_iorig %s", lv_iorig->name);
+		return 0;
+	}
+
+	/* step 2: get lv_raid from lv_image */
+	if ((raid_seg = get_only_segment_using_this_lv(lv_image)))
+		lv_raid = raid_seg->lv;
+
+	if (!lv_raid) {
+		log_error("No lv_raid found for lv_image %s lv_iorig %s", lv_image->name, lv_iorig->name);
+		return 0;
+	}
+
+	/* Figure out which image number this is in lv_raid. */
+	if (!(raid_seg = first_seg(lv_raid))) {
+		log_error("No raid seg found for lv_raid %s lv_image %s lv_iorig %s",
+			  lv_raid->name, lv_image->name, lv_iorig->name);
+		return 0;
+	}
+	for (s = 0; s < raid_seg->area_count; s++) {
+		if (seg_lv(raid_seg, s) == lv_image) {
+			found = 1;
+			break;
+		}
+	}
+
+	if (!found) {
+		log_error("No seg area found for lv_raid %s lv_image %s lv_iorig %s",
+			  lv_raid->name, lv_image->name, lv_iorig->name);
+		return 0;
+	}
+
+	if (!lv_raid_dev_health(lv_raid, &raid_health)) {
+		log_error("No raid health for seg area %u lv_raid %s lv_image %s lv_iorig %s",
+			  s, lv_raid->name, lv_image->name, lv_iorig->name);
+		return 0;
+	}
+
+	log_debug("raid health %c for seg area %u lv_raid %s lv_image %s lv_iorig %s",
+		  raid_health[s], s, lv_raid->name, lv_image->name, lv_iorig->name);
+
+	if (raid_health[s] == 'A')
+		return 1;
+
+	return 0;
+}
+
 /*
  * _lv_raid_healthy
  * @lv: A RAID_IMAGE, RAID_META, or RAID logical volume.
@@ -1258,6 +1331,8 @@ char *lv_attr_dup_with_info_and_seg_status(struct dm_pool *mem, const struct lv_
 		repstr[0] = 'e';
 	else if (lv_is_cache_type(lv) || lv_is_writecache(lv))
 		repstr[0] = 'C';
+	else if (lv_is_integrity_origin(lv))
+		repstr[0] = lv_raid_integrity_image_in_sync(lv) ? 'i' : 'I';
 	else if (lv_is_integrity(lv))
 		repstr[0] = 'g';
 	else if (lv_is_raid(lv))
@@ -1420,7 +1495,7 @@ char *lv_attr_dup_with_info_and_seg_status(struct dm_pool *mem, const struct lv_
 				repstr[8] = 'm';  /* RAID has 'm'ismatches */
 			else if (lv_raid_sync_action(lv, &sync_action) &&
 				 !strcmp(sync_action, "reshape"))
-				repstr[8] = 's';  /* LV is re(s)haping */
+				repstr[8] = 's';  /* LV is re's'haping */
 			else if (_sublvs_remove_after_reshape(lv))
 				repstr[8] = 'R';  /* sub-LV got freed from raid set by reshaping
 						     and has to be 'R'emoved */
@@ -1483,8 +1558,6 @@ bad:
 int lv_set_creation(struct logical_volume *lv,
 		    const char *hostname, uint64_t timestamp)
 {
-	const char *hn;
-
 	if (!hostname) {
 		if (!_utsinit) {
 			if (uname(&_utsname)) {
@@ -1498,17 +1571,7 @@ int lv_set_creation(struct logical_volume *lv,
 		hostname = _utsname.nodename;
 	}
 
-	if (!(hn = dm_hash_lookup(lv->vg->hostnames, hostname))) {
-		if (!(hn = dm_pool_strdup(lv->vg->vgmem, hostname))) {
-			log_error("Failed to duplicate hostname");
-			return 0;
-		}
-
-		if (!dm_hash_insert(lv->vg->hostnames, hostname, (void*)hn))
-			return_0;
-	}
-
-	lv->hostname = hn;
+	lv->hostname = dm_pool_strdup(lv->vg->vgmem, hostname);
 	lv->timestamp = timestamp ? : (uint64_t) time(NULL);
 
 	return 1;
@@ -1633,7 +1696,7 @@ const struct logical_volume *lv_lock_holder(const struct logical_volume *lv)
 
 	if (lv_is_thin_pool(lv) ||
 	    lv_is_external_origin(lv)) {
-		/* FIXME: Ensure cluster keeps thin-pool active exlusively.
+		/* FIXME: Ensure cluster keeps thin-pool active exclusively.
 		 * External origin can be activated on more nodes (depends on type).
 		 */
 		if (!lv_is_active(lv))
@@ -1647,7 +1710,7 @@ const struct logical_volume *lv_lock_holder(const struct logical_volume *lv)
 		return lv;
 	}
 
-	/* RAID changes visibility of splitted LVs but references them still as leg/meta */
+	/* RAID changes visibility of split LVs but references them still as leg/meta */
 	if ((lv_is_raid_image(lv) || lv_is_raid_metadata(lv)) && lv_is_visible(lv))
 		return lv;
 
@@ -1660,7 +1723,7 @@ const struct logical_volume *lv_lock_holder(const struct logical_volume *lv)
 		if (lv_is_thin_volume(lv) &&
 		    lv_is_thin_volume(sl->seg->lv) &&
 		    first_seg(lv)->pool_lv == sl->seg->pool_lv)
-			continue; /* Skip thin snaphost */
+			continue; /* Skip thin snapshot */
 		if (lv_is_pending_delete(sl->seg->lv))
 			continue; /* Skip deleted LVs */
 		if (lv_is_cache_pool(sl->seg->lv) &&

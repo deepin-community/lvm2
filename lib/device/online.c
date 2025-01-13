@@ -61,14 +61,14 @@ static int _copy_pvid_file_field(const char *field, char *buf, int bufsize, char
 
 #define MAX_PVID_FILE_SIZE 512
 
-int online_pvid_file_read(char *path, int *major, int *minor, char *vgname, char *devname)
+int online_pvid_file_read(char *path, unsigned *major, unsigned *minor, char *vgname, char *devname)
 {
 	char buf[MAX_PVID_FILE_SIZE] = { 0 };
 	int fd, rv;
 
 	fd = open(path, O_RDONLY);
 	if (fd < 0) {
-		log_warn("Failed to open %s", path);
+		log_warn("WARNING: Failed to open %s.", path);
 		return 0;
 	}
 
@@ -76,13 +76,13 @@ int online_pvid_file_read(char *path, int *major, int *minor, char *vgname, char
 	if (close(fd))
 		log_sys_debug("close", path);
 	if (!rv || rv < 0) {
-		log_warn("No info in %s", path);
+		log_warn("WARNING: No info in %s.", path);
 		return 0;
 	}
 	buf[rv] = 0; /* \0 terminated buffer */
 
-	if (sscanf(buf, "%d:%d", major, minor) != 2) {
-		log_warn("No device numbers in %s", path);
+	if (sscanf(buf, "%u:%u", major, minor) != 2) {
+		log_warn("WARNING: No device numbers in %s.", path);
 		return 0;
 	}
 
@@ -94,13 +94,13 @@ int online_pvid_file_read(char *path, int *major, int *minor, char *vgname, char
 		}
 
 		if (!_copy_pvid_file_field("vg:", buf, MAX_PVID_FILE_SIZE, vgname, NAME_LEN)) {
-			log_warn("Ignoring invalid vg field in %s", path);
+			log_warn("WARNING: Ignoring invalid vg field in %s.", path);
 			vgname[0] = '\0';
 			goto copy_dev;
 		}
 
 		if (!validate_name(vgname)) {
-			log_warn("Ignoring invalid vgname in %s (%s)", path, vgname);
+			log_warn("WARNING: Ignoring invalid vgname in %s (%s).", path, vgname);
 			vgname[0] = '\0';
 			goto copy_dev;
 		}
@@ -115,13 +115,13 @@ int online_pvid_file_read(char *path, int *major, int *minor, char *vgname, char
 		}
 
 		if (!_copy_pvid_file_field("dev:", buf, MAX_PVID_FILE_SIZE, devname, NAME_LEN)) {
-			log_warn("Ignoring invalid devname field in %s", path);
+			log_warn("WARNING: Ignoring invalid devname field in %s.", path);
 			devname[0] = '\0';
 			goto out;
 		}
 
 		if (strncmp(devname, "/dev/", 5)) {
-			log_warn("Ignoring invalid devname in %s (%s)", path, devname);
+			log_warn("WARNING: Ignoring invalid devname in %s (%s).", path, devname);
 			devname[0] = '\0';
 			goto out;
 		}
@@ -148,7 +148,7 @@ int get_pvs_online(struct dm_list *pvs_online, const char *vgname)
 	DIR *dir;
 	struct dirent *de;
 	struct pv_online *po;
-	int file_major = 0, file_minor = 0;
+	unsigned file_major, file_minor;
 
 	if (!(dir = opendir(PVS_ONLINE_DIR)))
 		return 0;
@@ -181,9 +181,9 @@ int get_pvs_online(struct dm_list *pvs_online, const char *vgname)
 		if (file_major || file_minor)
 			po->devno = MKDEV(file_major, file_minor);
 		if (file_vgname[0])
-			strncpy(po->vgname, file_vgname, NAME_LEN);
+			dm_strncpy(po->vgname, file_vgname, sizeof(po->vgname));
 		if (file_devname[0])
-			strncpy(po->devname, file_devname, NAME_LEN);
+			dm_strncpy(po->devname, file_devname, sizeof(po->devname));
 
 		log_debug("Found PV online %s for VG %s %s", path, vgname, file_devname);
 		dm_list_add(pvs_online, &po->list);
@@ -208,7 +208,7 @@ void online_vg_file_remove(const char *vgname)
 	char path[PATH_MAX];
 
 	if (dm_snprintf(path, sizeof(path), "%s/%s", VGS_ONLINE_DIR, vgname) < 0) {
-		log_error("Path %s/%s is too long.", VGS_ONLINE_DIR, vgname);
+		log_debug("Path %s/%s is too long.", VGS_ONLINE_DIR, vgname);
 		return;
 	}
 
@@ -252,8 +252,8 @@ int online_pvid_file_create(struct cmd_context *cmd, struct device *dev, const c
 	char file_devname[NAME_LEN];
 	char devname[NAME_LEN];
 	int devnamelen;
-	int file_major = 0, file_minor = 0;
-	int major, minor;
+	unsigned file_major = 0, file_minor = 0;
+	unsigned major, minor;
 	int fd;
 	int rv;
 	int len;
@@ -261,16 +261,16 @@ int online_pvid_file_create(struct cmd_context *cmd, struct device *dev, const c
 	int len2 = 0;
 	int len3 = 0;
 
-	major = (int)MAJOR(dev->dev);
-	minor = (int)MINOR(dev->dev);
+	major = MAJOR(dev->dev);
+	minor = MINOR(dev->dev);
 
 	if (dm_snprintf(path, sizeof(path), "%s/%s", PVS_ONLINE_DIR, dev->pvid) < 0) {
 		log_error_pvscan(cmd, "Path %s/%s is too long.", PVS_ONLINE_DIR, dev->pvid);
 		return 0;
 	}
 
-	if ((len1 = dm_snprintf(buf, sizeof(buf), "%d:%d\n", major, minor)) < 0) {
-		log_error_pvscan(cmd, "Cannot create online file path for %s %d:%d.", dev_name(dev), major, minor);
+	if ((len1 = dm_snprintf(buf, sizeof(buf), "%u:%u\n", major, minor)) < 0) {
+		log_error_pvscan(cmd, "Cannot create online file path for %s %u:%u.", dev_name(dev), major, minor);
 		return 0;
 	}
 
@@ -293,7 +293,7 @@ int online_pvid_file_create(struct cmd_context *cmd, struct device *dev, const c
 
 	len = len1 + len2 + len3;
 
-	log_debug("Create pv online: %s %d:%d %s", path, major, minor, dev_name(dev));
+	log_debug("Create pv online: %s %u:%u %s.", path, major, minor, dev_name(dev));
 
 	fd = open(path, O_CREAT | O_EXCL | O_RDWR, S_IRUSR | S_IWUSR);
 	if (fd < 0) {
@@ -331,7 +331,7 @@ check_duplicate:
 	 * duplicate PV.
 	 *
 	 * FIXME: disable autoactivation of the VG somehow?
-	 * The VG may or may not already be activated when a dupicate appears.
+	 * The VG may or may not already be activated when a duplicate appears.
 	 * Perhaps write a new field in the pv online or vg online file?
 	 */
 
@@ -389,10 +389,10 @@ int get_pvs_lookup(struct dm_list *pvs_online, const char *vgname)
 	char file_vgname[NAME_LEN];
 	char file_devname[NAME_LEN];
 	struct pv_online *po;
-	int file_major = 0, file_minor = 0;
+	unsigned file_major, file_minor;
 	FILE *fp;
 
-	if (dm_snprintf(lookup_path, sizeof(path), "%s/%s", PVS_LOOKUP_DIR, vgname) < 0)
+	if (dm_snprintf(lookup_path, sizeof(lookup_path), "%s/%s", PVS_LOOKUP_DIR, vgname) < 0)
 		return_0;
 
 	if (!(fp = fopen(lookup_path, "r")))
@@ -403,7 +403,6 @@ int get_pvs_lookup(struct dm_list *pvs_online, const char *vgname)
 		if (strlen(pvid) != ID_LEN)
 			goto_bad;
 
-		memset(path, 0, sizeof(path));
 		snprintf(path, sizeof(path), "%s/%s", PVS_ONLINE_DIR, pvid);
 
 		file_major = 0;
@@ -423,7 +422,7 @@ int get_pvs_lookup(struct dm_list *pvs_online, const char *vgname)
 		if (vgname && file_vgname[0] && strcmp(file_vgname, vgname)) {
 			/* Should never happen */
 			log_error("Incorrect VG lookup file %s PVID %s %s.", vgname, pvid, file_vgname);
-			goto_bad;
+			goto bad;
 		}
 
 		if (!(po = zalloc(sizeof(*po))))
@@ -433,76 +432,37 @@ int get_pvs_lookup(struct dm_list *pvs_online, const char *vgname)
 		if (file_major || file_minor)
 			po->devno = MKDEV(file_major, file_minor);
 		if (file_vgname[0])
-			strncpy(po->vgname, file_vgname, NAME_LEN-1);
+			dm_strncpy(po->vgname, file_vgname, sizeof(po->vgname));
 		if (file_devname[0])
-			strncpy(po->devname, file_devname, NAME_LEN-1);
+			dm_strncpy(po->devname, file_devname, sizeof(po->devname));
 
-		log_debug("Found PV online lookup %s for VG %s on %s", path, vgname, file_devname);
+		log_debug("Found PV online lookup %s for VG %s on %s.", path, vgname, file_devname);
 		dm_list_add(pvs_online, &po->list);
 	}
 
-	log_debug("Found PVs online lookup %d for %s", dm_list_size(pvs_online), vgname);
+	log_debug("Found PVs online lookup %d for %s.", dm_list_size(pvs_online), vgname);
 
-	fclose(fp);
+	if (fclose(fp))
+		log_sys_debug("fclose", lookup_path);
+
 	return 1;
 
 bad:
 	free_po_list(pvs_online);
-	fclose(fp);
+	if (fclose(fp))
+		log_sys_debug("fclose", lookup_path);
+
 	return 0;
 }
 
 void online_dir_setup(struct cmd_context *cmd)
 {
-	struct stat st;
-	int rv;
-
-	if (!stat(DEFAULT_RUN_DIR, &st))
-		goto do_pvs;
-
-	log_debug("Creating run_dir.");
-	dm_prepare_selinux_context(DEFAULT_RUN_DIR, S_IFDIR);
-	rv = mkdir(DEFAULT_RUN_DIR, 0755);
-	dm_prepare_selinux_context(NULL, 0);
-
-	if ((rv < 0) && stat(DEFAULT_RUN_DIR, &st))
-		log_error_pvscan(cmd, "Failed to create %s %d", DEFAULT_RUN_DIR, errno);
-
-do_pvs:
-	if (!stat(PVS_ONLINE_DIR, &st))
-		goto do_vgs;
-
-	log_debug("Creating pvs_online_dir.");
-	dm_prepare_selinux_context(PVS_ONLINE_DIR, S_IFDIR);
-	rv = mkdir(PVS_ONLINE_DIR, 0755);
-	dm_prepare_selinux_context(NULL, 0);
-
-	if ((rv < 0) && stat(PVS_ONLINE_DIR, &st))
-		log_error_pvscan(cmd, "Failed to create %s %d", PVS_ONLINE_DIR, errno);
-
-do_vgs:
-	if (!stat(VGS_ONLINE_DIR, &st))
-		goto do_lookup;
-
-	log_debug("Creating vgs_online_dir.");
-	dm_prepare_selinux_context(VGS_ONLINE_DIR, S_IFDIR);
-	rv = mkdir(VGS_ONLINE_DIR, 0755);
-	dm_prepare_selinux_context(NULL, 0);
-
-	if ((rv < 0) && stat(VGS_ONLINE_DIR, &st))
-		log_error_pvscan(cmd, "Failed to create %s %d", VGS_ONLINE_DIR, errno);
-
-do_lookup:
-	if (!stat(PVS_LOOKUP_DIR, &st))
-		return;
-
-	log_debug("Creating pvs_lookup_dir.");
-	dm_prepare_selinux_context(PVS_LOOKUP_DIR, S_IFDIR);
-	rv = mkdir(PVS_LOOKUP_DIR, 0755);
-	dm_prepare_selinux_context(NULL, 0);
-
-	if ((rv < 0) && stat(PVS_LOOKUP_DIR, &st))
-		log_error_pvscan(cmd, "Failed to create %s %d", PVS_LOOKUP_DIR, errno);
+	if (!dir_create_recursive(PVS_ONLINE_DIR, 0755))
+		stack;
+	if (!dir_create_recursive(VGS_ONLINE_DIR, 0755))
+		stack;
+	if (!dir_create_recursive(PVS_LOOKUP_DIR, 0755))
+		stack;
 }
 
 void online_lookup_file_remove(const char *vgname)
@@ -510,7 +470,7 @@ void online_lookup_file_remove(const char *vgname)
 	char path[PATH_MAX];
 
 	if (dm_snprintf(path, sizeof(path), "%s/%s", PVS_LOOKUP_DIR, vgname) < 0) {
-		log_error("Path %s/%s is too long.", PVS_LOOKUP_DIR, vgname);
+		log_debug("Path %s/%s is too long.", PVS_LOOKUP_DIR, vgname);
 		return;
 	}
 

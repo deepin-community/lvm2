@@ -9,6 +9,7 @@ Build-Depends:
  automake,
  libaio-dev,
  libblkid-dev,
+ libsystemd-dev,
  pkg-config,
  systemd-dev (>= 255~rc1-1),
 Build-Depends-Arch:

@@ -59,7 +59,10 @@ test -f "lib/flavour-$LVM_TEST_FLAVOUR" || { echo "NOTE: Flavour '$LVM_TEST_FLAV
 test -n "$SKIP_WITHOUT_CLVMD" && test "$LVM_TEST_LOCKING" -ne 3 && initskip
 test -n "$SKIP_WITH_CLVMD" && test "$LVM_TEST_LOCKING" = 3 && initskip
 
-test -n "$SKIP_WITH_LVMPOLLD" && test -n "$LVM_TEST_LVMPOLLD" && test -z "$LVM_TEST_LVMLOCKD" && initskip
+# When requested testing LVMLOCKD & LVMPOLLD - ignore skipping of marked test for lvmpolld
+test -n "$LVM_TEST_LVMLOCKD" && test -n "$LVM_TEST_LVMPOLLD" && SKIP_WITH_LVMPOLLD=
+
+test -n "$SKIP_WITH_LVMPOLLD" && test -n "$LVM_TEST_LVMPOLLD" && initskip
 
 test -n "$SKIP_WITH_LVMLOCKD" && test -n "$LVM_TEST_LVMLOCKD" && initskip
 
@@ -79,9 +82,14 @@ TESTOLDPWD=$(pwd)
 COMMON_PREFIX="LVMTEST"
 PREFIX="${COMMON_PREFIX}$$"
 
-# Check we are not conflickting with some exiting setup
+# Check we are not conflicting with some exiting setup
 if test -z "$SKIP_ROOT_DM_CHECK" ; then
-	dmsetup table | not grep "${PREFIX}[^0-9]" || die "DM table already has devices with prefix $PREFIX!"
+	d=$(dmsetup info -c -o name --noheadings --rows -S "suspended=Suspended||name=~${PREFIX}[^0-9]")
+	case "$d" in
+	"No devices found") ;;
+	"") ;;
+	*) die "DM table already has either suspended or $PREFIX prefixed devices: $d" ;;
+	esac
 fi
 
 test -n "$LVM_TEST_DIR" || LVM_TEST_DIR=${TMPDIR:-/tmp}
@@ -163,6 +171,12 @@ test -n "$BASH" && set -euE -o pipefail
 # Vars for harness
 echo "@TESTDIR=$TESTDIR"
 echo "@PREFIX=$PREFIX"
+
+# Date of executed test
+echo "## DATE: $(date || true)"
+
+# Hostname IP address
+echo "## HOST: $(hostname -I 2>/dev/null || hostname 2>/dev/null || true)"
 
 if test -z "$SKIP_ROOT_DM_CHECK" ; then
 	aux lvmconf

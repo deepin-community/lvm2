@@ -70,7 +70,8 @@ static int _striped_text_import_area_count(const struct dm_config_node *sn, uint
 }
 
 static int _striped_text_import(struct lv_segment *seg, const struct dm_config_node *sn,
-			struct dm_hash_table *pv_hash)
+			struct dm_hash_table *pv_hash,
+			struct dm_hash_table *lv_hash)
 {
 	const struct dm_config_value *cv;
 
@@ -216,7 +217,7 @@ static void _striped_destroy(struct segment_type *segtype)
 	free(segtype);
 }
 
-static struct segtype_handler _striped_ops = {
+static const struct segtype_handler _striped_ops = {
 	.name = _striped_name,
 	.display = _striped_display,
 	.text_import_area_count = _striped_text_import_area_count,

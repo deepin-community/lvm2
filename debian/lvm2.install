@@ -1,4 +1,3 @@
-../../initramfs-tools/lvm2/* usr/share/initramfs-tools
 etc/lvm
 usr/lib/systemd/system/blk-availability*
 usr/lib/systemd/system/lvm2-lvmpolld*

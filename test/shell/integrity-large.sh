@@ -23,7 +23,7 @@ which mkfs.xfs || skip
 mnt="mnt"
 mkdir -p $mnt
 
-# raid1 LV needs to be extended to 512MB to test imeta being exended
+# raid1 LV needs to be extended to 512MB to test imeta being extended
 aux prepare_devs 4 632
 
 # this test may consume lot of disk space - so make sure cleaning works
@@ -146,7 +146,7 @@ lvremove $vg/$lv1
 
 # As the test doesn't wait for full resync
 # delay legs so not all data need to be written.
-aux delay_dev "$dev1" 1000 0 "$(( $(get first_extent_sector "$dev1") + 16000 )):1200000"
+aux delay_dev "$dev1" 400 0 "$(( $(get first_extent_sector "$dev1") + 16000 )):1200000"
 aux delay_dev "$dev2" 0 10 "$(( $(get first_extent_sector "$dev2") + 16000 )):1200000"
 
 

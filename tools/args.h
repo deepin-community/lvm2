@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2016 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2024 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -94,6 +94,14 @@ arg(atversion_ARG, '\0', "atversion", string_VAL, 0, 0,
     "which does not contain any newer settings for which LVM would\n"
     "issue a warning message when checking the configuration.\n")
 
+arg(auto_ARG, '\0', "auto", 0, 0, 0,
+    "This option is used when automatically importing devices for the root VG.\n"
+    "The auto import is intended to be done once, on first boot, to create an\n"
+    "initial system.devices file for the root VG.\n"
+    "When this option is used, the vgimportdevices --rootvg command does nothing\n"
+    "if system.devices exists, or the file auto-import-rootvg does not exist\n"
+    "(both in the \\fI#DEFAULT_SYS_DIR#/devices/\\fP directory.)\n")
+
 arg(autoactivation_ARG, '\0', "autoactivation", string_VAL, 0, 0,
     "Specify if autoactivation is being used from an event.\n"
     "This allows the command to apply settings that are specific\n"
@@ -129,7 +137,7 @@ arg(bootloaderareasize_ARG, '\0', "bootloaderareasize", sizemb_VAL, 0, 0,
     "To see the bootloader area start and size of\n"
     "an existing PV use pvs -o +pv_ba_start,pv_ba_size.\n")
 
-arg(cache_long_ARG, '\0', "cache", 0, 0, 0,
+arg(cache_long_ARG, '\0', "cache", 0, ARG_LONG_OPT, 0,
     "#pvscan\n"
     "Scan one or more devices and record that they are online.\n"
     "#vgscan\n"
@@ -293,7 +301,7 @@ arg(errorwhenfull_ARG, '\0', "errorwhenfull", bool_VAL, 0, 0,
     "(Also see dm-thin-pool kernel module option no_space_timeout.)\n"
     "See \\fBlvmthin\\fP(7) for more information.\n")
 
-arg(force_long_ARG, '\0', "force", 0, ARG_COUNTABLE, 0,
+arg(force_long_ARG, '\0', "force", 0, ARG_COUNTABLE | ARG_LONG_OPT, 0,
     "Force metadata restore even with thin pool LVs.\n"
     "Use with extreme caution. Most changes to thin metadata\n"
     "cannot be reverted.\n"
@@ -333,6 +341,12 @@ arg(fsmode_ARG, '\0', "fsmode", string_VAL, 0, 0,
 arg(handlemissingpvs_ARG, '\0', "handlemissingpvs", 0, 0, 0,
     "Allows a polling operation to continue when PVs are missing,\n"
     "e.g. for repairs due to faulty devices.\n")
+
+arg(headings_ARG, '\0', "headings", headings_VAL, 0, 0,
+    "Type of headings to use in report output.\n"
+    "\\fBnone\\fP or \\fB0\\fP: No headings.\n"
+    "\\fBabbrev\\fP or \\fB1\\fP: Column name abbreviations.\n"
+    "\\fBfull\\fP or \\fB2\\fP: Full column names.\n")
 
 arg(ignoreadvanced_ARG, '\0', "ignoreadvanced", 0, 0, 0,
     "Exclude advanced configuration settings from the output.\n")
@@ -509,7 +523,8 @@ arg(mirrorsonly_ARG, '\0', "mirrorsonly", 0, 0, 0,
 
 arg(mknodes_ARG, '\0', "mknodes", 0, 0, 0,
     "Also checks the LVM special files in /dev that are needed for active\n"
-    "LVs and creates any missing ones and removes unused ones.\n")
+    "LVs and creates any missing ones and removes unused ones.\n"
+    "See also additional --refresh option for use in udev environment.\n")
 
 arg(monitor_ARG, '\0', "monitor", bool_VAL, 0, 0,
     "Start (yes) or stop (no) monitoring an LV with dmeventd.\n"
@@ -602,6 +617,9 @@ arg(polloperation_ARG, '\0', "polloperation", polloperation_VAL, 0, 0,
 /* Not used. */
 arg(pooldatasize_ARG, '\0', "pooldatasize", sizemb_VAL, 0, 0, NULL)
 
+arg(pooldatavdo_ARG, '\0', "pooldatavdo", bool_VAL, 0, 0,
+    "Use VDO type volume for pool data volume.\n")
+
 arg(poolmetadata_ARG, '\0', "poolmetadata", lv_VAL, 0, 0,
     "The name of a an LV to use for storing pool metadata.\n")
 
@@ -654,18 +672,31 @@ arg(raidintegritymode_ARG, '\0', "raidintegritymode", string_VAL, 0, 0,
     "but would not benefit from the potential scattered write optimization.\n")
 
 arg(readonly_ARG, '\0', "readonly", 0, 0, 0,
-    "Run the command in a special read-only mode which will read on-disk\n"
-    "metadata without needing to take any locks. This can be used to peek\n"
-    "inside metadata used by a virtual machine image while the virtual\n"
-    "machine is running. No attempt will be made to communicate with the\n"
-    "device-mapper kernel driver, so this option is unable to report whether\n"
-    "or not LVs are actually in use.\n")
+    "Prevent the command from making changes, including activation and\n"
+    "metadata updates.  (See --permission r for read only LVs.)\n")
 
 arg(refresh_ARG, '\0', "refresh", 0, 0, 0,
+    "#lvmdevices\n"
+    "Search for missing PVs on new devices, and update the devices file\n"
+    "with new device IDs for the PVs if they are found on new devices.\n"
+    "This is useful if PVs have been moved to new devices with new WWIDs,\n"
+    "for example. The device ID type and name may both change for a PV.\n"
+    "WARNING: if a PV is detached from the system, but a device containing a\n"
+    "clone or snapshot of that PV is present, then refresh would replace the\n"
+    "correct device ID with the clone/snapshot device ID, and lvm would begin\n"
+    "using the wrong device for the PV. Use deldev/adddev to safely change\n"
+    "a PV device ID in this scenario.\n"
+    "#vgchange\n"
+    "#lvchange\n"
+    "#vgmknodes\n"
+    "#vgscan\n"
     "If the LV is active, reload its metadata.\n"
-    "This is not necessary in normal operation, but may be useful\n"
-    "if something has gone wrong, or if some form of manual LV\n"
-    "sharing is being used.\n")
+    "In an environment where udev is used to manage the /dev content,\n"
+    "usage of this option is highly recommended. This is because refresh\n"
+    "also regenerates udev events for an LV based on which existing udev\n"
+    "rules are applied to set the /dev content and permissions.\n"
+    "Also, this operation may be useful if something has gone wrong,\n"
+    "or if some form of manual LV sharing is being used.\n")
 
 arg(removemissing_ARG, '\0', "removemissing", 0, 0, 0,
     "Removes all missing PVs from the VG, if there are no LVs allocated\n"
@@ -735,6 +766,9 @@ arg(resync_ARG, '\0', "resync", 0, 0, 0,
     "and copied to the others. This can take considerable time, during\n"
     "which the LV is without a complete redundant copy of the data.\n"
     "See \\fBlvmraid\\fP(7) for more information.\n")
+
+arg(rootvg_ARG, '\0', "rootvg", 0, 0, 0,
+    "Import devices used for the root VG.\n")
 
 arg(rows_ARG, '\0', "rows", 0, 0, 0,
     "Output columns as rows.\n")
@@ -808,7 +842,7 @@ arg(showunsupported_ARG, '\0', "showunsupported", 0, 0, 0,
 arg(startpoll_ARG, '\0', "startpoll", 0, 0, 0,
     "Start polling an LV to continue processing a conversion.\n")
 
-arg(stripes_long_ARG, '\0', "stripes", number_VAL, 0, 0,
+arg(stripes_long_ARG, '\0', "stripes", number_VAL, ARG_LONG_OPT, 0,
     "Specifies the number of stripes in a striped LV. This is the number of\n"
     "PVs (devices) that a striped LV is spread across. Data that\n"
     "appears sequential in the LV is spread across multiple devices in units of\n"
@@ -851,7 +885,7 @@ arg(systemid_ARG, '\0', "systemid", string_VAL, 0, 0,
     "the command, leaving the VG inaccessible to the host.\n"
     "See \\fBlvmsystemid\\fP(7) for more information.\n"
     "#vgchange\n"
-    "Changes the system ID of the VG.  Using this option requires caution\n"
+    "Changes the system ID of the VG. Using this option requires caution\n"
     "because the VG may become foreign to the host running the command,\n"
     "leaving the host unable to access it.\n"
     "See \\fBlvmsystemid\\fP(7) for more information.\n")
@@ -1071,7 +1105,7 @@ arg(activate_ARG, 'a', "activate", activation_VAL, 0, 0,
     "The location and name of the underlying device node may depend on\n"
     "the distribution, configuration (e.g. udev), or release version.\n"
     "\\fBay\\fP specifies autoactivation, which is used by system-generated\n"
-    "activation commands.  By default, LVs are autoactivated.\n"
+    "activation commands. By default, LVs are autoactivated.\n"
     "An autoactivation property can be set on a VG or LV to disable autoactivation,\n"
     "see --setautoactivation y|n in vgchange, lvchange, vgcreate, and lvcreate.\n"
     "Display the property with vgs or lvs \"-o autoactivation\".\n"
@@ -1123,6 +1157,14 @@ arg(autobackup_ARG, 'A', "autobackup", bool_VAL, 0, 0,
 arg(activevolumegroups_ARG, 'A', "activevolumegroups", 0, 0, 0,
     "Only select active VGs. The VG is considered active\n"
     "if at least one of its LVs is active.\n")
+
+arg(allpvs_ARG, 'A', "allpvs", 0, 0, 0,
+    "#pvs\n"
+    "Show information about PVs outside the devices file.\n"
+    "Combine with -a|--all to include devices that are not PVs.\n"
+    "#pvscan\n"
+    "Show information about PVs outside the devices file.\n"
+    "Displays the device ID for PVs included in the devices file.\n")
 
 arg(background_ARG, 'b', "background", 0, 0, 0,
     "If the operation requires polling, this option causes the command to\n"
@@ -1354,6 +1396,10 @@ arg(setactivationskip_ARG, 'k', "setactivationskip", bool_VAL, 0, 0,
 arg(ignoreactivationskip_ARG, 'K', "ignoreactivationskip", 0, 0, 0,
     "Ignore the \"activation skip\" LV flag during activation\n"
     "to allow LVs with the flag set to be activated.\n")
+
+arg(integritysettings_ARG, '\0', "integritysettings", string_VAL, ARG_GROUPABLE, 0,
+    "Specifies tunable kernel options for dm-integrity.\n"
+    "See \\fBlvmraid\\fP(7) for more information.\n")
 
 arg(maps_ARG, 'm', "maps", 0, 0, 0,
     "#lvdisplay\n"

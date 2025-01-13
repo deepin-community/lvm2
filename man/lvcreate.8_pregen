@@ -75,6 +75,8 @@ lvcreate \(em Create a logical volume
 .br
     \fB--ignoremonitoring\fP
 .br
+    \fB--integritysettings\fP \fIString\fP
+.br
     \fB--journal\fP \fIString\fP
 .br
     \fB--lockopt\fP \fIString\fP
@@ -110,6 +112,8 @@ lvcreate \(em Create a logical volume
  \fB-p\fP|\fB--permission\fP \fBrw\fP|\fBr\fP
 .br
  \fB-M\fP|\fB--persistent\fP \fBy\fP|\fBn\fP
+.br
+    \fB--pooldatavdo\fP \fBy\fP|\fBn\fP
 .br
     \fB--poolmetadatasize\fP \fISize\fP[m|UNIT]
 .br
@@ -287,6 +291,14 @@ Create a raid1 or mirror LV.
 .br
 [    \fB--\fP[\fBraid\fP]\fBmaxrecoveryrate\fP \fISize\fP[k|UNIT] ]
 .br
+[    \fB--raidintegrity\fP \fBy\fP|\fBn\fP ]
+.br
+[    \fB--raidintegritymode\fP \fIString\fP ]
+.br
+[    \fB--raidintegrityblocksize\fP \fINumber\fP ]
+.br
+[    \fB--integritysettings\fP \fIString\fP ]
+.br
 [ COMMON_OPTIONS ]
 .ad b
 .RE
@@ -305,11 +317,11 @@ Create a raid LV (a specific raid level must be used, e.g. raid1).
 .ad l
 [ \fB-l\fP|\fB--extents\fP \fINumber\fP[PERCENT] ]
 .br
+[ \fB-m\fP|\fB--mirrors\fP \fINumber\fP ]
+.br
 [ \fB-i\fP|\fB--stripes\fP \fINumber\fP ]
 .br
 [ \fB-I\fP|\fB--stripesize\fP \fISize\fP[k|UNIT] ]
-.br
-[ \fB-m\fP|\fB--mirrors\fP \fINumber\fP ]
 .br
 [ \fB-R\fP|\fB--regionsize\fP \fISize\fP[m|UNIT] ]
 .br
@@ -322,6 +334,8 @@ Create a raid LV (a specific raid level must be used, e.g. raid1).
 [    \fB--raidintegritymode\fP \fIString\fP ]
 .br
 [    \fB--raidintegrityblocksize\fP \fINumber\fP ]
+.br
+[    \fB--integritysettings\fP \fIString\fP ]
 .br
 [ COMMON_OPTIONS ]
 .ad b
@@ -353,6 +367,14 @@ Create a raid10 LV.
 [    \fB--\fP[\fBraid\fP]\fBminrecoveryrate\fP \fISize\fP[k|UNIT] ]
 .br
 [    \fB--\fP[\fBraid\fP]\fBmaxrecoveryrate\fP \fISize\fP[k|UNIT] ]
+.br
+[    \fB--raidintegrity\fP \fBy\fP|\fBn\fP ]
+.br
+[    \fB--raidintegritymode\fP \fIString\fP ]
+.br
+[    \fB--raidintegrityblocksize\fP \fINumber\fP ]
+.br
+[    \fB--integritysettings\fP \fIString\fP ]
 .br
 [ COMMON_OPTIONS ]
 .ad b
@@ -411,6 +433,14 @@ Create a thin pool.
 [    \fB--discards\fP \fBpassdown\fP|\fBnopassdown\fP|\fBignore\fP ]
 .br
 [    \fB--errorwhenfull\fP \fBy\fP|\fBn\fP ]
+.br
+[    \fB--pooldatavdo\fP \fBy\fP|\fBn\fP ]
+.br
+[    \fB--compression\fP \fBy\fP|\fBn\fP ]
+.br
+[    \fB--deduplication\fP \fBy\fP|\fBn\fP ]
+.br
+[    \fB--vdosettings\fP \fIString\fP ]
 .br
 [    \fB--poolmetadatasize\fP \fISize\fP[m|UNIT] ]
 .br
@@ -490,8 +520,6 @@ Create a thin LV that is a snapshot of an existing thin LV.
 .ad l
 [ \fB--type thin\fP ] (implied)
 .br
-.br
-[ \fB-T\fP|\fB--thin\fP ]
 .br
 [ COMMON_OPTIONS ]
 .ad b
@@ -1091,6 +1119,12 @@ Do not interact with dmeventd unless --monitor is specified.
 Do not use this if dmeventd is already monitoring a device.
 .
 .HP
+\fB--integritysettings\fP \fIString\fP
+.br
+Specifies tunable kernel options for dm-integrity.
+See \fBlvmraid\fP(7) for more information.
+.
+.HP
 \fB--journal\fP \fIString\fP
 .br
 Record information in the systemd journal.
@@ -1234,6 +1268,11 @@ Set access permission to read only \fBr\fP or read and write \fBrw\fP.
 \fB-M\fP|\fB--persistent\fP \fBy\fP|\fBn\fP
 .br
 When yes, makes the specified minor number persistent.
+.
+.HP
+\fB--pooldatavdo\fP \fBy\fP|\fBn\fP
+.br
+Use VDO type volume for pool data volume.
 .
 .HP
 \fB--poolmetadatasize\fP \fISize\fP[m|UNIT]
@@ -1755,6 +1794,14 @@ Create a thin pool.
 .br
 [    \fB--errorwhenfull\fP \fBy\fP|\fBn\fP ]
 .br
+[    \fB--pooldatavdo\fP \fBy\fP|\fBn\fP ]
+.br
+[    \fB--compression\fP \fBy\fP|\fBn\fP ]
+.br
+[    \fB--deduplication\fP \fBy\fP|\fBn\fP ]
+.br
+[    \fB--vdosettings\fP \fIString\fP ]
+.br
 [    \fB--poolmetadatasize\fP \fISize\fP[m|UNIT] ]
 .br
 [    \fB--poolmetadataspare\fP \fBy\fP|\fBn\fP ]
@@ -1790,6 +1837,14 @@ Create a thin pool named in --thinpool.
 [    \fB--discards\fP \fBpassdown\fP|\fBnopassdown\fP|\fBignore\fP ]
 .br
 [    \fB--errorwhenfull\fP \fBy\fP|\fBn\fP ]
+.br
+[    \fB--pooldatavdo\fP \fBy\fP|\fBn\fP ]
+.br
+[    \fB--compression\fP \fBy\fP|\fBn\fP ]
+.br
+[    \fB--deduplication\fP \fBy\fP|\fBn\fP ]
+.br
+[    \fB--vdosettings\fP \fIString\fP ]
 .br
 [    \fB--poolmetadatasize\fP \fISize\fP[m|UNIT] ]
 .br
@@ -2061,6 +2116,14 @@ where the new thin pool is named by the --thinpool arg.
 .br
 [    \fB--errorwhenfull\fP \fBy\fP|\fBn\fP ]
 .br
+[    \fB--pooldatavdo\fP \fBy\fP|\fBn\fP ]
+.br
+[    \fB--compression\fP \fBy\fP|\fBn\fP ]
+.br
+[    \fB--deduplication\fP \fBy\fP|\fBn\fP ]
+.br
+[    \fB--vdosettings\fP \fIString\fP ]
+.br
 [    \fB--poolmetadatasize\fP \fISize\fP[m|UNIT] ]
 .br
 [    \fB--poolmetadataspare\fP \fBy\fP|\fBn\fP ]
@@ -2101,6 +2164,14 @@ where the new thin pool is named by --thinpool.
 [    \fB--discards\fP \fBpassdown\fP|\fBnopassdown\fP|\fBignore\fP ]
 .br
 [    \fB--errorwhenfull\fP \fBy\fP|\fBn\fP ]
+.br
+[    \fB--pooldatavdo\fP \fBy\fP|\fBn\fP ]
+.br
+[    \fB--compression\fP \fBy\fP|\fBn\fP ]
+.br
+[    \fB--deduplication\fP \fBy\fP|\fBn\fP ]
+.br
+[    \fB--vdosettings\fP \fIString\fP ]
 .br
 [    \fB--poolmetadatasize\fP \fISize\fP[m|UNIT] ]
 .br
@@ -2145,6 +2216,14 @@ arg is a VG name.
 .br
 [    \fB--errorwhenfull\fP \fBy\fP|\fBn\fP ]
 .br
+[    \fB--pooldatavdo\fP \fBy\fP|\fBn\fP ]
+.br
+[    \fB--compression\fP \fBy\fP|\fBn\fP ]
+.br
+[    \fB--deduplication\fP \fBy\fP|\fBn\fP ]
+.br
+[    \fB--vdosettings\fP \fIString\fP ]
+.br
 [    \fB--poolmetadatasize\fP \fISize\fP[m|UNIT] ]
 .br
 [    \fB--poolmetadataspare\fP \fBy\fP|\fBn\fP ]
@@ -2187,6 +2266,14 @@ arg is a VG name.
 [    \fB--discards\fP \fBpassdown\fP|\fBnopassdown\fP|\fBignore\fP ]
 .br
 [    \fB--errorwhenfull\fP \fBy\fP|\fBn\fP ]
+.br
+[    \fB--pooldatavdo\fP \fBy\fP|\fBn\fP ]
+.br
+[    \fB--compression\fP \fBy\fP|\fBn\fP ]
+.br
+[    \fB--deduplication\fP \fBy\fP|\fBn\fP ]
+.br
+[    \fB--vdosettings\fP \fIString\fP ]
 .br
 [    \fB--poolmetadatasize\fP \fISize\fP[m|UNIT] ]
 .br
@@ -2231,6 +2318,14 @@ config setting sparse_segtype_default.
 [    \fB--discards\fP \fBpassdown\fP|\fBnopassdown\fP|\fBignore\fP ]
 .br
 [    \fB--errorwhenfull\fP \fBy\fP|\fBn\fP ]
+.br
+[    \fB--pooldatavdo\fP \fBy\fP|\fBn\fP ]
+.br
+[    \fB--compression\fP \fBy\fP|\fBn\fP ]
+.br
+[    \fB--deduplication\fP \fBy\fP|\fBn\fP ]
+.br
+[    \fB--vdosettings\fP \fIString\fP ]
 .br
 [    \fB--poolmetadatasize\fP \fISize\fP[m|UNIT] ]
 .br

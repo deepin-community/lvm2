@@ -23,6 +23,8 @@ pvs produces formatted output about PVs.
 .br
 .RS 4
 .ad l
+[ \fB-A\fP|\fB--allpvs\fP ]
+.br
 [ \fB-a\fP|\fB--all\fP ]
 .br
 [ \fB-o\fP|\fB--options\fP \fIString\fP ]
@@ -40,6 +42,8 @@ pvs produces formatted output about PVs.
 [    \fB--configreport\fP \fBlog\fP|\fBvg\fP|\fBlv\fP|\fBpv\fP|\fBpvseg\fP|\fBseg\fP ]
 .br
 [    \fB--foreign\fP ]
+.br
+[    \fB--headings\fP \fBnone\fP|\fBabbrev\fP|\fBfull\fP|\fB0\fP|\fB1\fP|\fB2\fP ]
 .br
 [    \fB--ignorelockingfailure\fP ]
 .br
@@ -135,6 +139,12 @@ Show information about devices that have not been initialized
 by LVM, i.e. they are not PVs.
 .
 .HP
+\fB-A\fP|\fB--allpvs\fP
+.br
+Show information about PVs outside the devices file.
+Combine with -a|--all to include devices that are not PVs.
+.
+.HP
 \fB--binary\fP
 .br
 Use binary values "0" or "1" instead of descriptive literal values
@@ -194,6 +204,14 @@ For testing and debugging.
 .br
 Report/display foreign VGs that would otherwise be skipped.
 See \fBlvmsystemid\fP(7) for more information about foreign VGs.
+.
+.HP
+\fB--headings\fP \fBnone\fP|\fBabbrev\fP|\fBfull\fP|\fB0\fP|\fB1\fP|\fB2\fP
+.br
+Type of headings to use in report output.
+\fBnone\fP or \fB0\fP: No headings.
+\fBabbrev\fP or \fB1\fP: Column name abbreviations.
+\fBfull\fP or \fB2\fP: Full column names.
 .
 .HP
 \fB-h\fP|\fB--help\fP
@@ -300,12 +318,8 @@ Repeat once to also suppress any prompts with answer 'no'.
 .HP
 \fB--readonly\fP
 .br
-Run the command in a special read-only mode which will read on-disk
-metadata without needing to take any locks. This can be used to peek
-inside metadata used by a virtual machine image while the virtual
-machine is running. No attempt will be made to communicate with the
-device-mapper kernel driver, so this option is unable to report whether
-or not LVs are actually in use.
+Prevent the command from making changes, including activation and
+metadata updates.  (See --permission r for read only LVs.)
 .
 .HP
 \fB--reportformat\fP \fBbasic\fP|\fBjson\fP|\fBjson_std\fP

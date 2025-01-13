@@ -74,7 +74,8 @@ static int _mirrored_text_import_area_count(const struct dm_config_node *sn, uin
 }
 
 static int _mirrored_text_import(struct lv_segment *seg, const struct dm_config_node *sn,
-			struct dm_hash_table *pv_hash)
+			struct dm_hash_table *pv_hash,
+			struct dm_hash_table *lv_hash)
 {
 	const struct dm_config_value *cv;
 	const char *logname = NULL;
@@ -102,7 +103,7 @@ static int _mirrored_text_import(struct lv_segment *seg, const struct dm_config_
 	}
 
 	if (dm_config_get_str(sn, "mirror_log", &logname)) {
-		if (!(seg->log_lv = find_lv(seg->lv->vg, logname))) {
+		if (!(seg->log_lv = dm_hash_lookup(lv_hash, logname))) {
 			log_error("Unrecognised mirror log in "
 				  "segment %s of logical volume %s.",
 				  dm_config_parent_name(sn), seg->lv->name);
@@ -423,8 +424,7 @@ static int _mirrored_target_present(struct cmd_context *cmd,
 		 */
 		/* FIXME Move this into libdevmapper */
 
-		if (target_version(TARGET_NAME_MIRROR, &maj, &min, &patchlevel) &&
-		    maj == 1 &&
+		if (maj == 1 &&
 		    ((min >= 1) ||
 		     (min == 0 && driver_version(vsn, sizeof(vsn)) &&
 		      sscanf(vsn, "%u.%u.%u", &maj2, &min2, &patchlevel2) == 3 &&
@@ -433,7 +433,7 @@ static int _mirrored_target_present(struct cmd_context *cmd,
 	}
 
 	/*
-	 * Check only for modules if atttributes requested and no previous check.
+	 * Check only for modules if attributes requested and no previous check.
 	 */
 	if (attributes)
 		*attributes = _mirror_attributes;
@@ -491,7 +491,7 @@ static void _mirrored_destroy(struct segment_type *segtype)
 	free(segtype);
 }
 
-static struct segtype_handler _mirrored_ops = {
+static const struct segtype_handler _mirrored_ops = {
 	.display = _mirrored_display,
 	.text_import_area_count = _mirrored_text_import_area_count,
 	.text_import = _mirrored_text_import,

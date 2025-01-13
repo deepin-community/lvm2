@@ -1,9 +1,112 @@
 diff --git a/.gitlab-ci.yml b/.gitlab-ci.yml
-new file mode 100644
-index 0000000000000000000000000000000000000000..a3240a084f5f4374c38470467d51462e4d6bf905
---- /dev/null
+index 423807f40cad15b787004db891f0ea19cdcd5997..a3240a084f5f4374c38470467d51462e4d6bf905 100644
+--- a/.gitlab-ci.yml
 +++ b/.gitlab-ci.yml
-@@ -0,0 +1,6 @@
+@@ -1,104 +1,6 @@
+-stages:
+-  - approve
+-  - test
+-
+-approve1:
+-  stage: approve
+-  script:
+-    - echo "Approved..."
+-  rules:
+-    # TODO: Filter only safe repositories, or user in developers
+-    - if: $CI_PROJECT_PATH != "csonto/lvm2" && $CI_PROJECT_PATH != "lvmteam/lvm2"
+-      when: manual
+-    # TODO: for other branches than main/rhel: run pipeline only when requested:
+-    - if: $CI_COMMIT_BRANCH != "main" && $CI_COMMIT_BRANCH !~ "^rhel.*"
+-      when: manual
+-    - when: on_success
+-  allow_failure: false
+-
+-
+-pages:
+-  image: elecnix/ikiwiki
+-  stage: test
+-  script:
+-    - ikiwiki --setup ikiwiki.setup --libdir themes/ikistrap/lib
+-  artifacts:
+-    paths:
+-      - public
+-  only:
+-    refs:
+-      - main
+-    changes:
+-      - doc/**/*
+-      - ikiwiki.setup
+-
+-
+-# TODO:
+-# - check results of autoreconf and make generate - may need additional commit
+-#     - we need a particular setup (rawhide OR latest supported fedora?)
+-# - do make rpm and publish results as artifacts - we will use packit/COPR for this eventually
+-
+-# Run on any commits to main (master), rhel8, rhel9 branches
+-test-job:
+-  stage: test
+-  parallel:
+-    matrix:
+-      - TAG: rhel8
+-        CONFIGURE: >
+-          --with-cluster=internal
+-          --enable-cmirrord
+-      - TAG: rhel9
+-        CONFIGURE: >
+-          --with-default-use-devices-file=1
+-          --enable-app-machineid
+-          --enable-editline
+-          --disable-readline
+-  artifacts:
+-    paths:
+-      - test/results/
+-    expire_in: 1 week
+-  tags:
+-      - ${TAG}
+-  timeout: 2h
+-  script:
+-    # Common options go here, diffs to the above matrix
+-    - >
+-      ./configure ${CONFIGURE}
+-      --enable-fsadm
+-      --enable-write_install
+-      --enable-pkgconfig
+-      --enable-cmdlib
+-      --enable-dmeventd
+-      --enable-blkid_wiping
+-      --enable-udev_sync
+-      --with-thin=internal
+-      --with-cache=internal
+-      --enable-lvmpolld
+-      --enable-lvmlockd-dlm --enable-lvmlockd-dlmcontrol
+-      --enable-lvmlockd-sanlock
+-      --enable-dbus-service --enable-notify-dbus
+-      --enable-dmfilemapd
+-      --with-writecache=internal
+-      --with-vdo=internal --with-vdo-format=/usr/bin/vdoformat
+-      --with-integrity=internal
+-      --disable-silent-rules
+-    - make
+-    - rm -rf test/results
+-    - mkdir -p /dev/shm/lvm2-test
+-    - mount -o remount,dev /dev/shm
+-    # TODO: Need to distinguish failed test from failed harness
+-    # TODO: Also need a way to find if run is incomplete, e.g. full disk resulting in many skipped tests
+-    - VERBOSE=0 BATCH=1 LVM_TEST_DIR=/dev/shm/lvm2-test make check || true
+-    - rm -rf /dev/shm/lvm2-test
+-    - cut -d' ' -f2 test/results/list | sort | uniq -c
+-    # Filter artifacts - keep only logs from tests which are not pass
+-    - cd test/results && rm $(grep 'passed$' list | cut -d' ' -f1 | sed -e 's|/|_|g' -e 's|.*|\0.txt|')
+-    # TODO: Keep a list of known failures, and translate into regexp - or simply use python...
+-    - if grep failed test/results/list | grep -v '\\\(dbustest\|lvconvert-mirror\)\.sh' | sort; then false; else true; fi
+-  rules:
+-    # Filter only safe repositories, or user in developers:
+-    # NOTE: Already done in approve stage, may be more caution than necessary
+-    - if: $CI_PROJECT_PATH != "csonto/lvm2" && $CI_PROJECT_PATH != "lvmteam/lvm2"
+-      when: manual
+-    - when: on_success
+-
 +include:
 +- local: debian/pipeline/workflow.yml
 +- local: debian/pipeline/variables.yml
@@ -11,10 +114,10 @@ index 0000000000000000000000000000000000000000..a3240a084f5f4374c38470467d51462e
 +- local: debian/pipeline/build.yml
 +- local: debian/pipeline/test.yml
 diff --git a/configure.ac b/configure.ac
-index b43d8b9be966fde68af1dd0ffdd042498574c262..035d3789f98057f870befef19c873491fd212c6b 100644
+index cbea6adc68a1c650544843ec77f318f7da068548..6aa7fc042f9de3c512c86c01f113f7c9e0d957cb 100644
 --- a/configure.ac
 +++ b/configure.ac
-@@ -1646,11 +1646,7 @@ AS_IF([test "$BUILD_DMFILEMAPD" = "yes"], [
+@@ -1689,11 +1689,7 @@ AS_IF([test "$BUILD_DMFILEMAPD" = "yes"], [
  ])
  
  ################################################################################
@@ -40,10 +143,10 @@ index fab74dc1d6f3dd8e740a3806d8424855bb399df6..46c14fb5ae4935104891f41e2cd62607
 +dm_event_daemon_talk
  dm_event_get_version
 diff --git a/daemons/dmeventd/dmeventd.c b/daemons/dmeventd/dmeventd.c
-index 490768b63cefe0662e18e9cdba91cb8fa693b789..04e1d60a3430daef3215a1334cc02e7c71f0c65b 100644
+index 0e8524548b5df650049e7b7eaa877c4237318788..692bd54c6eb795d3c27a6819425f24d1e07e34e6 100644
 --- a/daemons/dmeventd/dmeventd.c
 +++ b/daemons/dmeventd/dmeventd.c
-@@ -1988,7 +1988,7 @@ static int _reinstate_registrations(struct dm_event_fifos *fifos)
+@@ -2025,7 +2025,7 @@ static int _reinstate_registrations(struct dm_event_fifos *fifos)
  	unsigned long mask_value, timeout_value;
  	int i, ret;
  
@@ -52,7 +155,7 @@ index 490768b63cefe0662e18e9cdba91cb8fa693b789..04e1d60a3430daef3215a1334cc02e7c
  	free(msg.data);
  	msg.data = NULL;
  
-@@ -2021,7 +2021,7 @@ static int _reinstate_registrations(struct dm_event_fifos *fifos)
+@@ -2058,7 +2058,7 @@ static int _reinstate_registrations(struct dm_event_fifos *fifos)
  			continue;
  		}
  
@@ -61,74 +164,111 @@ index 490768b63cefe0662e18e9cdba91cb8fa693b789..04e1d60a3430daef3215a1334cc02e7c
  				dso_name,
  				dev_name,
  				(enum dm_event_mask) mask_value,
-@@ -2048,7 +2048,7 @@ static void _restart_dmeventd(void)
- 	const char *e;
+@@ -2083,7 +2083,7 @@ static int _info_dmeventd(const char *name, struct dm_event_fifos *fifos)
+ 	}
  
  	/* Get the list of registrations from the running daemon. */
--	if (!init_fifos(&fifos)) {
-+	if (!dm_event_daemon_init_fifos(&fifos)) {
- 		fprintf(stderr, "WARNING: Could not initiate communication with existing dmeventd.\n");
- 		exit(EXIT_FAILURE);
+-	if (!init_fifos(fifos)) {
++	if (!dm_event_daemon_init_fifos(fifos)) {
+ 		fprintf(stderr, "Could not initiate communication with existing dmeventd.\n");
+ 		return 0;
  	}
-@@ -2065,7 +2065,7 @@ static void _restart_dmeventd(void)
+@@ -2099,7 +2099,7 @@ static int _info_dmeventd(const char *name, struct dm_event_fifos *fifos)
+ 		goto out;
+ 	}
+ 
+-	if (daemon_talk(fifos, &msg, DM_EVENT_CMD_GET_STATUS, "-", "-", 0, 0)) {
++	if (dm_event_daemon_talk(fifos, &msg, DM_EVENT_CMD_GET_STATUS, "-", "-", 0, 0)) {
+ 		fprintf(stderr, "Failed to acquire status from existing dmeventd.\n");
+ 		goto out;
+ 	}
+@@ -2121,7 +2121,7 @@ static int _info_dmeventd(const char *name, struct dm_event_fifos *fifos)
+ 		printf("%s does not monitor any device.\n", name);
+ 
+ 	if (version >= 2) {
+-		if (daemon_talk(fifos, &msg, DM_EVENT_CMD_GET_PARAMETERS, "-", "-", 0, 0)) {
++		if (dm_event_daemon_talk(fifos, &msg, DM_EVENT_CMD_GET_PARAMETERS, "-", "-", 0, 0)) {
+ 			fprintf(stderr, "Failed to acquire parameters from existing dmeventd.\n");
+ 			goto out;
+ 		}
+@@ -2131,7 +2131,7 @@ static int _info_dmeventd(const char *name, struct dm_event_fifos *fifos)
+ 
+ 	ret = 1;
+ out:
+-	fini_fifos(fifos);
++	dm_event_daemon_fini_fifos(fifos);
+ 
+ 	return ret;
+ }
+@@ -2151,7 +2151,7 @@ static int _restart_dmeventd(struct dm_event_fifos *fifos)
+ 	}
+ 
+ 	/* Get the list of registrations from the running daemon. */
+-	if (!init_fifos(fifos)) {
++	if (!dm_event_daemon_init_fifos(fifos)) {
+ 		fprintf(stderr, "WARNING: Could not initiate communication with existing dmeventd.\n");
+ 		return 0;
+ 	}
+@@ -2168,7 +2168,7 @@ static int _restart_dmeventd(struct dm_event_fifos *fifos)
  		goto bad;
  	}
  
--	if (daemon_talk(&fifos, &msg, DM_EVENT_CMD_GET_STATUS, "-", "-", 0, 0))
-+	if (dm_event_daemon_talk(&fifos, &msg, DM_EVENT_CMD_GET_STATUS, "-", "-", 0, 0))
+-	if (daemon_talk(fifos, &msg, DM_EVENT_CMD_GET_STATUS, "-", "-", 0, 0))
++	if (dm_event_daemon_talk(fifos, &msg, DM_EVENT_CMD_GET_STATUS, "-", "-", 0, 0))
  		goto bad;
  
  	message = strchr(msg.data, ' ') + 1;
-@@ -2089,7 +2089,7 @@ static void _restart_dmeventd(void)
+@@ -2192,7 +2192,7 @@ static int _restart_dmeventd(struct dm_event_fifos *fifos)
  	}
  
  	if (version >= 2) {
--		if (daemon_talk(&fifos, &msg, DM_EVENT_CMD_GET_PARAMETERS, "-", "-", 0, 0)) {
-+		if (dm_event_daemon_talk(&fifos, &msg, DM_EVENT_CMD_GET_PARAMETERS, "-", "-", 0, 0)) {
+-		if (daemon_talk(fifos, &msg, DM_EVENT_CMD_GET_PARAMETERS, "-", "-", 0, 0)) {
++		if (dm_event_daemon_talk(fifos, &msg, DM_EVENT_CMD_GET_PARAMETERS, "-", "-", 0, 0)) {
  			fprintf(stderr, "Failed to acquire parameters from old dmeventd.\n");
  			goto bad;
  		}
-@@ -2109,7 +2109,7 @@ static void _restart_dmeventd(void)
+@@ -2212,7 +2212,7 @@ static int _restart_dmeventd(struct dm_event_fifos *fifos)
  	}
  #endif
  
--	if (daemon_talk(&fifos, &msg, DM_EVENT_CMD_DIE, "-", "-", 0, 0)) {
-+	if (dm_event_daemon_talk(&fifos, &msg, DM_EVENT_CMD_DIE, "-", "-", 0, 0)) {
+-	if (daemon_talk(fifos, &msg, DM_EVENT_CMD_DIE, "-", "-", 0, 0)) {
++	if (dm_event_daemon_talk(fifos, &msg, DM_EVENT_CMD_DIE, "-", "-", 0, 0)) {
  		fprintf(stderr, "Old dmeventd refused to die.\n");
  		goto bad;
  	}
-@@ -2125,13 +2125,13 @@ static void _restart_dmeventd(void)
- 	}
+@@ -2221,7 +2221,7 @@ static int _restart_dmeventd(struct dm_event_fifos *fifos)
+ 	    ((e = getenv(SD_ACTIVATION_ENV_VAR_NAME)) && strcmp(e, "1")))
+ 		_systemd_activation = 1;
  
- 	if (!_systemd_activation) {
--		fini_fifos(&fifos);
-+		dm_event_daemon_fini_fifos(&fifos);
- 		return;
- 	}
+-	fini_fifos(fifos);
++	dm_event_daemon_fini_fifos(fifos);
+ 
+ 	/* Give a few seconds dmeventd to finish */
+ 	_wait_for_new_pid();
+@@ -2230,7 +2230,7 @@ static int _restart_dmeventd(struct dm_event_fifos *fifos)
+ 		return 2; // continue with dmeventd start up
  
  	/* Reopen fifos. */
--	fini_fifos(&fifos);
--	if (!init_fifos(&fifos)) {
-+	dm_event_daemon_fini_fifos(&fifos);
-+	if (!dm_event_daemon_init_fifos(&fifos)) {
+-	if (!init_fifos(fifos)) {
++	if (!dm_event_daemon_init_fifos(fifos)) {
  		fprintf(stderr, "Could not initiate communication with new instance of dmeventd.\n");
- 		exit(EXIT_FAILURE);
+ 		return 0;
  	}
-@@ -2141,10 +2141,10 @@ static void _restart_dmeventd(void)
+@@ -2240,10 +2240,10 @@ static int _restart_dmeventd(struct dm_event_fifos *fifos)
  		goto bad;
  	}
  
--	fini_fifos(&fifos);
-+	dm_event_daemon_fini_fifos(&fifos);
- 	exit(EXIT_SUCCESS);
+-	fini_fifos(fifos);
++	dm_event_daemon_fini_fifos(fifos);
+ 	return 1;
  bad:
--	fini_fifos(&fifos);
-+	dm_event_daemon_fini_fifos(&fifos);
- 	exit(EXIT_FAILURE);
+-	fini_fifos(fifos);
++	dm_event_daemon_fini_fifos(fifos);
+ 	return 0;
  }
  
 diff --git a/daemons/dmeventd/dmeventd.h b/daemons/dmeventd/dmeventd.h
-index afe0b0c4b66740bb021719bb54c5c426080ba7cf..a3dad10a0c5a14005a5ef095ff8698ccb1cdccd2 100644
+index 661d46a0b2a5043262328c730096ff547ac03aa4..8dbfa6262b596719887f7090660c02099b4756f1 100644
 --- a/daemons/dmeventd/dmeventd.h
 +++ b/daemons/dmeventd/dmeventd.h
 @@ -65,12 +65,12 @@ struct dm_event_fifos {
@@ -139,7 +279,7 @@ index afe0b0c4b66740bb021719bb54c5c426080ba7cf..a3dad10a0c5a14005a5ef095ff8698cc
 +int dm_event_daemon_talk(struct dm_event_fifos *fifos,
  		struct dm_event_daemon_message *msg, int cmd,
  		const char *dso_name, const char *dev_name,
- 		enum dm_event_mask evmask, uint32_t timeout);
+ 		unsigned evmask, uint32_t timeout);
 -int init_fifos(struct dm_event_fifos *fifos);
 -void fini_fifos(struct dm_event_fifos *fifos);
 +int dm_event_daemon_init_fifos(struct dm_event_fifos *fifos);
@@ -148,7 +288,7 @@ index afe0b0c4b66740bb021719bb54c5c426080ba7cf..a3dad10a0c5a14005a5ef095ff8698cc
  
  #endif /* __DMEVENTD_DOT_H__ */
 diff --git a/daemons/dmeventd/libdevmapper-event.c b/daemons/dmeventd/libdevmapper-event.c
-index b5ae37fbca2aaf56d712ea9c277fe038afb7e70c..b4f71d35f1d0bfd2c6fe0f9adb5f8dc32a80d87a 100644
+index 485f04605c3ae550b5282a6e89b1eadf7c2f2619..d46defde8b6a15364c0c1ccebbc07adbe4ac4201 100644
 --- a/daemons/dmeventd/libdevmapper-event.c
 +++ b/daemons/dmeventd/libdevmapper-event.c
 @@ -349,7 +349,7 @@ static int _daemon_write(struct dm_event_fifos *fifos,
@@ -159,8 +299,8 @@ index b5ae37fbca2aaf56d712ea9c277fe038afb7e70c..b4f71d35f1d0bfd2c6fe0f9adb5f8dc3
 +int dm_event_daemon_talk(struct dm_event_fifos *fifos,
  		struct dm_event_daemon_message *msg, int cmd,
  		const char *dso_name, const char *dev_name,
- 		enum dm_event_mask evmask, uint32_t timeout)
-@@ -499,7 +499,7 @@ start_server:
+ 		unsigned evmask, uint32_t timeout)
+@@ -528,7 +528,7 @@ static int _start_daemon(char *dmeventd_path, struct dm_event_fifos *fifos)
  	return ret;
  }
  
@@ -169,7 +309,7 @@ index b5ae37fbca2aaf56d712ea9c277fe038afb7e70c..b4f71d35f1d0bfd2c6fe0f9adb5f8dc3
  {
  	/* FIXME? Is fifo the most suitable method? Why not share
  	   comms/daemon code with something else e.g. multipath? */
-@@ -537,10 +537,10 @@ static int _init_client(char *dmeventd_path, struct dm_event_fifos *fifos)
+@@ -569,10 +569,10 @@ static int _init_client(char *dmeventd_path, struct dm_event_fifos *fifos)
  	if (!_start_daemon(dmeventd_path, fifos))
  		return_0;
  
@@ -182,7 +322,7 @@ index b5ae37fbca2aaf56d712ea9c277fe038afb7e70c..b4f71d35f1d0bfd2c6fe0f9adb5f8dc3
  {
  	if (fifos->client >= 0 && close(fifos->client))
  		log_sys_debug("close", fifos->client_path);
-@@ -627,16 +627,16 @@ static int _do_event(int cmd, char *dmeventd_path, struct dm_event_daemon_messag
+@@ -661,16 +661,16 @@ static int _do_event(int cmd, char *dmeventd_path, struct dm_event_daemon_messag
  		goto_out;
  	}
  
@@ -202,9 +342,9 @@ index b5ae37fbca2aaf56d712ea9c277fe038afb7e70c..b4f71d35f1d0bfd2c6fe0f9adb5f8dc3
  
  	return ret;
  }
-@@ -845,7 +845,7 @@ int dm_event_get_version(struct dm_event_fifos *fifos, int *version) {
- 	char *p;
+@@ -880,7 +880,7 @@ int dm_event_get_version(struct dm_event_fifos *fifos, int *version) {
  	struct dm_event_daemon_message msg = { 0 };
+ 	int ret = 0;
  
 -	if (daemon_talk(fifos, &msg, DM_EVENT_CMD_HELLO, NULL, NULL, 0, 0))
 +	if (dm_event_daemon_talk(fifos, &msg, DM_EVENT_CMD_HELLO, NULL, NULL, 0, 0))
@@ -212,7 +352,7 @@ index b5ae37fbca2aaf56d712ea9c277fe038afb7e70c..b4f71d35f1d0bfd2c6fe0f9adb5f8dc3
  	p = msg.data;
  	*version = 0;
 diff --git a/daemons/lvmdbusd/Makefile.in b/daemons/lvmdbusd/Makefile.in
-index 9c262927956350b305b33489f57c97bee280ce5f..4b09b5746eaa6d77ef264a340515f910e2e6c3d6 100644
+index 08b061fb29707886b0bc113ee998aa8cabd66318..745a9fb0af12b00ff92f9d364ae0bf6f65ea65cb 100644
 --- a/daemons/lvmdbusd/Makefile.in
 +++ b/daemons/lvmdbusd/Makefile.in
 @@ -58,8 +58,6 @@ install_lvmdbusd: $(LVMDBUSD)
@@ -225,23 +365,23 @@ index 9c262927956350b305b33489f57c97bee280ce5f..4b09b5746eaa6d77ef264a340515f910
  install_lvm2: install_lvmdbusd
  
 diff --git a/make.tmpl.in b/make.tmpl.in
-index fcb62f78a8cc4f837b0f5ee0009d6bc6e6075a16..b8cbecee5b99269e008384991af98f105f80686e 100644
+index c8a870a8e7a8e0fcfed783fe12f3a2b63799aaf9..d7ddc680df385c4195aa79c5fd61608426920d2a 100644
 --- a/make.tmpl.in
 +++ b/make.tmpl.in
-@@ -495,7 +495,7 @@ DEFS+=-D_FILE_OFFSET_BITS=64
+@@ -518,7 +518,7 @@ DEFS+=-D_FILE_OFFSET_BITS=64
  %.o: %.cpp $(DEPS)
- 	@echo "    [CXX] $(<F)"
+ 	$(SHOW) "    [CXX] $(<F)"
  	@mkdir -p $(@D)
 -	$(Q) $(CXX) $(DEPFLAGS) -c $(INCLUDES) $(VALGRIND_CFLAGS) $(DEFS) $(DEFS_$@) $(WFLAGS) $(CXXFLAGS) $(CXXFLAGS_$@) $< -o $@
 +	$(Q) $(CXX) $(DEPFLAGS) -c $(INCLUDES) $(VALGRIND_CFLAGS) $(DEFS) $(DEFS_$@) $(WFLAGS) $(CXXFLAGS) $(CXXFLAGS_$@) $(CPPFLAGS) $< -o $@
  
  %.pot: %.c $(DEPS)
- 	@echo "    [CC] $(<F)"
+ 	$(SHOW) "    [CC] $(<F)"
 diff --git a/udev/69-dm-lvm.rules.in b/udev/69-dm-lvm.rules.in
-index ff15681456403f52c9743e54901372c9fafa0e54..7390f1269e302da2c5c7ca644346739b12537cf4 100644
+index f7a6eef8fa772f7bec37d375d954dc7daf1f672f..ce0ab8ca176695027283229f266d5810081fb391 100644
 --- a/udev/69-dm-lvm.rules.in
 +++ b/udev/69-dm-lvm.rules.in
-@@ -76,8 +76,14 @@ LABEL="lvm_scan"
+@@ -85,8 +85,14 @@ LABEL="lvm_scan"
  # it's better suited to appearing in the journal.
  
  IMPORT{program}="(LVM_EXEC)/lvm pvscan --cache --listvg --checkcomplete --vgonline --autoactivation event --udevoutput --journal=output $env{DEVNAME}"
@@ -257,7 +397,7 @@ index ff15681456403f52c9743e54901372c9fafa0e54..7390f1269e302da2c5c7ca644346739b
  LABEL="lvm_end"
  
 diff --git a/udev/Makefile.in b/udev/Makefile.in
-index e592c534d384363a964c4b543b6bda7e7aff5c53..285188f9c94015f0a9d57230a094188707579531 100644
+index 166a4572ab7e7e5a8d9c0986abed0f409fe029a9..00d9e4f7e0b2e4954fbb13a2c1ebaac799899c47 100644
 --- a/udev/Makefile.in
 +++ b/udev/Makefile.in
 @@ -17,8 +17,8 @@ top_builddir = @top_builddir@
@@ -269,7 +409,7 @@ index e592c534d384363a964c4b543b6bda7e7aff5c53..285188f9c94015f0a9d57230a0941887
 +DM_RULES=55-dm.rules 60-persistent-storage-dm.rules 95-dm-notify.rules
 +LVM_RULES=56-lvm.rules 69-lvm.rules
  
- DM_DIR=$(shell $(AWK) '/\#define DM_DIR/ {print $$3}' $(top_srcdir)/libdm/misc/dm-ioctl.h)
+ DM_DIR=$(shell $(AWK) '/^.define DM_DIR/ {print $$3}' $(top_srcdir)/libdm/misc/dm-ioctl.h)
  
 @@ -46,6 +46,18 @@ endif
  %.rules: $(srcdir)/%.rules.in
@@ -288,5 +428,5 @@ index e592c534d384363a964c4b543b6bda7e7aff5c53..285188f9c94015f0a9d57230a0941887
 +	ln -s $< $@
 +
  %_install: %.rules
- 	@echo "    [INSTALL] $<"
+ 	$(SHOW) "    [INSTALL] $<"
  	$(Q) $(INSTALL_DATA) -D $< $(udevdir)/$(<F)

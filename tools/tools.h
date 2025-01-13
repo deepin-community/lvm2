@@ -45,60 +45,25 @@
 #include "lib/notify/lvmnotify.h"
 #include "lib/label/hints.h"
 
-/*
- * cmd_enum.h uses the generated cmds.h to create the enum with an ID
- * for each command definition in command-lines.in.
- */
-#include "lib/commands/cmd_enum.h"
-
 #include <ctype.h>
 #include <sys/types.h>
 
 #define CMD_LEN 256
 #define MAX_ARGS 64
 
-/* define the enums for the values accepted by command line --options, foo_VAL */
-enum {
-#define val(a, b, c, d) a ,
-#include "vals.h"
-#undef val
-};
-
-/* define the enums for the command line --options, foo_ARG */
-enum {
-#define arg(a, b, c, d, e, f, g) a ,
-#include "args.h"
-#undef arg
-};
+#include "command_enums.h"
 
 /* command functions */
 #define xx(a, b...) int a(struct cmd_context *cmd, int argc, char **argv);
 #include "commands.h"
 #undef xx
 
-/* define enums for LV properties, foo_LVP */
-enum {
-#define lvp(a, b, c) a ,
-#include "lv_props.h"
-#undef lvp
-};
-
-/* define enums for LV types, foo_LVT */
-enum {
-#define lvt(a, b, c) a ,
-#include "lv_types.h"
-#undef lvt
-};
-
-#include "command.h"
-#include "command-count.h"
-
 #define ARG_COUNTABLE 0x00000001	/* E.g. -vvvv */
 #define ARG_GROUPABLE 0x00000002	/* E.g. --addtag */
 #define ARG_NONINTERACTIVE 0x00000004	/* only for use in noninteractive mode  */
+#define ARG_LONG_OPT  0x00000008	/* arg has long format option  */
 
 struct arg_values {
-	unsigned count;
 	char *value;
 	int32_t i_value;
 	uint32_t ui_value;
@@ -106,48 +71,18 @@ struct arg_values {
 	uint64_t ui64_value;
 	sign_t sign;
 	percent_type_t percent;
+	uint16_t count;
 };
 
 struct arg_value_group_list {
         struct dm_list list;
-	uint32_t prio;
+	uint16_t prio;
 	struct arg_values arg_values[];
 };
 
-#define PERMITTED_READ_ONLY 	0x00000002
-/* Process all VGs if none specified on the command line. */
-#define ALL_VGS_IS_DEFAULT	0x00000004
-/* Process all devices with --all if none are specified on the command line. */
-#define ENABLE_ALL_DEVS		0x00000008	
-/* Command may try to interpret a vgname arg as a uuid. */
-#define ALLOW_UUID_AS_NAME	0x00000010
-/* Command needs a shared lock on a VG; it only reads the VG. */
-#define LOCKD_VG_SH		0x00000020
-/* Command does not process any metadata. */
-#define NO_METADATA_PROCESSING	0x00000040
-/* Command must use all specified arg names and fail if all cannot be used. */
-#define MUST_USE_ALL_ARGS        0x00000100
-/* Command should process unused duplicate devices. */
-#define ENABLE_DUPLICATE_DEVS    0x00000400
-/* Command does not accept tags as args. */
-#define DISALLOW_TAG_ARGS        0x00000800
-/* Command may need to find VG name in an option value. */
-#define GET_VGNAME_FROM_OPTIONS  0x00001000
-/* The data read from disk by label scan can be used for vg_read. */
-#define CAN_USE_ONE_SCAN	 0x00002000
-/* Command can use hints file */
-#define ALLOW_HINTS		 0x00004000
-/* Command can access exported vg. */
-#define ALLOW_EXPORTED           0x00008000
-/* Command checks and reports warning if devs used by LV are incorrect. */
-#define CHECK_DEVS_USED		 0x00010000
-/* Command prints devices file entries that were not found. */
-#define DEVICE_ID_NOT_FOUND      0x00020000
-
-
 void usage(const char *name);
 
-/* the argument verify/normalise functions */
+/* the argument verify/normalize functions */
 int yes_no_arg(struct cmd_context *cmd, struct arg_values *av);
 int activation_arg(struct cmd_context *cmd, struct arg_values *av);
 int cachemetadataformat_arg(struct cmd_context *cmd, struct arg_values *av);
@@ -191,6 +126,7 @@ int configreport_arg(struct cmd_context *cmd __attribute__((unused)), struct arg
 int configtype_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_values *av);
 int repairtype_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_values *av);
 int dumptype_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_values *av);
+int headings_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_values *av);
 
 /* we use the enums to access the switches */
 int arg_is_valid_for_command(const struct cmd_context *cmd, int a);
@@ -229,7 +165,7 @@ int mirror_remove_missing(struct cmd_context *cmd,
 
 
 int vgchange_activate(struct cmd_context *cmd, struct volume_group *vg,
-		       activation_change_t activate, int vg_complete_to_activate);
+		       activation_change_t activate, int vg_complete_to_activate, char *root_dm_uuid);
 
 int vgchange_background_polling(struct cmd_context *cmd, struct volume_group *vg);
 
@@ -237,8 +173,10 @@ int vgchange_locktype_cmd(struct cmd_context *cmd, int argc, char **argv);
 int vgchange_lock_start_stop_cmd(struct cmd_context *cmd, int argc, char **argv);
 int vgchange_systemid_cmd(struct cmd_context *cmd, int argc, char **argv);
 
-struct lv_prop *get_lv_prop(int lvp_enum);
-struct lv_type *get_lv_type(int lvt_enum);
+const struct opt_name *get_opt_name(int opt);
+const struct val_name *get_val_name(int val);
+const struct lv_prop *get_lv_prop(int lvp_enum);
+const struct lv_type *get_lv_type(int lvt_enum);
 struct command *get_command(int cmd_enum);
 
 int lvchange_properties_cmd(struct cmd_context *cmd, int argc, char **argv);

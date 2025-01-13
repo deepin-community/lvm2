@@ -159,7 +159,7 @@ static int _read_str_list(struct dm_pool *mem, struct dm_list *list, const struc
 	if (cv->type == DM_CFG_EMPTY_ARRAY)
 		return 1;
 
-	while (cv) {
+	do {
 		if (cv->type != DM_CFG_STRING) {
 			log_error("Found an item that is not a string");
 			return 0;
@@ -168,8 +168,7 @@ static int _read_str_list(struct dm_pool *mem, struct dm_list *list, const struc
 		if (!str_list_add(mem, list, dm_pool_strdup(mem, cv->v.str)))
 			return_0;
 
-		cv = cv->next;
-	}
+	} while ((cv = cv->next));
 
 	return 1;
 }
@@ -377,7 +376,8 @@ static int _read_segment(struct cmd_context *cmd,
 			 struct format_instance *fid,
 			 struct dm_pool *mem,
 			 struct logical_volume *lv, const struct dm_config_node *sn,
-			 struct dm_hash_table *pv_hash)
+			 struct dm_hash_table *pv_hash,
+			 struct dm_hash_table *lv_hash)
 {
 	uint32_t area_count = 0u;
 	struct lv_segment *seg;
@@ -450,7 +450,7 @@ static int _read_segment(struct cmd_context *cmd,
 	}
 
 	if (seg->segtype->ops->text_import &&
-	    !seg->segtype->ops->text_import(seg, sn_child, pv_hash))
+	    !seg->segtype->ops->text_import(seg, sn_child, pv_hash, lv_hash))
 		return_0;
 
 	/* Optional tags */
@@ -552,7 +552,8 @@ static int _read_segments(struct cmd_context *cmd,
 			  struct format_instance *fid,
 			  struct dm_pool *mem,
 			  struct logical_volume *lv, const struct dm_config_node *lvn,
-			  struct dm_hash_table *pv_hash)
+			  struct dm_hash_table *pv_hash,
+			  struct dm_hash_table *lv_hash)
 {
 	const struct dm_config_node *sn;
 	int count = 0, seg_count;
@@ -563,7 +564,7 @@ static int _read_segments(struct cmd_context *cmd,
 		 * All sub-sections are assumed to be segments.
 		 */
 		if (!sn->v) {
-			if (!_read_segment(cmd, fmt, fid, mem, lv, sn, pv_hash))
+			if (!_read_segment(cmd, fmt, fid, mem, lv, sn, pv_hash, lv_hash))
 				return_0;
 
 			count++;
@@ -980,7 +981,7 @@ static int _read_lvsegs(struct cmd_context *cmd,
 
 	memcpy(&lv->lvid.id[0], &lv->vg->id, sizeof(lv->lvid.id[0]));
 
-	if (!_read_segments(cmd, fmt, fid, mem, lv, lvn, pv_hash))
+	if (!_read_segments(cmd, fmt, fid, mem, lv, lvn, pv_hash, lv_hash))
 		return_0;
 
 	lv->size = (uint64_t) lv->le_count * (uint64_t) vg->extent_size;
@@ -1072,7 +1073,7 @@ static struct volume_group *_read_vg(struct cmd_context *cmd,
 	mem = vg->vgmem;
 
 	/*
-	 * The pv hash memorises the pv section names -> pv
+	 * The pv hash memorizes the pv section names -> pv
 	 * structures.
 	 */
 	if (!(pv_hash = dm_hash_create(59))) {
@@ -1081,7 +1082,7 @@ static struct volume_group *_read_vg(struct cmd_context *cmd,
 	}
 
 	/*
-	 * The lv hash memorises the lv section names -> lv
+	 * The lv hash memorizes the lv section names -> lv
 	 * structures.
 	 */
 	if (!(lv_hash = dm_hash_create(1023))) {
@@ -1359,14 +1360,14 @@ static int _read_vgsummary(const struct format_type *fmt, const struct dm_config
 	return 1;
 }
 
-static struct text_vg_version_ops _vsn1_ops = {
+static const struct text_vg_version_ops _vsn1_ops = {
 	.check_version = _vsn1_check_version,
 	.read_vg = _read_vg,
 	.read_desc = _read_desc,
 	.read_vgsummary = _read_vgsummary
 };
 
-struct text_vg_version_ops *text_vg_vsn1_init(void)
+const struct text_vg_version_ops *text_vg_vsn1_init(void)
 {
 	return &_vsn1_ops;
 }

@@ -41,7 +41,7 @@ def process_request():
 	while cfg.run.value != 0:
 		# noinspection PyBroadException
 		try:
-			req = cfg.worker_q.get(True, 5)
+			req = cfg.worker_q.get(True, cfg.G_LOOP_TMO)
 			log_debug(
 				"Method start: %s with args %s (callback = %s)" %
 				(str(req.method), str(req.arguments), str(req.cb)))
@@ -133,7 +133,7 @@ def process_args():
 
 def running_under_systemd():
 	""""
-	Checks to see if we are running under systemd, by checking damon fd 0, 1
+	Checks to see if we are running under systemd, by checking daemon fd 0, 1
 	systemd sets stdin to /dev/null and 1 & 2 are a socket
 	"""
 	base = "/proc/self/fd"
@@ -214,7 +214,7 @@ def main():
 		cfg.loop = GLib.MainLoop()
 
 		for thread in thread_list:
-			thread.damon = True
+			thread.daemon = True
 			thread.start()
 
 		# In all cases we are going to monitor for udev until we get an
