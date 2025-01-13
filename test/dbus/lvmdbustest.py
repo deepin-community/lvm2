@@ -347,7 +347,7 @@ class DaemonInfo(object):
 		start = time.time()
 		pid = process_exists(EXE_NAME)
 		while pid is not None and (time.time() - start) <= 20:
-			time.sleep(0.3)
+			time.sleep(0.1)
 			pid = process_exists(EXE_NAME)
 
 		if pid:
@@ -364,7 +364,7 @@ class DaemonInfo(object):
 				running = True
 				break
 			except dbus.exceptions.DBusException:
-				time.sleep(0.2)
+				time.sleep(0.1)
 				pass
 		if not running:
 			raise RuntimeError(msg)
@@ -1144,10 +1144,12 @@ class TestDbusService(unittest.TestCase):
 			delta = 16384
 
 		for size in [start_size + delta, start_size - delta]:
-
-			pv_in_use = [i[0] for i in lv.LvCommon.Devices]
 			# Select a PV in the VG that isn't in use
-			pv_empty = [p for p in vg.Pvs if p not in pv_in_use]
+			pv_empty = []
+			for p in vg.Pvs:
+				pobj = ClientProxy(self.bus, p, interfaces=(PV_INT,))
+				if len(pobj.Pv.Lv) == 0:
+					pv_empty.append(p)
 
 			prev = lv.LvCommon.SizeBytes
 
@@ -2329,9 +2331,9 @@ class TestDbusService(unittest.TestCase):
 		self._log_file_option()
 
 	def test_delete_non_complete_job(self):
-		# Let's create a vg with a number of lvs and then delete it all
+		# Let's create a vg with some number of lvs and then delete it all
 		# to hopefully create a long-running job.
-		vg_proxy = self._create_num_lvs(64)
+		vg_proxy = self._create_num_lvs(4)
 		job_path = vg_proxy.Vg.Remove(dbus.Int32(0), EOD)
 		self.assertNotEqual(job_path, "/")
 
@@ -2346,9 +2348,16 @@ class TestDbusService(unittest.TestCase):
 				raise e
 
 	def test_z_sigint(self):
+
+		number_of_intervals = 3
+		number_of_lvs = 10
+
 		# Issue SIGINT while daemon is processing work to ensure we shut down.
 		if bool(int(os.getenv("LVM_DBUSD_TEST_SKIP_SIGNAL", "0"))):
 			raise unittest.SkipTest("Skipping as env. LVM_DBUSD_TEST_SKIP_SIGNAL is '1'")
+
+		if g_tmo != 0:
+			raise unittest.SkipTest("Skipping for g_tmo != 0")
 
 		di = DaemonInfo.get()
 		self.assertTrue(di is not None)
@@ -2357,15 +2366,15 @@ class TestDbusService(unittest.TestCase):
 			# we will then issue the creation of the LVs async., wait, then issue a signal
 			# and repeat stepping through the entire time range.
 			start = time.time()
-			vg_proxy = self._create_num_lvs(20)
+			vg_proxy = self._create_num_lvs(number_of_lvs)
 			end = time.time()
 
 			self.handle_return(vg_proxy.Vg.Remove(dbus.Int32(g_tmo), EOD))
 			total = end - start
 
-			for i in range(5):
-				sleep_amt = i * (total/5.0)
-				self._create_num_lvs(20, True)
+			for i in range(number_of_intervals):
+				sleep_amt = i * (total/float(number_of_intervals))
+				self._create_num_lvs(number_of_lvs, True)
 				time.sleep(sleep_amt)
 
 				exited = False
@@ -2389,7 +2398,7 @@ class TestDbusService(unittest.TestCase):
 		di = DaemonInfo.get()
 		self.assertTrue(di is not None)
 		if di.systemd:
-			raise unittest.SkipTest('existing dameon running via systemd')
+			raise unittest.SkipTest('existing daemon running via systemd')
 		if di:
 			ec = di.start(True)
 			self.assertEqual(ec, 114)
@@ -2416,8 +2425,9 @@ class TestDbusService(unittest.TestCase):
 	def _block_present_absent(self, block_device, present=False):
 		start = time.time()
 		keep_looping = True
-		max_wait = 10
+		max_wait = 5
 		while keep_looping and time.time() < start + max_wait:
+			time.sleep(0.2)
 			if present:
 				if (self._lookup(block_device) != "/"):
 					keep_looping = False

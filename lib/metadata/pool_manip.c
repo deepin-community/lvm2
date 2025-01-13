@@ -440,7 +440,7 @@ int recalculate_pool_chunk_size_with_dev_hints(struct logical_volume *pool_lv,
 	}
 
 	dm_list_iterate_items(seg, &pool_data_lv->segments) {
-		switch (seg_type(seg, 0)) {
+		switch (seg->area_count ? seg_type(seg, 0) : AREA_UNASSIGNED) {
 		case AREA_PV:
 			pv = seg_pv(seg, 0);
 			if (chunk_size_calc_policy == THIN_CHUNK_SIZE_CALC_METHOD_PERFORMANCE)
@@ -572,6 +572,21 @@ int create_pool(struct logical_volume *pool_lv,
 	if (!lv_add_segment(ah, 0, stripes, pool_lv, striped, stripe_size, 0, 0))
 		goto_bad;
 
+	if (pool_lv->vg->cmd->lvcreate_vcp && !convert_vdo_lv(pool_lv, pool_lv->vg->cmd->lvcreate_vcp)) {
+		/* Conversion to VDO commits metadata,
+		 * try to deactivate pool LV, and remove metadata LV */
+		if (!deactivate_lv(pool_lv->vg->cmd, pool_lv))
+			log_error("Failed to deactivate pool volume %s.",
+				  display_lvname(pool_lv));
+
+		if (!lv_remove(meta_lv) ||
+		    !vg_write(meta_lv->vg) || !vg_commit(meta_lv->vg))
+			log_error("Manual intervention may be required to "
+				  "remove abandoned LV(s) before retrying.");
+
+		goto_bad;
+	}
+
 	if (!(data_lv = insert_layer_for_lv(pool_lv->vg->cmd, pool_lv,
 					    pool_lv->status,
 					    (segtype_is_cache_pool(segtype)) ?
@@ -628,6 +643,7 @@ struct logical_volume *alloc_pool_metadata(struct logical_volume *pool_lv,
 		.temporary = 1,
 		.zero = 1,
 		.is_metadata = 1,
+		.lv_name = "pool_metadata%d",
 	};
 
 	if (!(lvc.segtype = get_segtype_from_string(pool_lv->vg->cmd, SEG_TYPE_NAME_STRIPED)))
@@ -639,6 +655,36 @@ struct logical_volume *alloc_pool_metadata(struct logical_volume *pool_lv,
 		return_0;
 
 	return metadata_lv;
+}
+
+int add_metadata_to_pool(struct lv_segment *pool_seg,
+			 struct logical_volume *metadata_lv)
+{
+	struct cmd_context *cmd = metadata_lv->vg->cmd;
+	char name[NAME_LEN];                   /* generated sub lv name */
+
+	if (!deactivate_lv(cmd, metadata_lv)) {
+		log_error("Aborting. Failed to deactivate metadata lv. "
+			  "Manual intervention required.");
+		return 0;
+	}
+
+	if ((dm_snprintf(name, sizeof(name), "%s%s", pool_seg->lv->name,
+			 seg_is_thin_pool(pool_seg) ? "_tmeta" : "_cmeta") < 0)) {
+		log_error("Failed to create internal lv names, %s name is too long.",
+			  pool_seg->lv->name);
+		return 0;
+	}
+
+	/* Rename LVs to the pool _[ct]meta LV naming scheme. */
+	if ((strcmp(metadata_lv->name, name) != 0) &&
+	    !lv_rename_update(cmd, metadata_lv, name, 0))
+		return_0;
+
+	if (!attach_pool_metadata_lv(pool_seg, metadata_lv))
+		return_0;
+
+	return 1;
 }
 
 static struct logical_volume *_alloc_pool_metadata_spare(struct volume_group *vg,
@@ -693,7 +739,7 @@ static struct logical_volume *_alloc_pool_metadata_spare(struct volume_group *vg
 int handle_pool_metadata_spare(struct volume_group *vg, uint32_t extents,
 			       struct dm_list *pvh, int poolmetadataspare)
 {
-	/* Max usable size of any spare volume is currently 16GiB rouned to extent size */
+	/* Max usable size of any spare volume is currently 16GiB rounded to extent size */
 	const uint64_t MAX_SIZE = (UINT64_C(2 * 16) * 1024 * 1024 + vg->extent_size - 1) / vg->extent_size;
 	struct logical_volume *lv = vg->pool_metadata_spare_lv;
 	uint32_t seg_mirrors;
@@ -748,6 +794,7 @@ int handle_pool_metadata_spare(struct volume_group *vg, uint32_t extents,
 		  lv->le_count, extents);
 	/* Check spare LV is big enough and preserve segtype */
 	if ((lv->le_count < extents) && seg &&
+	    /* coverity[format_string_injection] lv name is already validated */
 	    !lv_extend(lv, seg->segtype,
 		       seg->area_count / seg_mirrors,
 		       seg->stripe_size,
@@ -853,7 +900,7 @@ int vg_remove_pool_metadata_spare(struct volume_group *vg)
 	lv_set_visible(lv);
 
 	/* Cut off suffix _pmspare */
-	if (!dm_strncpy(new_name, lv->name, sizeof(new_name)) ||
+	if (!_dm_strncpy(new_name, lv->name, sizeof(new_name)) ||
 	    !(c = strchr(new_name, '_'))) {
 		log_error(INTERNAL_ERROR "LV %s has no suffix for pool metadata spare.",
 			  display_lvname(lv));

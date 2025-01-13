@@ -45,22 +45,21 @@ static int _get_crypt_path(dev_t lv_devt, char *lv_path, char *crypt_path)
 	char holders_path[PATH_MAX];
 	char *holder_name;
 	DIR *dr;
-	struct stat st;
 	struct dirent *de;
 	int ret = 0;
 
-	if (dm_snprintf(holders_path, sizeof(holders_path), "%sdev/block/%d:%d/holders",
-			dm_sysfs_dir(), (int)MAJOR(lv_devt), (int)MINOR(lv_devt)) < 0)
-		return_0;
-
-	/* If the crypt dev is not active, there will be no LV holder. */
-	if (stat(holders_path, &st)) {
-		log_error("Missing %s for %s", crypt_path, lv_path);
+	if (dm_snprintf(holders_path, sizeof(holders_path), "%sdev/block/%u:%u/holders",
+			dm_sysfs_dir(), MAJOR(lv_devt), MINOR(lv_devt)) < 0) {
+		log_error("Couldn't create holder path for %s.", lv_path);
 		return 0;
 	}
 
+	/* If the crypt dev is not active, there will be no LV holder. */
 	if (!(dr = opendir(holders_path))) {
-		log_error("Cannot open %s", holders_path);
+		if (errno == ENOENT)
+			log_error("Missing %s for %s.", crypt_path, lv_path);
+		else
+			log_error("Cannot open %s.", holders_path);
 		return 0;
 	}
 
@@ -86,7 +85,9 @@ static int _get_crypt_path(dev_t lv_devt, char *lv_path, char *crypt_path)
 		ret = 1;
 		break;
 	}
-	closedir(dr);
+	if (closedir(dr))
+		log_sys_debug("closedir", holders_path);
+
 	if (ret)
 		log_debug("Found holder %s of %s.", crypt_path, lv_path);
 	else
@@ -155,26 +156,26 @@ int fs_get_info(struct cmd_context *cmd, struct logical_volume *lv,
 			return 0;
 		}
 
-		if (stat(crypt_path, &st_crypt) < 0) {
-			log_error("Failed to get crypt path %s", crypt_path);
-			return 0;
-		}
-
 		memset(&info, 0, sizeof(info));
 
 		log_print_unless_silent("Checking crypt device %s on LV %s.",
 					crypt_path, display_lvname(lv));
 
 		if ((fd = open(crypt_path, O_RDONLY)) < 0) {
-			log_error("Failed to open crypt path %s", crypt_path);
+			log_error("Failed to open crypt path %s.", crypt_path);
 			return 0;
 		}
-		if (ioctl(fd, BLKGETSIZE64, &info.crypt_dev_size_bytes) < 0) {
-			log_error("Failed to get crypt device size %s", crypt_path);
-			close(fd);
+
+		if ((ret = fstat(fd, &st_crypt)) < 0)
+			log_sys_error("fstat", crypt_path);
+		else if ((ret = ioctl(fd, BLKGETSIZE64, &info.crypt_dev_size_bytes)) < 0)
+			log_error("Failed to get crypt device size %s.", crypt_path);
+
+		if (close(fd))
+			log_sys_debug("close", crypt_path);
+
+		if (ret < 0)
 			return 0;
-		}
-		close(fd);
 
 		if (!fs_get_blkid(crypt_path, &info)) {
 			log_error("No file system info from blkid for dm-crypt device %s on LV %s.",
@@ -199,6 +200,13 @@ int fs_get_info(struct cmd_context *cmd, struct logical_volume *lv,
 
 	if (!include_mount)
 		return 1;
+
+	/*
+	 * Note: used swap devices are not considered as mount points,
+	 * hence they're not listed in /etc/mtab, we'd need to read the
+	 * /proc/swaps instead. We don't need it at this moment though,
+	 * but if we do once, read the /proc/swaps here if fsi->fstype == "swap".
+	 */
 
 	if (!(fme = setmntent("/etc/mtab", "r")))
 		return_0;
@@ -274,7 +282,8 @@ int fs_mount_state_is_misnamed(struct cmd_context *cmd, struct logical_volume *l
 			continue;
 		if (stme.st_dev != st_lv.st_rdev)
 			continue;
-		dm_strncpy(mtab_mntpath, me->mnt_dir, sizeof(mtab_mntpath));
+		if (!_dm_strncpy(mtab_mntpath, me->mnt_dir, sizeof(mtab_mntpath)))
+			continue; /* Ignore too long unsupported paths */
 		break;
 	}
 	endmntent(fme);
@@ -315,7 +324,10 @@ int fs_mount_state_is_misnamed(struct cmd_context *cmd, struct logical_volume *l
 	while (fgets(proc_line, sizeof(proc_line), fp)) {
 		if (proc_line[0] != '/')
 			continue;
-		if (sscanf(proc_line, "%s %s %s", proc_devpath, proc_mntpath, proc_fstype) != 3)
+		if (sscanf(proc_line, "%"
+			   DM_TO_STRING(PATH_MAX) "s %"
+			   DM_TO_STRING(PATH_MAX) "s %"
+			   DM_TO_STRING(PATH_MAX) "s", proc_devpath, proc_mntpath, proc_fstype) != 3)
 			continue;
 		if (strcmp(fstype, proc_fstype))
 			continue;
@@ -375,7 +387,7 @@ int crypt_resize_script(struct cmd_context *cmd, struct logical_volume *lv, stru
 	if (dm_snprintf(newsize_str, sizeof(newsize_str), "%llu", (unsigned long long)newsize_bytes_fs) < 0)
 		return_0;
 
-	if (dm_snprintf(crypt_path, sizeof(crypt_path), "/dev/dm-%d", (int)MINOR(fsi->crypt_devt)) < 0)
+	if (dm_snprintf(crypt_path, sizeof(crypt_path), "/dev/dm-%u", MINOR(fsi->crypt_devt)) < 0)
 		return_0;
 
 	argv[0] = _get_lvresize_fs_helper_path();
@@ -453,7 +465,7 @@ int fs_reduce_script(struct cmd_context *cmd, struct logical_volume *lv, struct 
 		argv[++args] = "--fsck";
 
 	if (fsi->needs_crypt) {
-		if (dm_snprintf(crypt_path, sizeof(crypt_path), "/dev/dm-%d", (int)MINOR(fsi->crypt_devt)) < 0)
+		if (dm_snprintf(crypt_path, sizeof(crypt_path), "/dev/dm-%u", MINOR(fsi->crypt_devt)) < 0)
 			return_0;
 		argv[++args] = "--cryptresize";
 		argv[++args] = "--cryptpath";
@@ -538,7 +550,7 @@ int fs_extend_script(struct cmd_context *cmd, struct logical_volume *lv, struct 
 		argv[++args] = "--fsck";
 
 	if (fsi->needs_crypt) {
-		if (dm_snprintf(crypt_path, sizeof(crypt_path), "/dev/dm-%d", (int)MINOR(fsi->crypt_devt)) < 0)
+		if (dm_snprintf(crypt_path, sizeof(crypt_path), "/dev/dm-%u", MINOR(fsi->crypt_devt)) < 0)
 			return_0;
 		argv[++args] = "--cryptresize";
 		argv[++args] = "--cryptpath";
@@ -556,17 +568,16 @@ int fs_extend_script(struct cmd_context *cmd, struct logical_volume *lv, struct 
 
 	devpath = fsi->needs_crypt ? crypt_path : (char *)display_lvname(lv);
 
-	log_print("Extending file system %s to %s (%llu bytes) on %s...",
-		  fsi->fstype, display_size(cmd, newsize_bytes_fs/512),
-		  (unsigned long long)newsize_bytes_fs, devpath);
+	log_print_unless_silent("Extending file system %s to %s (%llu bytes) on %s...",
+				fsi->fstype, display_size(cmd, newsize_bytes_fs/512),
+				(unsigned long long)newsize_bytes_fs, devpath);
 
 	if (!exec_cmd(cmd, argv, &status, 1)) {
 		log_error("Failed to extend file system with lvresize_fs_helper.");
 		return 0;
 	}
 
-	log_print("Extended file system %s on %s.", fsi->fstype, devpath);
+	log_print_unless_silent("Extended file system %s on %s.", fsi->fstype, devpath);
 
 	return 1;
 }
-

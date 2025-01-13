@@ -32,7 +32,6 @@
 //#define STRIPE_SIZE_MIN ( (unsigned) lvm_getpagesize() >> SECTOR_SHIFT)	/* PAGESIZE in sectors */
 //#define STRIPE_SIZE_MAX ( 512L * 1024L >> SECTOR_SHIFT)	/* 512 KB in sectors */
 //#define STRIPE_SIZE_LIMIT ((UINT_MAX >> 2) + 1)
-//#define MAX_RESTRICTED_LVS 255	/* Used by FMT_RESTRICTED_LVIDS */
 #define MIN_PE_SIZE     (8192L >> SECTOR_SHIFT) /* 8 KB in sectors - format1 only */
 #define MAX_PE_SIZE     (16L * 1024L * (1024L >> SECTOR_SHIFT) * 1024L) /* format1 only */
 #define MIRROR_LOG_OFFSET	2	/* sectors */
@@ -74,7 +73,6 @@ struct cached_vg_fmtdata;
 
 /* Per-format per-metadata area operations */
 struct metadata_area_ops {
-	struct dm_list list;
 	struct volume_group *(*vg_read) (struct cmd_context *cmd,
 					 struct format_instance * fi,
 					 const char *vg_name,
@@ -184,7 +182,7 @@ struct metadata_area_ops {
 
 struct metadata_area {
 	struct dm_list list;
-	struct metadata_area_ops *ops;
+	const struct metadata_area_ops *ops;
 	void *metadata_locn;
 	uint32_t status;
 	uint64_t header_start; /* mda_header.start */
@@ -224,7 +222,7 @@ struct format_instance *alloc_fid(const struct format_type *fmt,
 
 /*
  * Format instance must always be set using pv_set_fid or vg_set_fid
- * (NULL value as well), never asign it directly! This is essential
+ * (NULL value as well), never assign it directly! This is essential
  * for proper reference counting for the format instance.
  */
 void pv_set_fid(struct physical_volume *pv, struct format_instance *fid);
@@ -433,7 +431,7 @@ int lv_has_constant_stripes(struct logical_volume *lv);
 
 /*
  * Sometimes (eg, after an lvextend), it is possible to merge two
- * adjacent segments into a single segment.  This function trys
+ * adjacent segments into a single segment.  This function tries
  * to merge as many segments as possible.
  */
 int lv_merge_segments(struct logical_volume *lv);

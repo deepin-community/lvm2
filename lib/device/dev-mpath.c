@@ -18,6 +18,7 @@
 #include "lib/commands/toolcontext.h"
 #include "lib/device/device_id.h"
 #include "lib/datastruct/str_list.h"
+#include "device_mapper/misc/dm-ioctl.h"
 #ifdef UDEV_SYNC_SUPPORT
 #include <libudev.h>
 #include "lib/device/dev-ext-udev-constants.h"
@@ -164,6 +165,7 @@ static void _read_blacklist_file(const char *path)
 
 static void _read_wwid_exclusions(void)
 {
+	static const char _mpath_conf[] = "/etc/multipath/conf.d";
 	char path[PATH_MAX] = { 0 };
 	DIR *dir;
 	struct dirent *de;
@@ -172,14 +174,15 @@ static void _read_wwid_exclusions(void)
 
 	_read_blacklist_file("/etc/multipath.conf");
 
-	if ((dir = opendir("/etc/multipath/conf.d"))) {
+	if ((dir = opendir(_mpath_conf))) {
 		while ((de = readdir(dir))) {
 			if (de->d_name[0] == '.')
 				continue;
-			snprintf(path, PATH_MAX-1, "/etc/multipath/conf.d/%s", de->d_name);
+			snprintf(path, sizeof(path), "%s/%s", _mpath_conf, de->d_name);
 			_read_blacklist_file(path);
 		}
-		closedir(dir);
+		if (closedir(dir))
+                        log_sys_debug("closedir", _mpath_conf);
 	}
 
 	/* for each wwid in ignored_exceptions, remove it from ignored */
@@ -231,9 +234,9 @@ static void _read_wwid_file(const char *config_wwids_file, int *entries)
 		/*
 		 * the initial character is the id type,
 		 * 1 is t10, 2 is eui, 3 is naa, 8 is scsi name.
-		 * wwids are stored in the hash table without the type charater.
+		 * wwids are stored in the hash table without the type character.
 		 * It seems that sometimes multipath does not include
-		 * the type charater (seen with t10 scsi_debug devs).
+		 * the type character (seen with t10 scsi_debug devs).
 		 */
 		typestr[0] = *wwid;
 		if (typestr[0] == '1' || typestr[0] == '2' || typestr[0] == '3')
@@ -356,8 +359,8 @@ static const char *_get_sysfs_name_by_devt(const char *sysfs_dir, dev_t devno,
 	char path[PATH_MAX];
 	int size;
 
-	if (dm_snprintf(path, sizeof(path), "%sdev/block/%d:%d", sysfs_dir,
-			(int) MAJOR(devno), (int) MINOR(devno)) < 0) {
+	if (dm_snprintf(path, sizeof(path), "%sdev/block/%u:%u", sysfs_dir,
+			MAJOR(devno), MINOR(devno)) < 0) {
 		log_error("Sysfs path string is too long.");
 		return NULL;
 	}
@@ -375,48 +378,6 @@ static const char *_get_sysfs_name_by_devt(const char *sysfs_dir, dev_t devno,
 	name++;
 
 	return name;
-}
-
-static int _get_sysfs_string(const char *path, char *buffer, int max_size)
-{
-	FILE *fp;
-	int r = 0;
-
-	if (!(fp = fopen(path, "r"))) {
-		log_sys_error("fopen", path);
-		return 0;
-	}
-
-	if (!fgets(buffer, max_size, fp))
-		log_sys_error("fgets", path);
-	else
-		r = 1;
-
-	if (fclose(fp))
-		log_sys_error("fclose", path);
-
-	return r;
-}
-
-static int _get_sysfs_dm_mpath(struct dev_types *dt, const char *sysfs_dir, const char *holder_name)
-{
-	char path[PATH_MAX];
-	char buffer[128];
-
-	if (dm_snprintf(path, sizeof(path), "%sblock/%s/dm/uuid", sysfs_dir, holder_name) < 0) {
-		log_error("Sysfs path string is too long.");
-		return 0;
-	}
-
-	buffer[0] = '\0';
-
-	if (!_get_sysfs_string(path, buffer, sizeof(buffer)))
-		return_0;
-
-	if (!strncmp(buffer, MPATH_PREFIX, 6))
-		return 1;
-
-	return 0;
 }
 
 #ifdef UDEV_SYNC_SUPPORT
@@ -460,12 +421,13 @@ static int _dev_is_mpath_component_sysfs(struct cmd_context *cmd, struct device 
 	char link_path[PATH_MAX];       /* some obscure, unpredictable sysfs path */
 	char holders_path[PATH_MAX];    /* e.g. "/sys/block/sda/holders/" */
 	char dm_dev_path[PATH_MAX];     /* e.g. "/dev/dm-1" */
+	char uuid[DM_UUID_LEN];
 	char *holder_name;		/* e.g. "dm-1" */
 	const char *sysfs_dir = dm_sysfs_dir();
 	DIR *dr;
 	struct dirent *de;
-	int dev_major = MAJOR(dev->dev);
-	int dev_minor = MINOR(dev->dev);
+	unsigned dev_major = MAJOR(dev->dev);
+	unsigned dev_minor = MINOR(dev->dev);
 	unsigned dm_dev_major;
 	unsigned dm_dev_minor;
 	struct stat info;
@@ -488,7 +450,7 @@ static int _dev_is_mpath_component_sysfs(struct cmd_context *cmd, struct device 
 		break;
 
 	default: /* 0, error. */
-		log_warn("Failed to get primary device for %d:%d.", dev_major, dev_minor);
+		log_warn("Failed to get primary device for %u:%u.", dev_major, dev_minor);
 		return 0;
 	}
 
@@ -558,7 +520,8 @@ static int _dev_is_mpath_component_sysfs(struct cmd_context *cmd, struct device 
 		 */
 
 		if (_minor_hash_tab) {
-			long look = (long) dm_hash_lookup_binary(_minor_hash_tab, &dm_dev_minor, sizeof(dm_dev_minor));
+			void *d = dm_hash_lookup_binary(_minor_hash_tab, &dm_dev_minor, sizeof(dm_dev_minor));
+			long look = (long) d;
 			if (look > 0) {
 				log_debug_devs("dev_is_mpath_component %s holder %s %u:%u already checked as %sbeing mpath.",
 						dev_name(dev), holder_name, dm_dev_major, dm_dev_minor, (look > 1) ? "" : "not ");
@@ -570,12 +533,10 @@ static int _dev_is_mpath_component_sysfs(struct cmd_context *cmd, struct device 
 			/* no saved result for dm_dev_minor, so check the uuid for it */
 		}
 
-		/*
-	 	 * Returns 1 if /sys/block/<holder_name>/dm/uuid indicates that
-		 * <holder_name> is a dm device with dm uuid prefix mpath-.
-		 * When true, <holder_name> will be something like "dm-1".
-		 */
-		if (_get_sysfs_dm_mpath(dt, sysfs_dir, holder_name)) {
+		/* Check whether holder's UUID uses MPATH prefix */
+		/* TODO: reuse/merge with dev_has_mpath_uuid() as this function also recognizes kpartx partition */
+		if (devno_dm_uuid(cmd, dm_dev_major, dm_dev_minor, uuid, sizeof(uuid)) &&
+		    !strncmp(uuid, MPATH_PREFIX, sizeof(MPATH_PREFIX) - 1)) {
 			log_debug_devs("dev_is_mpath_component %s holder %s %u:%u ignore mpath component",
 					dev_name(dev), holder_name, dm_dev_major, dm_dev_minor);
 
@@ -594,7 +555,7 @@ static int _dev_is_mpath_component_sysfs(struct cmd_context *cmd, struct device 
 
  out:
 	if (closedir(dr))
-		stack;
+		log_sys_debug("closedir", holders_path);
 
 	if (is_mpath_component)
 		*mpath_devno = MKDEV(dm_dev_major, dm_dev_minor);
@@ -720,30 +681,24 @@ const char *dev_mpath_component_wwid(struct cmd_context *cmd, struct device *dev
 	char sysbuf[PATH_MAX] = { 0 };
 	char *slave_name;
 	const char *wwid = NULL;
-	struct stat info;
 	DIR *dr;
 	struct dirent *de;
 
 	/* /sys/dev/block/253:7/slaves/sda/device/wwid */
 
-	if (dm_snprintf(slaves_path, sizeof(slaves_path), "%sdev/block/%d:%d/slaves",
-			dm_sysfs_dir(), (int)MAJOR(dev->dev), (int)MINOR(dev->dev)) < 0) {
+	if (dm_snprintf(slaves_path, sizeof(slaves_path), "%sdev/block/%u:%u/slaves",
+			dm_sysfs_dir(), MAJOR(dev->dev), MINOR(dev->dev)) < 0) {
 		log_warn("Sysfs path to check mpath components is too long.");
-		return NULL;
-	}
-
-	if (stat(slaves_path, &info))
-		return NULL;
-
-	if (!S_ISDIR(info.st_mode)) {
-		log_warn("Path %s is not a directory.", slaves_path);
 		return NULL;
 	}
 
 	/* Get wwid from first component */
 
 	if (!(dr = opendir(slaves_path))) {
-		log_debug("Device %s has no slaves dir", dev_name(dev));
+		if (errno == ENOTDIR)
+			log_warn("WARNING: Path %s is not a directory.", slaves_path);
+		else if (errno != ENOENT)
+			log_sys_debug("opendir", slaves_path);
 		return NULL;
 	}
 
@@ -757,12 +712,14 @@ const char *dev_mpath_component_wwid(struct cmd_context *cmd, struct device *dev
 		/* read /sys/block/sda/device/wwid */
 
 		if (dm_snprintf(wwid_path, sizeof(wwid_path), "%sblock/%s/device/wwid",
-       				dm_sysfs_dir(), slave_name) < 0) {
+				dm_sysfs_dir(), slave_name) < 0) {
 			log_warn("Failed to create sysfs wwid path for %s", slave_name);
 			continue;
 		}
 
-		get_sysfs_value(wwid_path, sysbuf, sizeof(sysbuf), 0);
+		if (!get_sysfs_value(wwid_path, sysbuf, sizeof(sysbuf), 0))
+			stack;
+
 		if (!sysbuf[0])
 			continue;
 
@@ -778,9 +735,7 @@ const char *dev_mpath_component_wwid(struct cmd_context *cmd, struct device *dev
 			break;
 	}
 	if (closedir(dr))
-		stack;
+		log_sys_debug("closedir", slaves_path);
 
 	return wwid;
 }
-
-

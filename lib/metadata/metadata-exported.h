@@ -34,7 +34,6 @@
 #define STRIPE_SIZE_MIN ( (unsigned) lvm_getpagesize() >> SECTOR_SHIFT)	/* PAGESIZE in sectors */
 #define STRIPE_SIZE_MAX ( 512L * 1024L >> SECTOR_SHIFT)	/* 512 KB in sectors */
 #define STRIPE_SIZE_LIMIT ((UINT_MAX >> 2) + 1)
-#define MAX_RESTRICTED_LVS 255	/* Used by FMT_RESTRICTED_LVIDS */
 #define MAX_EXTENT_SIZE ((uint32_t) -1)
 #define MIN_NON_POWER2_EXTENT_SIZE (128U * 2U)	/* 128KB in sectors */
 
@@ -220,6 +219,7 @@
 #define lv_is_locked(lv)	(((lv)->status & LOCKED) ? 1 : 0)
 #define lv_is_partial(lv)	(((lv)->status & PARTIAL_LV) ? 1 : 0)
 #define lv_is_virtual(lv)	(((lv)->status & VIRTUAL) ? 1 : 0)
+#define lv_is_writable(lv)	(((lv)->status & LVM_WRITE) ? 1 : 0)
 #define lv_is_merging(lv)	(((lv)->status & MERGING) ? 1 : 0)
 #define lv_is_merging_origin(lv) (lv_is_merging(lv) && (lv)->snapshot)
 #define lv_is_snapshot(lv)	(((lv)->status & SNAPSHOT) ? 1 : 0)
@@ -372,8 +372,7 @@ struct labeller;
 struct format_type {
 	struct dm_list list;
 	struct cmd_context *cmd;
-	struct format_handler *ops;
-	struct dm_list mda_ops; /* List of permissible mda ops. */
+	const struct format_handler *ops;
 	struct labeller *labeller;
 	const char *name;
 	const char *alias;
@@ -408,7 +407,7 @@ struct pv_segment {
 #define FMT_INSTANCE_MDAS		0x00000002U
 
 /*
- * Include any auxiliary mdas during format_instance intialisation.
+ * Include any auxiliary mdas during format_instance initialisation.
  * Currently, this includes metadata areas as defined by
  * metadata/dirs and metadata/raws setting.
  */
@@ -434,11 +433,13 @@ struct pv_segment {
  */
 
 struct format_instance {
-	unsigned ref_count;	/* Refs to this fid from VG and PV structs */
 	struct dm_pool *mem;
 
-	uint32_t type;
 	const struct format_type *fmt;
+
+	unsigned ref_count;	/* Refs to this fid from VG and PV structs */
+
+	uint32_t type;
 
 	/*
 	 * Each mda in a vg is on exactly one of the below lists.
@@ -698,7 +699,6 @@ struct lvresize_params {
 	int extend_fs_error;    /* FS extend error after LV extend success */
 	int vg_changed_error;   /* VG metadata was modified during fs resize */
 
-	const char *lockopt;
 	char *lockd_lv_refresh_path; /* set during resize to use for refresh at the end */
 	char *lockd_lv_refresh_uuid; /* set during resize to use for refresh at the end */
 
@@ -895,6 +895,8 @@ int recalculate_pool_chunk_size_with_dev_hints(struct logical_volume *pool_lv,
 int validate_cache_chunk_size(struct cmd_context *cmd, uint32_t chunk_size);
 int validate_thin_pool_chunk_size(struct cmd_context *cmd, uint32_t chunk_size);
 int validate_pool_chunk_size(struct cmd_context *cmd, const struct segment_type *segtype, uint32_t chunk_size);
+int validate_thin_external_origin(const struct logical_volume *lv,
+				  const struct logical_volume *pool_lv);
 int get_default_allocation_thin_pool_chunk_size(struct cmd_context *cmd, struct profile *profile,
 						uint32_t *chunk_size, int *chunk_size_calc_method);
 int update_thin_pool_params(struct cmd_context *cmd,
@@ -908,6 +910,13 @@ int update_thin_pool_params(struct cmd_context *cmd,
 			    thin_crop_metadata_t *crop_metadata,
 			    int *chunk_size_calc_method, uint32_t *chunk_size,
 			    thin_discards_t *discards, thin_zero_t *zero_new_blocks);
+int thin_pool_set_params(struct lv_segment *seg,
+			 int error_when_full,
+			 thin_crop_metadata_t crop_metadata,
+			 int thin_chunk_size_calc_policy,
+			 uint32_t chunk_size,
+			 thin_discards_t discards,
+			 thin_zero_t zero_new_blocks);
 
 struct lv_status_thin_pool {
 	struct dm_pool *mem;
@@ -929,6 +938,8 @@ struct logical_volume *alloc_pool_metadata(struct logical_volume *pool_lv,
 					   uint32_t stripes, uint32_t stripe_size,
 					   uint32_t extents, alloc_policy_t alloc,
 					   struct dm_list *pvh);
+int add_metadata_to_pool(struct lv_segment *pool_seg,
+			 struct logical_volume *metadata_lv);
 int handle_pool_metadata_spare(struct volume_group *vg, uint32_t extents,
 			       struct dm_list *pvh, int poolmetadataspare);
 int vg_set_pool_metadata_spare(struct logical_volume *lv);
@@ -965,6 +976,18 @@ static inline int is_change_activating(activation_change_t change)
 {
         return ((change != CHANGE_AN) && (change != CHANGE_ALN));
 }
+
+struct vdo_convert_params {
+	struct dm_vdo_target_params vdo_params; /* VDO parameters for vdoformat */
+	const char *lv_name;
+	uint32_t virtual_extents;
+	uint64_t header_size;
+	activation_change_t activate;
+	int do_zero;
+	int do_wipe_signatures; /* Used for wiping VDO backend volume */
+	force_t force;
+	int yes;
+};
 
 /* FIXME: refactor and reduce the size of this struct! */
 struct lvcreate_params {
@@ -1030,6 +1053,7 @@ struct lvcreate_params {
 	uint64_t pool_metadata_size; /* pools */
 	uint32_t pool_data_extents; /* pools */
 	uint64_t pool_data_size; /* pools */
+	int pool_data_vdo; /* pools */
 	uint32_t virtual_extents; /* snapshots, thins */
 	struct dm_list *pvh; /* all */
 
@@ -1039,7 +1063,7 @@ struct lvcreate_params {
 	uint32_t read_ahead; /* all */
 	int approx_alloc;     /* all */
 	alloc_policy_t alloc; /* all */
-	struct dm_vdo_target_params vdo_params; /* vdo */
+	struct vdo_convert_params vcp;
 	uint64_t vdo_pool_header_size; /* VDO */
 
 	int raidintegrity;
@@ -1145,6 +1169,7 @@ bool lv_writecache_is_clean(struct cmd_context *cmd, struct logical_volume *lv, 
 bool writecache_cleaner_supported(struct cmd_context *cmd);
 
 int lv_is_integrity_origin(const struct logical_volume *lv);
+int integrity_settings_to_str_list(struct integrity_settings *settings, struct dm_list *result, struct dm_pool *mem);
 
 int lv_is_merging_cow(const struct logical_volume *cow);
 uint32_t cow_max_extents(const struct logical_volume *origin, uint32_t chunk_size);
@@ -1357,8 +1382,9 @@ int wipe_cache_pool(struct logical_volume *cache_pool_lv);
 struct lv_status_vdo {
 	struct dm_pool *mem;
 	struct dm_vdo_status *vdo;
-	uint64_t data_blocks_used;	/* grabbed from /sys/kvdo */
-	uint64_t logical_blocks_used;	/* grabbed from /sys/kvdo */
+	/* grabbed from DM stats message, /sys/block/dm-/vdo or /sys/kvdo */
+	uint64_t data_blocks_used;
+	uint64_t logical_blocks_used;
 	dm_percent_t usage;
 	dm_percent_t saving;
 	dm_percent_t data_usage;
@@ -1375,11 +1401,13 @@ uint32_t get_vdo_pool_max_extents(const struct dm_vdo_target_params *vtp,
 int parse_vdo_pool_status(struct dm_pool *mem, const struct logical_volume *vdo_pool_lv,
 			  const char *params, const struct dm_info *dminfo,
 			  struct lv_status_vdo *status);
-struct logical_volume *convert_vdo_pool_lv(struct logical_volume *data_lv,
-					   const struct dm_vdo_target_params *vtp,
-					   uint32_t *virtual_extents,
-					   int format,
-					   uint64_t vdo_pool_header_size);
+int convert_vdo_pool_lv(struct logical_volume *data_lv,
+			const struct dm_vdo_target_params *vtp,
+			uint32_t *virtual_extents,
+			int format,
+			uint64_t vdo_pool_header_size);
+struct logical_volume *convert_vdo_lv(struct logical_volume *lv,
+				      const struct vdo_convert_params *vcp);
 int set_vdo_write_policy(enum dm_vdo_write_policy *vwp, const char *policy);
 int fill_vdo_target_params(struct cmd_context *cmd,
 			   struct dm_vdo_target_params *vtp,
@@ -1403,7 +1431,6 @@ const char *get_pvmove_pvname_from_lv_mirr(const struct logical_volume *lv_mirr)
 struct dm_list *lvs_using_lv(struct cmd_context *cmd, struct volume_group *vg,
 			  struct logical_volume *lv);
 
-uint32_t find_free_lvnum(struct logical_volume *lv);
 dm_percent_t copy_percent(const struct logical_volume *lv);
 char *generate_lv_name(struct volume_group *vg, const char *format,
 		       char *buffer, size_t len);
@@ -1440,6 +1467,10 @@ struct vgcreate_params {
 	const char *system_id;
 	const char *lock_type;
 	const char *lock_args;
+};
+
+struct lvremove_params {
+	struct dm_list removed_uuids; /* entries are str_list */
 };
 
 int validate_major_minor(const struct cmd_context *cmd,
@@ -1480,5 +1511,7 @@ int lv_get_raid_integrity_settings(struct logical_volume *lv, struct integrity_s
 int integrity_mode_set(const char *mode, struct integrity_settings *settings);
 int lv_integrity_mismatches(struct cmd_context *cmd, const struct logical_volume *lv, uint64_t *mismatches);
 int lv_raid_integrity_total_mismatches(struct cmd_context *cmd, const struct logical_volume *lv, uint64_t *mismatches);
+
+int setting_str_list_add(const char *field, uint64_t val, char *val_str, struct dm_list *result, struct dm_pool *mem);
 
 #endif

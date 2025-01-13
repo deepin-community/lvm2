@@ -66,6 +66,7 @@ int main (int argc, char *argv[])
 		rot13(aes);
 		snprintf(table, sizeof(table), "%s %s 0 %s %u", cipher, aes, device, sz);
 		memset(aes, 0, sizeof(aes));
+		asm volatile ("" ::: "memory");/* Compiler barrier. */
 		(void) dm_task_add_target(dmt, 0, sz, "crypt", table);
 		memset(table, 0, sizeof(table));
 		asm volatile ("" ::: "memory");/* Compiler barrier. */
@@ -73,8 +74,10 @@ int main (int argc, char *argv[])
 		(void) dm_task_run(dmt);
 		(void) dm_task_destroy(dmt);
 		(void) dm_udev_wait(cookie); /* Finish udev processing */
+		printf("Created device: %s\n", devname);
 	}
 
+	fflush(stdout);
 	/* At this point there should be no memory trace from a secure table line */
 
 #ifdef SLEEP

@@ -57,7 +57,7 @@ for i in {1..50}; do
 	  *cleaner*) break;;
 	esac
 	echo "$i: Waiting for cleaner policy on $vg/$lv1"
-	sleep .01
+	sleep .03
 done
 test "$i" -ge 49 && die "Waited for cleaner policy on $vg/$lv1 too long!"
 
@@ -74,7 +74,7 @@ wait
 # dirty blocks - so the test can't really break the cache clearing.
 #
 # So the failure of test is reported only for recent kernels > 5.6
-# ans skipped otherwise - as those can't be fixed anyway
+# and skipped otherwise - as those can't be fixed anyway
 grep -E "Flushing.*aborted" logconvert || {
 	cat logconvert || true
 	vgremove -f $vg

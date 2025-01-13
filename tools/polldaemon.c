@@ -141,7 +141,8 @@ static int _sleep_and_rescan_devices(struct cmd_context *cmd, struct daemon_parm
 		_nanosleep(parms->interval, 0);
 		if (sigint_caught())
 			return_0;
-		lvmcache_label_scan(cmd);
+		if (!lvmcache_label_scan(cmd))
+			stack;
 	}
 
 	return 1;
@@ -155,11 +156,13 @@ int wait_for_single_lv(struct cmd_context *cmd, struct poll_operation_id *id,
 	int finished = 0;
 	uint32_t lockd_state = 0;
 	uint32_t error_flags = 0;
+	int is_lockd;
 	int ret;
 	unsigned wait_before_testing = parms->wait_before_testing;
 
 	if (!wait_before_testing)
-		lvmcache_label_scan(cmd);
+		if (!lvmcache_label_scan(cmd))
+			stack;
 
 	/* Poll for completion */
 	while (!finished) {
@@ -169,11 +172,13 @@ int wait_for_single_lv(struct cmd_context *cmd, struct poll_operation_id *id,
 			return 0;
 		}
 
+		is_lockd = lvmcache_vg_is_lockd_type(cmd, id->vg_name, NULL);
+
 		/*
 		 * An ex VG lock is needed because the check can call finish_copy
 		 * which writes the VG.
 		 */
-		if (!lockd_vg(cmd, id->vg_name, "ex", 0, &lockd_state)) {
+		if (is_lockd && !lockd_vg(cmd, id->vg_name, "ex", 0, &lockd_state)) {
 			log_error("ABORTING: Can't lock VG for %s.", id->display_name);
 			return 0;
 		}
@@ -227,7 +232,7 @@ int wait_for_single_lv(struct cmd_context *cmd, struct poll_operation_id *id,
 
 		unlock_and_release_vg(cmd, vg, vg->name);
 
-		if (!lockd_vg(cmd, id->vg_name, "un", 0, &lockd_state))
+		if (is_lockd && !lockd_vg(cmd, id->vg_name, "un", 0, &lockd_state))
 			stack;
 
 		wait_before_testing = 1;
@@ -238,7 +243,7 @@ int wait_for_single_lv(struct cmd_context *cmd, struct poll_operation_id *id,
 out:
 	if (vg)
 		unlock_and_release_vg(cmd, vg, vg->name);
-	if (!lockd_vg(cmd, id->vg_name, "un", 0, &lockd_state))
+	if (is_lockd && !lockd_vg(cmd, id->vg_name, "un", 0, &lockd_state))
 		stack;
 
 	return ret;
@@ -646,7 +651,7 @@ static int _poll_daemon(struct cmd_context *cmd, struct poll_operation_id *id,
 }
 
 static int _daemon_parms_init(struct cmd_context *cmd, struct daemon_parms *parms,
-			      unsigned background, struct poll_functions *poll_fns,
+			      unsigned background, const struct poll_functions *poll_fns,
 			      const char *progress_title, uint64_t lv_type)
 {
 	sign_t interval_sign;
@@ -674,18 +679,18 @@ static int _daemon_parms_init(struct cmd_context *cmd, struct daemon_parms *parm
 
 	memset(parms->devicesfile, 0, sizeof(parms->devicesfile));
 	if (cmd->devicesfile) {
-		if (strlen(cmd->devicesfile) >= sizeof(parms->devicesfile)) {
+		if (!_dm_strncpy(parms->devicesfile, cmd->devicesfile,
+				 sizeof(parms->devicesfile))) {
 			log_error("devicefile name too long for lvmpolld");
 			return 0;
 		}
-		strcpy(parms->devicesfile, cmd->devicesfile);
 	}
 
 	return 1;
 }
 
 int poll_daemon(struct cmd_context *cmd, unsigned background,
-		uint64_t lv_type, struct poll_functions *poll_fns,
+		uint64_t lv_type, const struct poll_functions *poll_fns,
 		const char *progress_title, struct poll_operation_id *id)
 {
 	struct daemon_parms parms;
@@ -696,7 +701,7 @@ int poll_daemon(struct cmd_context *cmd, unsigned background,
 	if (lvmpolld_use())
 		return _lvmpoll_daemon(cmd, id, &parms);
 
-	/* classical polling allows only PMVOVE or 0 values */
+	/* classical polling allows only PVMOVE or 0 values */
 	parms.lv_type &= PVMOVE;
 	return _poll_daemon(cmd, id, &parms);
 }

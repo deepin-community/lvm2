@@ -142,7 +142,7 @@ override_dh_installinit:
 override_dh_makeshlibs:
 	dh_makeshlibs -plibdevmapper$(DEVMAPPER_ABINAME) \
 		--add-udeb 'libdevmapper$(DEVMAPPER_ABINAME)-udeb' \
-	       	"-Vlibdevmapper$(DEVMAPPER_ABINAME) (>= $(DEVMAPPER_VERSION))" \
+		"-Vlibdevmapper$(DEVMAPPER_ABINAME) (>= $(DEVMAPPER_VERSION))" \
 		-- "-v$(DEVMAPPER_VERSION_DEBIAN)" -c2
 	dh_makeshlibs -plibdevmapper-event$(DEVMAPPER_ABINAME) \
 		"-Vlibdevmapper-event$(DEVMAPPER_ABINAME) (>= $(DEVMAPPER_VERSION))" \

@@ -21,7 +21,7 @@
 #include <fcntl.h>
 
 #define DEV_REGULAR		0x00000002	/* Regular file? */
-#define DEV_ALLOCED		0x00000004	/* malloc used */
+#define DEV_ALLOCATED		0x00000004	/* malloc used */
 #define DEV_OPENED_RW		0x00000008	/* Opened RW */
 #define DEV_OPENED_EXCL		0x00000010	/* Opened EXCL */
 #define DEV_O_DIRECT		0x00000020	/* Use O_DIRECT */
@@ -95,7 +95,6 @@ struct dev_wwid {
 
 struct dev_id {
 	struct dm_list list;    /* dev->ids */
-	struct device *dev;
 	uint16_t idtype;	/* DEV_ID_TYPE_ */
 	char *idname;		/* id string determined by idtype */
 };
@@ -221,7 +220,6 @@ int dev_open(struct device *dev);
 int dev_open_quiet(struct device *dev);
 int dev_open_flags(struct device *dev, int flags, int direct, int quiet);
 int dev_open_readonly(struct device *dev);
-int dev_open_readonly_buffered(struct device *dev);
 int dev_open_readonly_quiet(struct device *dev);
 int dev_close(struct device *dev);
 int dev_close_immediate(struct device *dev);
@@ -230,10 +228,6 @@ int dev_fd(struct device *dev);
 const char *dev_name(const struct device *dev);
 
 void dev_flush(struct device *dev);
-
-struct device *dev_create_file(const char *filename, struct device *dev,
-			       struct dm_str_list *alias, int use_malloc);
-void dev_destroy_file(struct device *dev);
 
 int dev_mpath_init(const char *config_wwids_file);
 void dev_mpath_exit(void);
@@ -247,5 +241,7 @@ int device_id_list_remove(struct dm_list *devices, struct device *dev);
 struct device_id_list *device_id_list_find_dev(struct dm_list *devices, struct device *dev);
 int device_list_remove(struct dm_list *devices, struct device *dev);
 struct device_list *device_list_find_dev(struct dm_list *devices, struct device *dev);
+
+char *strdup_pvid(char *pvid);
 
 #endif

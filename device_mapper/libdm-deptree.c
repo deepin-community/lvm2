@@ -171,7 +171,7 @@ struct load_segment {
 	uint32_t region_size;		/* Mirror + raid */
 	unsigned clustered;		/* Mirror */
 	unsigned mirror_area_count;	/* Mirror */
-	uint32_t flags;			/* Mirror + raid + Cache */
+	uint64_t flags;			/* Mirror + Raid + Cache */
 	char *uuid;			/* Clustered mirror log */
 
 	const char *policy_name;	/* Cache */
@@ -265,7 +265,7 @@ struct load_properties {
 	/*
 	 * Preload tree normally only loads and not resume, but there is
 	 * automatic resume when target is extended, as it's believed
-	 * there can be no i/o flying to this 'new' extedend space
+	 * there can be no i/o flying to this 'new' extended space
 	 * from any device above. Reason is that preloaded target above
 	 * may actually need to see its bigger subdevice before it
 	 * gets suspended. As long as devices are simple linears
@@ -277,7 +277,7 @@ struct load_properties {
 
 	/*
 	 * When comparing table lines to decide if a reload is
-	 * needed, ignore any differences betwen the lvm device
+	 * needed, ignore any differences between the lvm device
 	 * params and the kernel-reported device params.
 	 * dm-integrity reports many internal parameters on the
 	 * table line when lvm does not explicitly set them,
@@ -288,8 +288,8 @@ struct load_properties {
 	/*
 	 * Call node_send_messages(), set to 2 if there are messages
 	 * When != 0, it validates matching transaction id, thus thin-pools
-	 * where transation_id is passed as 0 are never validated, this
-	 * allows external managment of thin-pool TID.
+	 * where transaction_id is passed as 0 are never validated, this
+	 * allows external management of thin-pool TID.
 	 */
 	unsigned send_messages;
 	/* Skip suspending node's children, used when sending messages to thin-pool */
@@ -348,7 +348,7 @@ struct dm_tree {
 	int retry_remove;		/* 1 retries remove if not successful */
 	uint32_t cookie;
 	char buf[DM_NAME_LEN + 32];	/* print buffer for device_name (major:minor) */
-	const char **optional_uuid_suffixes;	/* uuid suffixes ignored when matching */
+	const char * const *optional_uuid_suffixes;	/* uuid suffixes ignored when matching */
 };
 
 /*
@@ -590,6 +590,7 @@ void dm_tree_set_optional_uuid_suffixes(struct dm_tree *dtree, const char **opti
 	dtree->optional_uuid_suffixes = optional_uuid_suffixes;
 }
 
+static const char *_node_name(struct dm_tree_node *dnode);
 static struct dm_tree_node *_find_dm_tree_node_by_uuid(struct dm_tree *dtree,
 						       const char *uuid)
 {
@@ -597,28 +598,26 @@ static struct dm_tree_node *_find_dm_tree_node_by_uuid(struct dm_tree *dtree,
 	const char *default_uuid_prefix;
 	size_t default_uuid_prefix_len;
 	const char *suffix, *suffix_position;
-	char uuid_without_suffix[DM_UUID_LEN];
+	char uuid_without_suffix[DM_UUID_LEN + 1];
 	unsigned i = 0;
-	const char **suffix_list = dtree->optional_uuid_suffixes;
+	const char * const *suffix_list = dtree->optional_uuid_suffixes;
 
 	if ((node = dm_hash_lookup(dtree->uuids, uuid))) {
-		log_debug("Matched uuid %s in deptree.", uuid);
+		log_debug_activation("Matched uuid %s %s in deptree.", uuid, _node_name(node));
 		return node;
 	}
-
-	default_uuid_prefix = dm_uuid_prefix();
-	default_uuid_prefix_len = strlen(default_uuid_prefix);
 
 	if (suffix_list && (suffix_position = strrchr(uuid, '-'))) {
 		while ((suffix = suffix_list[i++])) {
 			if (strcmp(suffix_position + 1, suffix))
 				continue;
 
-			(void) strncpy(uuid_without_suffix, uuid, sizeof(uuid_without_suffix));
+			dm_strncpy(uuid_without_suffix, uuid, sizeof(uuid_without_suffix));
 			uuid_without_suffix[suffix_position - uuid] = '\0';
 
 			if ((node = dm_hash_lookup(dtree->uuids, uuid_without_suffix))) {
-				log_debug("Matched uuid %s (missing suffix -%s) in deptree.", uuid_without_suffix, suffix);
+				log_debug_activation("Matched uuid %s %s (missing suffix -%s) in deptree.",
+						     uuid_without_suffix, _node_name(node), suffix);
 				return node;
 			}
 
@@ -626,15 +625,17 @@ static struct dm_tree_node *_find_dm_tree_node_by_uuid(struct dm_tree *dtree,
 		};
 	}
 	
-	if (strncmp(uuid, default_uuid_prefix, default_uuid_prefix_len))
-		return NULL;
+	default_uuid_prefix = dm_uuid_prefix();
+	default_uuid_prefix_len = strlen(default_uuid_prefix);
 
-	if ((node = dm_hash_lookup(dtree->uuids, uuid + default_uuid_prefix_len))) {
-		log_debug("Matched uuid %s (missing prefix) in deptree.", uuid + default_uuid_prefix_len);
+	if ((strncmp(uuid, default_uuid_prefix, default_uuid_prefix_len) == 0) &&
+	    (node = dm_hash_lookup(dtree->uuids, uuid + default_uuid_prefix_len))) {
+		log_debug_activation("Matched uuid %s %s (missing prefix) in deptree.",
+				     uuid + default_uuid_prefix_len, _node_name(node));
 		return node;
 	}
 
-	log_debug("Not matched uuid %s in deptree.", uuid);
+	log_debug_activation("Not matched uuid %s in deptree.", uuid);
 	return NULL;
 }
 
@@ -967,7 +968,7 @@ static int _check_device_not_in_use(const char *name, struct dm_info *info)
 	} else if (dm_device_has_holders(info->major, info->minor))
 		reason = "is used by another device";
 	else if (dm_device_has_mounted_fs(info->major, info->minor))
-		reason = "constains a filesystem in use";
+		reason = "contains a filesystem in use";
 	else
 		return 1;
 
@@ -1815,7 +1816,7 @@ static int _dm_tree_deactivate_children(struct dm_tree_node *dnode,
 
 		if (info.open_count) {
 			/* Skip internal non-toplevel opened nodes */
-			/* On some old udev systems without corrrect udev rules
+			/* On some old udev systems without correct udev rules
 			 * this hack avoids 'leaking' active _mimageX legs after
 			 * deactivation of mirror LV. Other suffixes are not added
 			 * since it's expected newer systems with wider range of
@@ -2181,7 +2182,7 @@ int dm_tree_activate_children(struct dm_tree_node *dnode,
 			/*
 			 * FIXME: Implement delayed error reporting
 			 * activation should be stopped only in the case,
-			 * the submission of transation_id message fails,
+			 * the submission of transaction_id message fails,
 			 * resume should continue further, just whole command
 			 * has to report failure.
 			 */
@@ -2273,7 +2274,7 @@ static int _build_dev_string(char *devbuf, size_t bufsize, struct dm_tree_node *
 	return 1;
 }
 
-/* simplify string emiting code */
+/* simplify string emitting code */
 #define EMIT_PARAMS(p, str...)\
 do {\
 	int w;\
@@ -2867,6 +2868,8 @@ static int _integrity_emit_segment_line(struct dm_task *dmt,
 		count++;
 	if (set->sectors_per_bit_set)
 		count++;
+	if (set->allow_discards_set && set->allow_discards)
+		count++;
 
 	EMIT_PARAMS(pos, "%s 0 %u %s %d fix_padding block_size:%u internal_hash:%s",
 		    origin_dev,
@@ -2886,7 +2889,7 @@ static int _integrity_emit_segment_line(struct dm_task *dmt,
 		EMIT_PARAMS(pos, " journal_sectors:%u", set->journal_sectors);
 
 	if (set->interleave_sectors_set)
-		EMIT_PARAMS(pos, " ineterleave_sectors:%u", set->interleave_sectors);
+		EMIT_PARAMS(pos, " interleave_sectors:%u", set->interleave_sectors);
 
 	if (set->buffer_sectors_set)
 		EMIT_PARAMS(pos, " buffer_sectors:%u", set->buffer_sectors);
@@ -2902,6 +2905,9 @@ static int _integrity_emit_segment_line(struct dm_task *dmt,
 
 	if (set->sectors_per_bit_set)
 		EMIT_PARAMS(pos, " sectors_per_bit:%llu", (unsigned long long)set->sectors_per_bit);
+
+	if (set->allow_discards_set && set->allow_discards)
+		EMIT_PARAMS(pos, " allow_discards");
 
 	if (!dm_task_secure_data(dmt))
 		stack;
@@ -2964,7 +2970,7 @@ static int _vdo_emit_segment_line(struct dm_task *dmt, uint32_t major, uint32_t 
 	 * If there is already running VDO target, read 'existing' virtual size out of table line
 	 * and avoid reading it them from VDO metadata device
 	 *
-	 * NOTE: ATM VDO virtual size can be ONLY extended thus it's simple to recongnize 'right' size.
+	 * NOTE: ATM VDO virtual size can be ONLY extended thus it's simple to recognize 'right' size.
 	 * However if there would be supported also reduction, this check would need to check range.
 	 */
 	if ((vdo_dmt = dm_task_create(DM_DEVICE_TABLE))) {
@@ -3376,7 +3382,7 @@ int dm_tree_preload_children(struct dm_tree_node *dnode,
 		if (!child->info.exists && !(node_created = _create_node(child, dnode)))
 			return_0;
 
-		/* Propagate delayed resume from exteded child node */
+		/* Propagate delayed resume from extended child node */
 		if (child->props.delay_resume_if_extended)
 			dnode->props.delay_resume_if_extended = 1;
 
@@ -3812,7 +3818,7 @@ int dm_tree_node_add_raid_target(struct dm_tree_node *node,
  * - maximum 253 legs in a raid set (MD kernel limitation)
  * - delta_disks for disk add/remove reshaping
  * - data_offset for out-of-place reshaping
- * - data_copies to cope witth odd numbers of raid10 disks
+ * - data_copies to cope with odd numbers of raid10 disks
  */
 int dm_tree_node_add_raid_target_with_params_v2(struct dm_tree_node *node,
 					        uint64_t size,
@@ -3863,7 +3869,7 @@ int dm_tree_node_add_cache_target(struct dm_tree_node *node,
 {
 	struct dm_config_node *cn;
 	struct load_segment *seg;
-	static const uint64_t _modemask =
+	const uint64_t modemask =
 		DM_CACHE_FEATURE_PASSTHROUGH |
 		DM_CACHE_FEATURE_WRITETHROUGH |
 		DM_CACHE_FEATURE_WRITEBACK;
@@ -3875,12 +3881,12 @@ int dm_tree_node_add_cache_target(struct dm_tree_node *node,
 		return 0;
 	}
 
-	switch (feature_flags & _modemask) {
+	switch (feature_flags & modemask) {
 	case DM_CACHE_FEATURE_PASSTHROUGH:
 	case DM_CACHE_FEATURE_WRITEBACK:
 		if (strcmp(policy_name, "cleaner") == 0) {
 			/* Enforce writethrough mode for cleaner policy */
-			feature_flags = ~_modemask;
+			feature_flags = ~modemask;
 			feature_flags |= DM_CACHE_FEATURE_WRITETHROUGH;
 		}
                 /* Fall through */
@@ -4076,7 +4082,7 @@ int dm_tree_node_add_replicator_dev_target(struct dm_tree_node *node,
 					   uint32_t slog_flags,
 					   uint32_t slog_region_size)
 {
-	log_error("Replicator targer is unsupported.");
+	log_error("Replicator target is unsupported.");
 	return 0;
 }
 
@@ -4362,6 +4368,12 @@ int dm_tree_node_set_thin_external_origin(struct dm_tree_node *node,
 		return_0;
 
 	seg->external = external;
+
+	if (!external->info.minor) {
+		log_debug_activation("Delaying resume for new external origin %s.",
+				     external->name);
+		external->props.delay_resume_if_new = 1;
+	}
 
 	return 1;
 }

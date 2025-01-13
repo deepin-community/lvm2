@@ -67,6 +67,8 @@ lvchange \(em Change the attributes of logical volume(s)
 .br
     \fB--ignoremonitoring\fP
 .br
+    \fB--integritysettings\fP \fIString\fP
+.br
     \fB--journal\fP \fIString\fP
 .br
     \fB--lockopt\fP \fIString\fP
@@ -207,6 +209,8 @@ required, after which the others are optional.
 .br
      \fB--vdosettings\fP \fIString\fP
 .br
+     \fB--integritysettings\fP \fIString\fP
+.br
      \fB--\fP[\fBraid\fP]\fBwritebehind\fP \fINumber\fP
 .br
      \fB--\fP[\fBraid\fP]\fBwritemostly\fP \fIPV\fP[\fB:t\fP|\fBn\fP|\fBy\fP] )
@@ -229,7 +233,7 @@ required, after which the others are optional.
 .P
 \(em
 .P
-Resyncronize a mirror or raid LV. 
+Resynchronize a mirror or raid LV. 
 .br
 Use to reset 'R' attribute on a not initially synchronized LV.
 .br
@@ -462,7 +466,7 @@ link and present this as the name of the device.
 The location and name of the underlying device node may depend on
 the distribution, configuration (e.g. udev), or release version.
 \fBay\fP specifies autoactivation, which is used by system-generated
-activation commands.  By default, LVs are autoactivated.
+activation commands. By default, LVs are autoactivated.
 An autoactivation property can be set on a VG or LV to disable autoactivation,
 see --setautoactivation y|n in vgchange, lvchange, vgcreate, and lvcreate.
 Display the property with vgs or lvs "-o autoactivation".
@@ -688,6 +692,12 @@ Do not interact with dmeventd unless --monitor is specified.
 Do not use this if dmeventd is already monitoring a device.
 .
 .HP
+\fB--integritysettings\fP \fIString\fP
+.br
+Specifies tunable kernel options for dm-integrity.
+See \fBlvmraid\fP(7) for more information.
+.
+.HP
 \fB--journal\fP \fIString\fP
 .br
 Record information in the systemd journal.
@@ -821,12 +831,8 @@ a suitable value automatically.
 .HP
 \fB--readonly\fP
 .br
-Run the command in a special read-only mode which will read on-disk
-metadata without needing to take any locks. This can be used to peek
-inside metadata used by a virtual machine image while the virtual
-machine is running. No attempt will be made to communicate with the
-device-mapper kernel driver, so this option is unable to report whether
-or not LVs are actually in use.
+Prevent the command from making changes, including activation and
+metadata updates.  (See --permission r for read only LVs.)
 .
 .HP
 \fB--rebuild\fP \fIPV\fP
@@ -842,9 +848,12 @@ See \fBlvmraid\fP(7) for more information.
 \fB--refresh\fP
 .br
 If the LV is active, reload its metadata.
-This is not necessary in normal operation, but may be useful
-if something has gone wrong, or if some form of manual LV
-sharing is being used.
+In an environment where udev is used to manage the /dev content,
+usage of this option is highly recommended. This is because refresh
+also regenerates udev events for an LV based on which existing udev
+rules are applied to set the /dev content and permissions.
+Also, this operation may be useful if something has gone wrong,
+or if some form of manual LV sharing is being used.
 .
 .HP
 \fB--reportformat\fP \fBbasic\fP|\fBjson\fP|\fBjson_std\fP

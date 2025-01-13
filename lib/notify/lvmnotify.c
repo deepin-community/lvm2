@@ -83,7 +83,9 @@ static int lvmdbusd_running(void)
 		}
 	}
 
-	close(fd);
+	if (close(fd))
+		log_sys_debug("close", lockfile);
+
 	return running;
 }
 
@@ -107,7 +109,7 @@ void lvmnotify_send(struct cmd_context *cmd)
 
 	/* If lvmdbusd isn't running, don't notify as you will start it as it will auto activate */
 	if (!lvmdbusd_running()) {
-		log_debug_dbus("dbus damon not running, not notifying");
+		log_debug_dbus("dbus daemon not running, not notifying");
 		return;
 	}
 
@@ -119,7 +121,7 @@ void lvmnotify_send(struct cmd_context *cmd)
 		return;
 	}
 
-	log_debug_dbus("Nofify dbus at %s.", LVM_DBUS_DESTINATION);
+	log_debug_dbus("Notify dbus at %s.", LVM_DBUS_DESTINATION);
 
 	ret = sd_bus_call_method(bus,
 				 LVM_DBUS_DESTINATION,

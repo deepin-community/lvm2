@@ -86,10 +86,8 @@ static int _version_checked = 0;
 static int _version_ok = 1;
 static unsigned _ioctl_buffer_double_factor = 0;
 
-const int _dm_compat = 0;
-
 /* *INDENT-OFF* */
-static struct cmd_data _cmd_data_v4[] = {
+static const struct cmd_data _cmd_data_v4[] = {
 	{"create",	DM_DEV_CREATE,		{4, 0, 0}},
 	{"reload",	DM_TABLE_LOAD,		{4, 0, 0}},
 	{"remove",	DM_DEV_REMOVE,		{4, 0, 0}},
@@ -199,6 +197,7 @@ static int _get_proc_number(const char *file, const char *name,
 	char *line = NULL;
 	size_t len;
 	uint32_t num;
+	unsigned blocksection = (strcmp(file, PROC_DEVICES) == 0) ? 0 : 1;
 
 	if (!(fl = fopen(file, "r"))) {
 		log_sys_error("fopen", file);
@@ -206,7 +205,9 @@ static int _get_proc_number(const char *file, const char *name,
 	}
 
 	while (getline(&line, &len, fl) != -1) {
-		if (sscanf(line, "%u %255s\n", &num, &nm[0]) == 2) {
+		if (!blocksection && (line[0] == 'B'))
+			blocksection = 1;
+		else if (sscanf(line, "%u %255s\n", &num, &nm[0]) == 2) {
 			if (!strcmp(name, nm)) {
 				if (number) {
 					*number = num;
@@ -246,6 +247,16 @@ static int _control_device_number(uint32_t *major, uint32_t *minor)
 	return 1;
 }
 
+static int _control_unlink(const char *control)
+{
+	if (unlink(control) && (errno != ENOENT)) {
+		log_sys_error("unlink", control);
+		return -1;
+	}
+
+	return 0;
+}
+
 /*
  * Returns 1 if it exists on returning; 0 if it doesn't; -1 if it's wrong.
  */
@@ -261,10 +272,7 @@ static int _control_exists(const char *control, uint32_t major, uint32_t minor)
 
 	if (!S_ISCHR(buf.st_mode)) {
 		log_verbose("%s: Wrong inode type", control);
-		if (!unlink(control))
-			return 0;
-		log_sys_error("unlink", control);
-		return -1;
+		return _control_unlink(control);
 	}
 
 	if (major && buf.st_rdev != MKDEV(major, minor)) {
@@ -272,10 +280,7 @@ static int _control_exists(const char *control, uint32_t major, uint32_t minor)
 			    "(%u, %u)", control,
 			    MAJOR(buf.st_mode), MINOR(buf.st_mode),
 			    major, minor);
-		if (!unlink(control))
-			return 0;
-		log_sys_error("unlink", control);
-		return -1;
+		return _control_unlink(control);
 	}
 
 	return 1;
@@ -403,7 +408,7 @@ static void _close_control_fd(void)
 {
 	if (_control_fd != -1) {
 		if (close(_control_fd) < 0)
-			log_sys_error("close", "_control_fd");
+			log_sys_debug("close", "_control_fd");
 		_control_fd = -1;
 	}
 }
@@ -586,23 +591,9 @@ int dm_check_version(void)
 
 	_version_checked = 1;
 
-	if (_check_version(dmversion, sizeof(dmversion), _dm_compat))
+	if (_check_version(dmversion, sizeof(dmversion), 0))
 		return 1;
 
-	if (!_dm_compat)
-		goto_bad;
-
-	log_verbose("device-mapper ioctl protocol version %u failed. "
-		    "Trying protocol version 1.", _dm_version);
-	_dm_version = 1;
-	if (_check_version(dmversion, sizeof(dmversion), 0)) {
-		log_verbose("Using device-mapper ioctl protocol version 1");
-		return 1;
-	}
-
-	compat = "(compat)";
-
-      bad:
 	dm_get_library_version(libversion, sizeof(libversion));
 
 	log_error("Incompatible libdevmapper %s%s and kernel driver %s.",
@@ -675,7 +666,7 @@ void *dm_get_next_target(struct dm_task *dmt, void *next,
 	return t->next;
 }
 
-/* Unmarshall the target info returned from a status call */
+/* Unmarshal the target info returned from a status call */
 static int _unmarshal_status(struct dm_task *dmt, struct dm_ioctl *dmi)
 {
 	char *outbuf = (char *) dmi + dmi->data_start;
@@ -765,6 +756,11 @@ uint32_t dm_task_get_read_ahead(const struct dm_task *dmt, uint32_t *read_ahead)
 
 struct dm_deps *dm_task_get_deps(struct dm_task *dmt)
 {
+	if (!dmt) {
+		log_error(INTERNAL_ERROR "Missing dm_task.");
+		return NULL;
+	}
+
 	return (struct dm_deps *) (((char *) dmt->dmi.v4) +
 				   dmt->dmi.v4->data_start);
 }
@@ -1128,7 +1124,7 @@ static int _lookup_dev_name(uint64_t dev, char *buf, size_t len)
 	do {
 		names = (struct dm_names *)((char *) names + next);
 		if (names->dev == dev) {
-			strncpy(buf, names->name, len);
+			memccpy(buf, names->name, 0, len);
 			r = 1;
 			break;
 		}
@@ -1282,12 +1278,10 @@ static struct dm_ioctl *_flatten(struct dm_task *dmt, unsigned repeat_count)
 	     (dmt->minor < 0) || (dmt->major < 0)))
 		/* When RESUME or RELOAD sets maj:min and dev_name, use just maj:min,
 		 * passed dev_name is useful for better error/debug messages */
-		/* coverity[buffer_size_warning] */
-		strncpy(dmi->name, DEV_NAME(dmt), sizeof(dmi->name));
+		memccpy(dmi->name, DEV_NAME(dmt), 0, sizeof(dmi->name));
 
 	if (DEV_UUID(dmt))
-		/* coverity[buffer_size_warning] */
-		strncpy(dmi->uuid, DEV_UUID(dmt), sizeof(dmi->uuid));
+		memccpy(dmi->uuid, DEV_UUID(dmt), 0, sizeof(dmi->uuid));
 
 	if (dmt->type == DM_DEVICE_SUSPEND)
 		dmi->flags |= DM_SUSPEND_FLAG;
@@ -1478,7 +1472,7 @@ static int _create_and_load_v4(struct dm_task *dmt)
 {
 	struct dm_info info;
 	struct dm_task *task;
-	int r;
+	int r, ioctl_errno = 0;
 	uint32_t cookie;
 
 	/* Use new task struct to create the device */
@@ -1504,8 +1498,10 @@ static int _create_and_load_v4(struct dm_task *dmt)
 	task->cookie_set = dmt->cookie_set;
 	task->add_node = dmt->add_node;
 
-	if (!dm_task_run(task))
+	if (!dm_task_run(task)) {
+		ioctl_errno = task->ioctl_errno;
 		goto_bad;
+	}
 
 	if (!dm_task_get_info(task, &info) || !info.exists)
 		goto_bad;
@@ -1536,6 +1532,8 @@ static int _create_and_load_v4(struct dm_task *dmt)
 	task->ima_measurement = dmt->ima_measurement;
 
 	r = dm_task_run(task);
+	if (!r)
+		ioctl_errno = task->ioctl_errno;
 
 	task->head = NULL;
 	task->tail = NULL;
@@ -1553,6 +1551,7 @@ static int _create_and_load_v4(struct dm_task *dmt)
 	dmt->uuid = NULL;
 	dm_free(dmt->mangled_uuid);
 	dmt->mangled_uuid = NULL;
+	/* coverity[double_free] recursive function call */
 	_dm_task_free_targets(dmt);
 
 	if (dm_task_run(dmt))
@@ -1564,6 +1563,7 @@ static int _create_and_load_v4(struct dm_task *dmt)
 	dmt->uuid = NULL;
 	dm_free(dmt->mangled_uuid);
 	dmt->mangled_uuid = NULL;
+	/* coverity[double_free] recursive function call */
 	_dm_task_free_targets(dmt);
 
 	/*
@@ -1582,11 +1582,17 @@ static int _create_and_load_v4(struct dm_task *dmt)
 	if (!dm_task_run(dmt))
 		log_error("Failed to revert device creation.");
 
+	if (ioctl_errno != 0)
+		dmt->ioctl_errno =  ioctl_errno;
+
 	return 0;
 
       bad:
 	dm_task_destroy(task);
 	_udev_complete(dmt);
+
+	if (ioctl_errno != 0)
+		dmt->ioctl_errno =  ioctl_errno;
 
 	return 0;
 }
@@ -2045,7 +2051,21 @@ int dm_task_get_errno(struct dm_task *dmt)
 	return dmt->ioctl_errno;
 }
 
-int dm_task_run(struct dm_task *dmt)
+#if defined(GNU_SYMVER)
+/*
+ * Enforce new version 1_02_197 of dm_task_run() that propagates
+ * ioctl() errno is being linked to app.
+ */
+DM_EXPORT_SYMBOL_BASE(dm_task_run)
+int dm_task_run_base(struct dm_task *dmt);
+int dm_task_run_base(struct dm_task *dmt)
+{
+	return dm_task_run(dmt);
+}
+#endif
+
+DM_EXPORT_NEW_SYMBOL(int, dm_task_run, 1_02_197)
+	(struct dm_task *dmt)
 {
 	struct dm_ioctl *dmi;
 	unsigned command;

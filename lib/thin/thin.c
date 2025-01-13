@@ -22,7 +22,7 @@
 #include "lib/activate/activate.h"
 #include "lib/datastruct/str_list.h"
 
-/* Dm kernel module name for thin provisiong */
+/* Dm kernel module name for thin provisioning */
 static const char _thin_pool_module[] = "thin-pool";
 static const char _thin_module[] = "thin";
 
@@ -53,7 +53,8 @@ static void _thin_pool_display(const struct lv_segment *seg)
 
 static int _thin_pool_add_message(struct lv_segment *seg,
 				  const char *key,
-				  const struct dm_config_node *sn)
+				  const struct dm_config_node *sn,
+				  struct dm_hash_table *lv_hash)
 {
 	const char *lv_name = NULL;
 	struct logical_volume *lv = NULL;
@@ -62,7 +63,7 @@ static int _thin_pool_add_message(struct lv_segment *seg,
 
 	/* Message must have only one from: create, delete */
 	if (dm_config_get_str(sn, "create", &lv_name)) {
-		if (!(lv = find_lv(seg->lv->vg, lv_name)))
+		if (!(lv = dm_hash_lookup(lv_hash, lv_name)))
 			return SEG_LOG_ERROR("Unknown LV %s for create message in",
 					     lv_name);
 		/* FIXME: switch to _SNAP later, if the created LV has an origin */
@@ -80,7 +81,8 @@ static int _thin_pool_add_message(struct lv_segment *seg,
 
 static int _thin_pool_text_import(struct lv_segment *seg,
 				  const struct dm_config_node *sn,
-				  struct dm_hash_table *pv_hash __attribute__((unused)))
+				  struct dm_hash_table *pv_hash __attribute__((unused)),
+				  struct dm_hash_table *lv_hash)
 {
 	const char *lv_name;
 	struct logical_volume *pool_data_lv, *pool_metadata_lv;
@@ -91,13 +93,13 @@ static int _thin_pool_text_import(struct lv_segment *seg,
 	if (!dm_config_get_str(sn, "metadata", &lv_name))
 		return SEG_LOG_ERROR("Metadata must be a string in");
 
-	if (!(pool_metadata_lv = find_lv(seg->lv->vg, lv_name)))
+	if (!(pool_metadata_lv = dm_hash_lookup(lv_hash, lv_name)))
 		return SEG_LOG_ERROR("Unknown metadata %s in", lv_name);
 
 	if (!dm_config_get_str(sn, "pool", &lv_name))
 		return SEG_LOG_ERROR("Pool must be a string in");
 
-	if (!(pool_data_lv = find_lv(seg->lv->vg, lv_name)))
+	if (!(pool_data_lv = dm_hash_lookup(lv_hash, lv_name)))
 		return SEG_LOG_ERROR("Unknown pool %s in", lv_name);
 
 	if (!attach_pool_data_lv(seg, pool_data_lv))
@@ -141,7 +143,7 @@ static int _thin_pool_text_import(struct lv_segment *seg,
 
 	/* Read messages */
 	for (; sn; sn = sn->sib)
-		if (!(sn->v) && !_thin_pool_add_message(seg, sn->key, sn->child))
+		if (!(sn->v) && !_thin_pool_add_message(seg, sn->key, sn->child, lv_hash))
 			return_0;
 
 	return 1;
@@ -350,7 +352,7 @@ static int _thin_pool_add_target_line(struct dev_manager *dm,
 	/*
 	 * Add messages only for activation tree.
 	 * Otherwise avoid checking for existence of suspended origin.
-	 * Also transation_id is checked only when snapshot origin is active.
+	 * Also transaction_id is checked only when snapshot origin is active.
 	 * (This might change later)
 	 */
 	if (!laopts->send_messages)
@@ -410,7 +412,7 @@ static int _thin_pool_target_percent(void **target_state __attribute__((unused))
 
 	if (s->fail || s->error)
 		*percent = DM_PERCENT_INVALID;
-	/* With 'seg' report metadata percent, otherwice data percent */
+	/* With 'seg' report metadata percent, otherwise data percent */
 	else if (seg) {
 		*percent = dm_make_percent(s->used_metadata_blocks,
 					   s->total_metadata_blocks);
@@ -468,7 +470,8 @@ static void _thin_display(const struct lv_segment *seg)
 
 static int _thin_text_import(struct lv_segment *seg,
 			     const struct dm_config_node *sn,
-			     struct dm_hash_table *pv_hash __attribute__((unused)))
+			     struct dm_hash_table *pv_hash __attribute__((unused)),
+			     struct dm_hash_table *lv_hash)
 {
 	const char *lv_name;
 	struct logical_volume *pool_lv, *origin = NULL, *external_lv = NULL, *merge_lv = NULL;
@@ -477,7 +480,7 @@ static int _thin_text_import(struct lv_segment *seg,
 	if (!dm_config_get_str(sn, "thin_pool", &lv_name))
 		return SEG_LOG_ERROR("Thin pool must be a string in");
 
-	if (!(pool_lv = find_lv(seg->lv->vg, lv_name)))
+	if (!(pool_lv = dm_hash_lookup(lv_hash, lv_name)))
 		return SEG_LOG_ERROR("Unknown thin pool %s in", lv_name);
 
 	if (!dm_config_get_uint64(sn, "transaction_id", &seg->transaction_id))
@@ -487,14 +490,14 @@ static int _thin_text_import(struct lv_segment *seg,
 		if (!dm_config_get_str(sn, "origin", &lv_name))
 			return SEG_LOG_ERROR("Origin must be a string in");
 
-		if (!(origin = find_lv(seg->lv->vg, lv_name)))
+		if (!(origin = dm_hash_lookup(lv_hash, lv_name)))
 			return SEG_LOG_ERROR("Unknown origin %s in", lv_name);
 	}
 
 	if (dm_config_has_node(sn, "merge")) {
 		if (!dm_config_get_str(sn, "merge", &lv_name))
 			return SEG_LOG_ERROR("Merge lv must be a string in");
-		if (!(merge_lv = find_lv(seg->lv->vg, lv_name)))
+		if (!(merge_lv = dm_hash_lookup(lv_hash, lv_name)))
 			return SEG_LOG_ERROR("Unknown merge lv %s in", lv_name);
 	}
 
@@ -509,7 +512,7 @@ static int _thin_text_import(struct lv_segment *seg,
 		if (!dm_config_get_str(sn, "external_origin", &lv_name))
 			return SEG_LOG_ERROR("External origin must be a string in");
 
-		if (!(external_lv = find_lv(seg->lv->vg, lv_name)))
+		if (!(external_lv = dm_hash_lookup(lv_hash, lv_name)))
 			return SEG_LOG_ERROR("Unknown external origin %s in", lv_name);
 	}
 
@@ -660,10 +663,10 @@ static int _thin_target_present(struct cmd_context *cmd,
 {
 	/* List of features with their kernel target version */
 	static const struct feature {
-		uint32_t maj;
-		uint32_t min;
-		unsigned thin_feature;
-		const char *feature;
+		uint16_t maj;
+		uint16_t min;
+		uint16_t thin_feature;
+		const char feature[24];
 	} _features[] = {
 		{ 1, 1, THIN_FEATURE_DISCARDS, "discards" },
 		{ 1, 1, THIN_FEATURE_EXTERNAL_ORIGIN, "external_origin" },
@@ -743,7 +746,7 @@ static void _thin_destroy(struct segment_type *segtype)
 	free(segtype);
 }
 
-static struct segtype_handler _thin_pool_ops = {
+static const struct segtype_handler _thin_pool_ops = {
 	.display = _thin_pool_display,
 	.text_import = _thin_pool_text_import,
 	.text_import_area_count = _thin_pool_text_import_area_count,
@@ -762,7 +765,7 @@ static struct segtype_handler _thin_pool_ops = {
 	.destroy = _thin_destroy,
 };
 
-static struct segtype_handler _thin_ops = {
+static const struct segtype_handler _thin_ops = {
 	.display = _thin_display,
 	.text_import = _thin_text_import,
 	.text_export = _thin_text_export,
@@ -783,10 +786,10 @@ int init_multiple_segtypes(struct cmd_context *cmd, struct segtype_library *segl
 #endif
 {
 	static const struct {
-		struct segtype_handler *ops;
-		const char name[16];
+		const struct segtype_handler *ops;
+		const char name[12];
 		uint32_t flags;
-	} reg_segtypes[] = {
+	} _reg_segtypes[] = {
 		{ &_thin_pool_ops, "thin-pool", SEG_THIN_POOL | SEG_CANNOT_BE_ZEROED |
 		SEG_ONLY_EXCLUSIVE | SEG_CAN_ERROR_WHEN_FULL },
 		/* FIXME Maybe use SEG_THIN_VOLUME instead of SEG_VIRTUAL */
@@ -796,24 +799,24 @@ int init_multiple_segtypes(struct cmd_context *cmd, struct segtype_library *segl
 	struct segment_type *segtype;
 	unsigned i;
 
-	for (i = 0; i < DM_ARRAY_SIZE(reg_segtypes); ++i) {
+	for (i = 0; i < DM_ARRAY_SIZE(_reg_segtypes); ++i) {
 		segtype = zalloc(sizeof(*segtype));
 
 		if (!segtype) {
 			log_error("Failed to allocate memory for %s segtype",
-				  reg_segtypes[i].name);
+				  _reg_segtypes[i].name);
 			return 0;
 		}
 
-		segtype->ops = reg_segtypes[i].ops;
-		segtype->name = reg_segtypes[i].name;
-		segtype->flags = reg_segtypes[i].flags;
+		segtype->ops = _reg_segtypes[i].ops;
+		segtype->name = _reg_segtypes[i].name;
+		segtype->flags = _reg_segtypes[i].flags;
 
 #ifdef DEVMAPPER_SUPPORT
 #  ifdef DMEVENTD
 		segtype->dso = get_monitor_dso_path(cmd, dmeventd_thin_library_CFG);
 
-		if ((reg_segtypes[i].flags & SEG_THIN_POOL) &&
+		if ((_reg_segtypes[i].flags & SEG_THIN_POOL) &&
 		    segtype->dso)
 			segtype->flags |= SEG_MONITORED;
 #  endif /* DMEVENTD */

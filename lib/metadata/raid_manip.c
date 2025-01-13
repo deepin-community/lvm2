@@ -81,7 +81,7 @@ static int _rebuild_with_emptymeta_is_supported(struct cmd_context *cmd,
  * Ensure region size exceeds the minimum for @lv because
  * MD's bitmap is limited to tracking 2^21 regions.
  *
- * Pass in @lv_size, because funcion can be called with an empty @lv.
+ * Pass in @lv_size, because function can be called with an empty @lv.
  */
 uint32_t raid_ensure_min_region_size(const struct logical_volume *lv, uint64_t raid_size, uint32_t region_size)
 {
@@ -447,7 +447,7 @@ int lv_raid_in_sync(const struct logical_volume *lv)
  * This function makes no on-disk changes.  The residual LVs
  * returned in 'removal_lvs' must be freed by the caller.
  *
- * Returns: 1 on succes, 0 on failure
+ * Returns: 1 on success, 0 on failure
  */
 static int _raid_remove_top_layer(struct logical_volume *lv,
 				  struct dm_list *removal_lvs)
@@ -550,7 +550,7 @@ static int _reset_flags_passed_to_kernel(struct logical_volume *lv, int *flags_r
  * Run optional variable args function fn_post_on_lv with fn_post_data on @lv before second metadata update
  * Run optional variable args function fn_pre_on_lv with fn_pre_data on @lv before first metadata update
  *
- * This minimaly involves 2 metadata commits or more, depending on
+ * This minimally involves 2 metadata commits or more, depending on
  * pre and post functions carrying out any additional ones or not.
  *
  * WARNING: needs to be called with at least 4 arguments to suit va_list processing!
@@ -586,7 +586,7 @@ static int _lv_update_reload_fns_reset_eliminate_lvs(struct logical_volume *lv, 
 	va_end(ap);
 
 	/* Call any fn_pre_on_lv before the first update and reload call (e.g. to rename LVs) */
-	/* returns 1: ok+ask caller to update, 2: metadata commited+ask caller to resume */
+	/* returns 1: ok+ask caller to update, 2: metadata committed+ask caller to resume */
 	if (fn_pre_on_lv && !(r = fn_pre_on_lv(lv, fn_pre_data))) {
 		log_error(INTERNAL_ERROR "Pre callout function failed.");
 		return 0;
@@ -643,7 +643,7 @@ static int _lv_update_reload_fns_reset_eliminate_lvs(struct logical_volume *lv, 
  * Assisted excl_local activation of lvl listed LVs before resume
  *
  * FIXME: code which needs to use this function is usually unsafe
- *	  againt crashes as it's doing more then 1 operation per commit
+ *	  against crashes as it's doing more then 1 operation per commit
  *	  and as such is currently irreversible on error path.
  *
  * Function is not making backup as this is usually not the last
@@ -701,7 +701,7 @@ static int _lv_update_and_reload_list(struct logical_volume *lv, int origin_only
 	return r;
 }
 
-/* Wipe all LVs listsed on @lv_list committing lvm metadata */
+/* Wipe all LVs listed on @lv_list committing lvm metadata */
 static int _clear_lvs(struct dm_list *lv_list)
 {
 	return activate_and_wipe_lvlist(lv_list, 1);
@@ -782,7 +782,7 @@ static int _reorder_raid10_near_seg_areas(struct lv_segment *seg, enum raid0_rai
 
 	/* FIXME: once more data copies supported with raid10 */
 	if (seg_is_raid10_near(seg) && (stripes % data_copies)) {
-		log_error("Can't convert %s LV %s with number of stripes not divisable by number of data copies.",
+		log_error("Can't convert %s LV %s with number of stripes not divisible by number of data copies.",
 			  lvseg_name(seg), display_lvname(seg->lv));
 		return 0;
 	}
@@ -968,10 +968,13 @@ static char *_generate_raid_name(struct logical_volume *lv,
 {
 	char name[NAME_LEN], *lvname;
 	int historical;
+	char count_suffix[16] = { 0 };
 
-	if (dm_snprintf(name, sizeof(name), 
-			(count >= 0) ? "%s_%s_%u" : "%s_%s",
-			lv->name, suffix, count) < 0) {
+	if (count >= 0)
+		snprintf(count_suffix, sizeof(count_suffix), "_%u", (unsigned)count);
+
+	if (dm_snprintf(name, sizeof(name), "%s_%s%s",
+			lv->name, suffix, count_suffix) < 0) {
 		log_error("Failed to new raid name for %s.",
 			  display_lvname(lv));
 		return NULL;
@@ -1089,7 +1092,7 @@ static int _alloc_image_components(struct logical_volume *lv,
 	 * each of the rimages is the same size - 'le_count'.  However
 	 * for RAID 4/5/6, the stripes add together (NOT including the parity
 	 * devices) to equal 'le_count'.  Thus, when we are allocating
-	 * individual devies, we must specify how large the individual device
+	 * individual devices, we must specify how large the individual device
 	 * is along with the number we want ('count').
 	 */
 	if (use_existing_area_len)
@@ -1821,7 +1824,7 @@ static int _reshape_adjust_to_size(struct logical_volume *lv,
 /*
  * HM Helper:
  *
- * Reshape: add immages to existing raid lv
+ * Reshape: add images to existing raid lv
  *
  */
 static int _lv_raid_change_image_count(struct logical_volume *lv, int yes, uint32_t new_count,
@@ -2125,16 +2128,16 @@ static int _raid_reshape_keep_images(struct logical_volume *lv,
 	}
 
 	/*
-	 * Reshape layout alogorithm or chunksize:
+	 * Reshape layout algorithm or chunksize:
 	 *
 	 * Allocate free out-of-place reshape space unless raid10_far.
 	 *
-	 * If other raid10, allocate it appropriatly.
+	 * If other raid10, allocate it appropriately.
 	 *
 	 * Allocate it anywhere for raid4/5 to avoid remapping
 	 * it in case it is already allocated.
 	 *
-	 * The dm-raid target is able to use the space whereever it
+	 * The dm-raid target is able to use the space wherever it
 	 * is found by appropriately selecting forward or backward reshape.
 	 */
 	if (seg->segtype != new_segtype &&
@@ -2265,8 +2268,23 @@ static int _pre_raid0_remove_rmeta(struct logical_volume *lv, void *data)
 	if (!_vg_write_lv_suspend_vg_commit(lv, 1))
 		return_0;
 
-	/* 1: ok+ask caller to update, 2: metadata commited+ask caller to resume */
+	/* 1: ok+ask caller to update, 2: metadata committed+ask caller to resume */
 	return _activate_sub_lvs_excl_local_list(lv, lv_list) ? 2 : 0;
+}
+
+static int _same_layout(struct lv_segment *seg,
+			const struct segment_type *new_segtype,
+			const unsigned new_data_copies,
+			const unsigned new_region_size,
+			const unsigned old_image_count,
+			const unsigned new_image_count,
+			const unsigned new_stripe_size)
+{
+	return (seg->segtype == new_segtype &&
+		seg->data_copies == new_data_copies &&
+		seg->region_size == new_region_size &&
+		old_image_count == new_image_count &&
+		seg->stripe_size == new_stripe_size) ? 1 : 0;
 }
 
 /*
@@ -2289,7 +2307,7 @@ static int _raid_reshape(struct logical_volume *lv,
 {
 	int force_repair = 0, r, too_few = 0;
 	unsigned devs_health, devs_in_sync;
-	uint32_t new_image_count, old_image_count;
+	uint32_t available_slvs, removed_slvs, new_image_count, old_image_count;
 	enum alloc_where where_it_was = alloc_none;
 	struct lv_segment *seg = first_seg(lv);
 	struct dm_list removal_lvs;
@@ -2307,7 +2325,7 @@ static int _raid_reshape(struct logical_volume *lv,
 		return_0;
 
 	/* FIXME Can't reshape volume in use - aka not toplevel devices */
-	if (old_image_count < new_image_count &&
+	if (old_image_count != new_image_count &&
 	    !dm_list_empty(&seg->lv->segs_using_this_lv)) {
 		log_error("Unable to convert stacked volume %s.", display_lvname(seg->lv));
 		return 0;
@@ -2325,16 +2343,26 @@ static int _raid_reshape(struct logical_volume *lv,
 		return 0;
 	}
 
+	/* Prevent any new reshape request on RaidLV with existing freed stripes resulting from a previous one. */
+	if (!_get_available_removed_sublvs(lv, &available_slvs, &removed_slvs))
+		return_0;
+
+	if (removed_slvs &&
+	    !_same_layout(seg, new_segtype, new_data_copies, new_region_size,
+			  old_image_count, new_image_count + removed_slvs, new_stripe_size)) {
+		log_error("Unable to convert %s containing sub LVs to remove after a reshape.",
+			  display_lvname(lv));
+		log_error("Run \"lvconvert --stripes %" PRIu32 " %s\" first.",
+			  seg->area_count - removed_slvs - 1, display_lvname(lv));
+		return 0;
+	}
+
 	lv->status &= ~LV_RESHAPE; /* Reset any reshaping segtype flag */
 
 	dm_list_init(&removal_lvs);
 
 	/* No change in layout requested ? */
-	if (seg->segtype == new_segtype &&
-	    seg->data_copies == new_data_copies &&
-	    seg->region_size == new_region_size &&
-	    old_image_count == new_image_count &&
-	    seg->stripe_size == new_stripe_size) {
+	if (_same_layout(seg, new_segtype, new_data_copies, new_region_size, old_image_count, new_image_count, new_stripe_size)) {
 		/*
 		 * No change in segment type, image count, region or stripe size has been requested ->
 		 * user requests this to remove any reshape space from the @lv
@@ -2457,7 +2485,7 @@ static int _raid_reshape(struct logical_volume *lv,
  * - # of stripes requested to change
  *   (i.e. add/remove disks from a striped raid set)
  *   -or-
- * - stripe size change requestd
+ * - stripe size change requested
  *   (e.g. 32K -> 128K)
  *
  * Returns:
@@ -2470,7 +2498,7 @@ static int _raid_reshape(struct logical_volume *lv,
  * FIXME Use alternative mechanism - separate parameter or enum.
  */
 static int _reshape_requested(const struct logical_volume *lv, const struct segment_type *segtype,
-			      const int data_copies, const uint32_t region_size,
+			      const uint32_t data_copies, const uint32_t region_size,
 			      const uint32_t stripes, const uint32_t stripe_size)
 {
 	struct lv_segment *seg = first_seg(lv);
@@ -2917,12 +2945,13 @@ static int _raid_allow_extraction(struct logical_volume *lv,
 				  int extract_count,
 				  struct dm_list *target_pvs)
 {
-	int s, redundancy = 0;
+	int redundancy = 0;
+	unsigned s;
 	char *dev_health;
 	char *sync_action;
 	struct lv_segment *seg = first_seg(lv);
 
-	/* If in-sync or hanlding repairs, allow to proceed. */
+	/* If in-sync or handling repairs, allow to proceed. */
 	if (_raid_in_sync(lv) || lv->vg->cmd->handles_missing_pvs)
 		return 1;
 
@@ -3113,9 +3142,26 @@ static int _raid_remove_images(struct logical_volume *lv, int yes,
 	struct dm_list removed_lvs;
 
 	if (new_count == 1) {
+		uint32_t s;
 		struct lv_segment *seg = first_seg(lv);
 
-		if (seg_is_raid1(seg) && !lv_raid_image_in_sync(seg_lv(seg, 0))) {
+		if (!seg_is_raid1(seg)) {
+			log_error("%s called on non-raid1 LV.", display_lvname(lv));
+			return 0;
+		}
+
+		for (s = 0; s < seg->area_count; s++) {
+			if (seg_type(seg, s) == AREA_UNASSIGNED)
+				continue;
+
+			if (lv_raid_image_in_sync(seg_lv(seg, s))) {
+				_swap_areas(seg->areas + 0, seg->areas + s);
+				break;
+			}
+
+		}
+
+		if (s >= seg->area_count) {
 			log_error("%s is out-of-sync!  Please try refreshing first.", display_lvname(lv));
 			return 0;
 		}
@@ -4391,6 +4437,7 @@ static struct lv_segment *_convert_striped_to_raid0(struct logical_volume *lv,
 	struct lv_segment *seg, *raid0_seg;
 	struct segment_type *segtype;
 	struct dm_list data_lvs;
+	struct lv_list *l;
 
 	dm_list_iterate_items(seg, &lv->segments)
 		area_len += seg->area_len;
@@ -4434,7 +4481,12 @@ static struct lv_segment *_convert_striped_to_raid0(struct logical_volume *lv,
 	 * areas based on the first data LVs properties derived
 	 * from the first new raid0 LVs first segment
 	 */
-	seg = first_seg(dm_list_item(dm_list_first(&data_lvs), struct lv_list)->lv);
+	if (!(l = dm_list_item(dm_list_first(&data_lvs), struct lv_list))) {
+		log_error(INTERNAL_ERROR "Invalid data lvs for raid0 LV %s.",
+			  display_lvname(lv));
+		return NULL;
+	}
+	seg = first_seg(l->lv);
 	if (!(raid0_seg = alloc_lv_segment(segtype, lv,
 					   0 /* le */, lv->le_count /* len */,
 					   0, 0,
@@ -4499,7 +4551,7 @@ struct possible_type {
 	const uint32_t options;
 };
 
-static struct possible_takeover_reshape_type _possible_takeover_reshape_types[] = {
+static const struct possible_takeover_reshape_type _possible_takeover_reshape_types[] = {
 	/* striped -> raid1 */
 	{ .current_types  = SEG_STRIPED_TARGET, /* linear, i.e. seg->area_count = 1 */
 	  .possible_types = SEG_RAID1,
@@ -4611,12 +4663,12 @@ static struct possible_takeover_reshape_type _possible_takeover_reshape_types[] 
 /*
  * Return possible_type struct for current segment type.
  */
-static struct possible_takeover_reshape_type *_get_possible_takeover_reshape_type(const struct lv_segment *seg_from,
-										   const struct segment_type *segtype_to,
-										   struct possible_type *last_pt)
+static const struct possible_takeover_reshape_type *_get_possible_takeover_reshape_type(const struct lv_segment *seg_from,
+											const struct segment_type *segtype_to,
+											const struct possible_type *last_pt)
 {
-	struct possible_takeover_reshape_type *lpt = (struct possible_takeover_reshape_type *) last_pt;
-	struct possible_takeover_reshape_type *pt = lpt ? lpt + 1 : _possible_takeover_reshape_types;
+	const struct possible_takeover_reshape_type *lpt = (const struct possible_takeover_reshape_type *) last_pt;
+	const struct possible_takeover_reshape_type *pt = lpt ? lpt + 1 : _possible_takeover_reshape_types;
 
 	for ( ; pt->current_types; pt++)
 		if ((seg_from->segtype->flags & pt->current_types) &&
@@ -5023,14 +5075,14 @@ static int _clear_meta_lvs(struct logical_volume *lv)
 static int _rename_area_lvs(struct logical_volume *lv, const char *suffix)
 {
 	uint32_t s;
-	size_t sz = strlen("rimage") + (suffix ? strlen(suffix) : 0) + 1;
+	size_t sz = sizeof("rimage") - 1 + (suffix ? strlen(suffix) : 0) + 1;
 	char *sfx[SLV_COUNT] = { NULL, NULL };
 	struct lv_segment *seg = first_seg(lv);
 
 	/* Create _generate_raid_name() suffixes w/ or w/o passed in @suffix */
 	for (s = 0; s < SLV_COUNT; s++)
 		if (!(sfx[s] = dm_pool_alloc(lv->vg->cmd->mem, sz)) ||
-		    dm_snprintf(sfx[s], sz, suffix ? "%s%s" : "%s", s ? "rmeta" : "rimage", suffix) < 0)
+		    dm_snprintf(sfx[s], sz, "%s%s", (s) ? "rmeta" : "rimage", (suffix) ? : "") < 0)
 			return_0;
 
 	/* Change names (temporarily) to be able to shift numerical name suffixes */
@@ -5127,7 +5179,7 @@ static int _raid45_to_raid54_wrapper(TAKEOVER_FN_ARGS)
 	}
 
 
-	/* Necessary when convering to raid0/striped w/o redundancy. */
+	/* Necessary when converting to raid0/striped w/o redundancy. */
 	if (!_raid_in_sync(lv)) {
 		log_error("Unable to convert %s while it is not in-sync.",
 			  display_lvname(lv));
@@ -5478,7 +5530,7 @@ static int _takeover_upconvert_wrapper(TAKEOVER_FN_ARGS)
 		if (!_lv_raid_change_image_count(lv, 1, new_image_count, allocate_pvs, NULL, 0, 1)) {
 			/*
 			 * Rollback to initial type raid0/striped after failure to upconvert
-			 * to raid4/5/6/10 elminating any newly allocated metadata devices
+			 * to raid4/5/6/10 eliminating any newly allocated metadata devices
 			 * (raid4/5 -> raid6 doesn't need any explicit changes after
 			 *  the allocation of the additional sub LV pair failed)
 			 *
@@ -5596,7 +5648,7 @@ static int _takeover_upconvert_wrapper(TAKEOVER_FN_ARGS)
 /************************************************/
 
 /*
- * Customised takeover functions
+ * Customized takeover functions
  */
 static int _takeover_from_linear_to_raid0(TAKEOVER_FN_ARGS)
 {
@@ -5982,7 +6034,7 @@ static int _takeover_from_raid10_to_raid1(TAKEOVER_FN_ARGS)
 }
 
 /*
- * This'd be a reshape, not a takeover.
+ * This would be a reshape, not a takeover.
  *
 static int _takeover_from_raid10_to_raid10(TAKEOVER_FN_ARGS)
 {
@@ -6048,7 +6100,7 @@ static int _log_prohibited_option(const struct lv_segment *seg_from,
  * Find takeover raid flag for segment type flag of @seg
  */
 /* Segment type flag correspondence for raid5 <-> raid6 conversions */
-static uint64_t _r5_to_r6[][2] = {
+static const uint64_t _r5_to_r6[][2] = {
 	{ SEG_RAID5_LS, SEG_RAID6_LS_6 },
 	{ SEG_RAID5_LA, SEG_RAID6_LA_6 },
 	{ SEG_RAID5_RS, SEG_RAID6_RS_6 },
@@ -6282,7 +6334,7 @@ static int _region_size_change_requested(struct logical_volume *lv, int yes, con
 	if (!region_size)
 		return_0;
 
-	/* CLI validation provides the check but be caucious... */
+	/* CLI validation provides the check but be cautious... */
 	if (!lv_is_raid(lv) || !seg || seg_is_any_raid0(seg)) {
 		log_error(INTERNAL_ERROR "Cannot change region size of %s.",
 			  display_lvname(lv));
@@ -6353,7 +6405,7 @@ static int _conversion_options_allowed(const struct lv_segment *seg_from,
 				       const struct segment_type **segtype_to,
 				       int yes,
 				       uint32_t new_image_count,
-				       int new_data_copies, int new_region_size,
+				       int new_data_copies, uint32_t new_region_size,
 				       uint32_t *stripes, unsigned new_stripe_size_supplied)
 {
 	int r = 1;
@@ -6408,22 +6460,13 @@ static int _conversion_options_allowed(const struct lv_segment *seg_from,
 	    !yes &&
 	    strcmp((*segtype_to)->name, SEG_TYPE_NAME_MIRROR) && /* "mirror" is prompted for later */
 	    !_is_same_level(seg_from->segtype, *segtype_to)) { /* Prompt here for takeover */
-		const char *basic_fmt = "Are you sure you want to convert %s LV %s";
-		const char *type_fmt = " to %s type";
-		const char *question_fmt = "? [y/n]: ";
-		char *fmt;
-		size_t sz = strlen(basic_fmt) + ((seg_from->segtype == *segtype_to) ? 0 : strlen(type_fmt)) + strlen(question_fmt) + 1;
+		unsigned diff_seg = (seg_from->segtype != *segtype_to);
 
-		if (!(fmt = dm_pool_alloc(seg_from->lv->vg->cmd->mem, sz)))
-			return_0;
-
-		if (dm_snprintf(fmt, sz, "%s%s%s", basic_fmt, (seg_from->segtype == *segtype_to) ? "" : type_fmt, question_fmt) < 0) {
-			log_error("dm_snprintf failed.");
-			return 0;
-		}
-
-		if (yes_no_prompt(fmt, lvseg_name(seg_from), display_lvname(seg_from->lv),
-				  (*segtype_to)->name) == 'n') {
+		if (yes_no_prompt("Are you sure you want to convert %s LV %s%s%s%s? [y/n]: ",
+				  lvseg_name(seg_from), display_lvname(seg_from->lv),
+				  (diff_seg) ? " to "  : "",
+				  (diff_seg) ? (*segtype_to)->name : "",
+				  (diff_seg) ? " type" : "") == 'n') {
 			log_error("Logical volume %s NOT converted.", display_lvname(seg_from->lv));
 			r = 0;
 		}
@@ -6518,7 +6561,7 @@ int lv_raid_convert(struct logical_volume *lv,
 	region_size = region_size ? : (uint32_t)get_default_region_size(lv->vg->cmd);
 
 	/*
-	 * Check acceptible options mirrors, region_size,
+	 * Check acceptable options mirrors, region_size,
 	 * stripes and/or stripe_size have been provided.
 	 */
 	if (!_conversion_options_allowed(seg, &new_segtype, yes,
@@ -6702,7 +6745,7 @@ has_enough_space:
  * _lv_raid_has_primary_failure_on_recover
  * @lv
  *
- * The kernel behaves strangely in the presense of a primary failure
+ * The kernel behaves strangely in the presence of a primary failure
  * during a "recover" sync operation.  It's not technically a bug, I
  * suppose, but the output of the status line can make it difficult
  * to determine that we are in this state.  The sync ratio will be

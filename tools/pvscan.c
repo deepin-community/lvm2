@@ -88,7 +88,46 @@ static int _pvscan_display_pv(struct cmd_context *cmd,
 		pv_len += suffix_len;
 	}
 
-	if (is_orphan(pv))
+	if (arg_is_set(cmd, allpvs_ARG)) {
+		struct device *dev = pv->dev;
+		if (!cmd->enable_devices_file) {
+			if (is_orphan(pv)) {
+				log_print_unless_silent("PV %-*s    %-*s",
+						pv_len, pvdevname,
+						params->vg_max_name_len, " ");
+			} else {
+				log_print_unless_silent("PV %-*s VG %-*s",
+						pv_len, pvdevname,
+						params->vg_max_name_len, pv_vg_name(pv));
+			}
+		} else if (!(dev->flags & DEV_MATCHED_USE_ID)) {
+			if (is_orphan(pv)) {
+				log_print_unless_silent("PV %-*s    %-*s %-10s %s",
+						pv_len, pvdevname,
+						params->vg_max_name_len, " ",
+						"-", "-");
+			} else {
+				log_print_unless_silent("PV %-*s VG %-*s %-10s %s",
+						pv_len, pvdevname,
+						params->vg_max_name_len, pv_vg_name(pv),
+						"-", "-");
+			}
+		} else {
+			if (is_orphan(pv)) {
+				log_print_unless_silent("PV %-*s    %-*s %-10s %s",
+						pv_len, pvdevname,
+						params->vg_max_name_len, " ",
+						idtype_to_str(dev->id->idtype),
+						dev->id->idname ?: "none");
+			} else {
+				log_print_unless_silent("PV %-*s VG %-*s %-10s %s",
+						pv_len, pvdevname,
+						params->vg_max_name_len, pv_vg_name(pv),
+						idtype_to_str(dev->id->idtype),
+						dev->id->idname ?: "none");
+			}
+		}
+	} else if (is_orphan(pv))
 		log_print_unless_silent("PV %-*s    %-*s %s [%s]",
 					pv_len, pvdevname,
 					params->vg_max_name_len, " ",
@@ -150,6 +189,11 @@ int pvscan_display_cmd(struct cmd_context *cmd, int argc, char **argv)
 			  arg_is_set(cmd, exported_ARG) ?
 			  "of exported volume group(s)" : "in no volume group");
 
+	if (arg_is_set(cmd, allpvs_ARG)) {
+		cmd->filter_deviceid_skip = 1;
+		cmd->use_hints = 0;
+	}
+
 	if (!(handle = init_processing_handle(cmd, NULL))) {
 		log_error("Failed to initialize processing handle.");
 		ret = ECMD_FAILED;
@@ -184,15 +228,15 @@ out:
  * were created from.
  */
 
-static void _online_pvid_file_remove_devno(int major, int minor)
+static void _online_pvid_file_remove_devno(unsigned major, unsigned minor)
 {
 	char path[PATH_MAX];
 	char file_vgname[NAME_LEN];
 	DIR *dir;
 	struct dirent *de;
-	int file_major = 0, file_minor = 0;
+	unsigned file_major, file_minor;
 
-	log_debug("Remove pv online devno %d:%d", major, minor);
+	log_debug("Remove pv online devno %u:%u", major, minor);
 
 	if (!(dir = opendir(PVS_ONLINE_DIR)))
 		return;
@@ -451,7 +495,7 @@ static int _pvscan_aa_single(struct cmd_context *cmd, const char *vg_name,
 
 	log_debug("pvscan autoactivating VG %s.", vg_name);
 
-	if (!vgchange_activate(cmd, vg, CHANGE_AAY, 1)) {
+	if (!vgchange_activate(cmd, vg, CHANGE_AAY, 1, NULL)) {
 		log_error_pvscan(cmd, "%s: autoactivation failed.", vg->name);
 		pp->activate_errors++;
 	}
@@ -503,7 +547,7 @@ static int _get_devs_from_saved_vg(struct cmd_context *cmd, const char *vgname,
 	struct volume_group *vg;
 	const char *name1, *name2;
 	dev_t devno;
-	int file_major = 0, file_minor = 0;
+	unsigned file_major = 0, file_minor = 0;
 
 	/*
 	 * We previously saved the metadata (as a struct vg) from the device
@@ -711,7 +755,7 @@ static int _pvscan_aa_quick(struct cmd_context *cmd, struct pvscan_aa_params *pp
 
 	log_debug("pvscan autoactivating VG %s.", vgname);
 
-	if (!vgchange_activate(cmd, vg, CHANGE_AAY, 1)) {
+	if (!vgchange_activate(cmd, vg, CHANGE_AAY, 1, NULL)) {
 		log_error_pvscan(cmd, "%s: autoactivation failed.", vg->name);
 		pp->activate_errors++;
 	}
@@ -836,6 +880,11 @@ static int _get_args(struct cmd_context *cmd, int argc, char **argv,
 			continue;
 		}
 
+		if ((major < 0) || (minor < 0)) {
+			log_warn("WARNING: Invalid major:minor %d:%d, skipping.", major, minor);
+			continue;
+		}
+
 		if (!(arg = dm_pool_zalloc(cmd->mem, sizeof(*arg))))
 			return_0;
 		arg->devno = MKDEV(major, minor);
@@ -874,8 +923,8 @@ static int _get_args_devs(struct cmd_context *cmd, struct dm_list *pvscan_args,
 		if (!arg->devname && !arg->devno)
 			return_0;
 		if (!(arg->dev = setup_dev_in_dev_cache(cmd, arg->devno, arg->devname))) {
-			log_error_pvscan(cmd, "No device set up for arg %s %d:%d",
-					 arg->devname ?: "", (int)MAJOR(arg->devno), (int)MINOR(arg->devno));
+			log_error_pvscan(cmd, "No device set up for arg %s %u:%u.",
+					 arg->devname ?: "", MAJOR(arg->devno), MINOR(arg->devno));
 		}
 	}
 
@@ -900,7 +949,7 @@ static void _set_pv_devices_online(struct cmd_context *cmd, struct volume_group 
 	char pvid[ID_LEN+1] = { 0 };
 	struct pv_list *pvl;
 	struct device *dev;
-	int major, minor;
+	unsigned major, minor;
 	dev_t devno;
 
 	dm_list_iterate_items(pvl, &vg->pvs) {
@@ -1223,7 +1272,7 @@ static int _online_devs(struct cmd_context *cmd, int do_all, struct dm_list *pvs
 			 * device and using that to get the struct dev and dev_name.
 			 * The user could pass this list of devices to --devices
 			 * to optimize a subsequent command (activation) on the VG.
-			 * Just call set_pv_devices_online (if not done othewise)
+			 * Just call set_pv_devices_online (if not done otherwise)
 			 * since that finds the devs.
 			 */
 		}
@@ -1401,7 +1450,7 @@ static int _pvscan_cache_args(struct cmd_context *cmd, int argc, char **argv,
 	dm_list_iterate_items(arg, &pvscan_args) {
 		if (arg->dev || !arg->devno)
 			continue;
-		_online_pvid_file_remove_devno((int)MAJOR(arg->devno), (int)MINOR(arg->devno));
+		_online_pvid_file_remove_devno(MAJOR(arg->devno), MINOR(arg->devno));
 	}
 
 	/*
@@ -1441,18 +1490,20 @@ static int _pvscan_cache_args(struct cmd_context *cmd, int argc, char **argv,
 	 * If a match fails here do not exclude it, that will be done below by
 	 * passes_filter() which runs filter-deviceid. The
 	 * relax_deviceid_filter case needs to be able to work around
-	 * unmatching devs.
+	 * unmatching devs, or unmatching product_uuid/hostname which means
+	 * we can ignore the device ID and use any device with a PVID listed
+	 * in system.devices.
 	 */
 
 	if (cmd->enable_devices_file) {
 		dm_list_iterate_items(devl, &pvscan_devs)
 			device_ids_match_dev(cmd, devl->dev);
-
 	}
 	if (cmd->enable_devices_list)
 		device_ids_match_device_list(cmd);
 
-	if (cmd->enable_devices_file && device_ids_use_devname(cmd)) {
+	if (cmd->enable_devices_file &&
+	    (device_ids_use_devname(cmd) || cmd->device_ids_refresh_trigger)) {
 		relax_deviceid_filter = 1;
 		cmd->filter_deviceid_skip = 1;
 	}
@@ -1570,7 +1621,7 @@ static int _pvscan_cache_args(struct cmd_context *cmd, int argc, char **argv,
 	/*
 	 * Scan devs to populate lvmcache info, which includes the mda info that's
 	 * needed to read vg metadata in the next step.  The _cached variant of
-	 * label_scan is used so the exsting bcache data from label_read_pvid above
+	 * label_scan is used so the existing bcache data from label_read_pvid above
 	 * can be reused (although more data may need to be read depending on how
 	 * much of the metadata was covered by reading the pvid.)
 	 */
@@ -1728,7 +1779,7 @@ int pvscan_cache_cmd(struct cmd_context *cmd, int argc, char **argv)
 int pvscan(struct cmd_context *cmd, int argc, char **argv)
 {
 	log_error(INTERNAL_ERROR "Missing function for command definition %d:%s.",
-		  cmd->command->command_index, cmd->command->command_id);
+		  cmd->command->command_index, command_enum(cmd->command->command_enum));
 	return ECMD_FAILED;
 }
 

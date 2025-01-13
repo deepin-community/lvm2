@@ -74,8 +74,6 @@ static struct dm_config_node *_create_node(struct dm_pool *mem);
 static char *_dup_tok(struct parser *p);
 static char *_dup_token(struct dm_pool *mem, const char *b, const char *e);
 
-static const int _sep = '/';
-
 #define MAX_INDENT 32
 
 #define match(t) do {\
@@ -177,19 +175,18 @@ static int _do_dm_config_parse(struct dm_config_tree *cft, const char *start, co
 {
 	/* TODO? if (start == end) return 1; */
 
-	struct parser *p;
-	if (!(p = dm_pool_zalloc(cft->mem, sizeof(*p))))
-		return_0;
+	struct parser p = {
+		.mem = cft->mem,
+		.tb = start,
+		.te = start,
+		.fb = start,
+		.fe = end,
+		.line = 1,
+		.no_dup_node_check = no_dup_node_check
+	};
 
-	p->mem = cft->mem;
-	p->fb = start;
-	p->fe = end;
-	p->tb = p->te = p->fb;
-	p->line = 1;
-	p->no_dup_node_check = no_dup_node_check;
-
-	_get_token(p, TOK_SECTION_E);
-	if (!(cft->root = _file(p)))
+	_get_token(&p, TOK_SECTION_E);
+	if (!(cft->root = _file(&p)))
 		return_0;
 
 	cft->root = _config_reverse(cft->root);
@@ -526,17 +523,18 @@ static struct dm_config_node *_find_or_make_node(struct dm_pool *mem,
 						 const char *path,
 						 int no_dup_node_check)
 {
+	const int sep = '/';
 	const char *e;
 	struct dm_config_node *cn = parent ? parent->child : NULL;
 	struct dm_config_node *cn_found = NULL;
 
 	while (cn || mem) {
 		/* trim any leading slashes */
-		while (*path && (*path == _sep))
+		while (*path && (*path == sep))
 			path++;
 
 		/* find the end of this segment */
-		for (e = path; *e && (*e != _sep); e++) ;
+		for (e = path; *e && (*e != sep); e++) ;
 
 		/* hunt for the node */
 		cn_found = NULL;
@@ -757,7 +755,7 @@ static int _match_aux(struct parser *p, int t)
 }
 
 /*
- * tokeniser
+ * tokenizer
  */
 static void _get_token(struct parser *p, int tok_prev)
 {

@@ -46,12 +46,12 @@ struct lvmpolld_lv {
 	 * require struct lvmpolld_lv lock
 	 */
 	struct lvmpolld_state *ls;
-	const enum poll_type type;
+	enum poll_type type;
 	const char *lvid;
 	const char *lvmpolld_id;
 	const char *devicesfile;
 	const char *lvname; /* full vg/lv name */
-	const unsigned pdtimeout; /* in seconds */
+	unsigned pdtimeout; /* in seconds */
 	const char *sinterval;
 	const char *lvm_system_dir_env;
 	struct lvmpolld_store *pdst;
@@ -66,9 +66,9 @@ struct lvmpolld_lv {
 
 	/* block of shared variables protected by lock */
 	struct lvmpolld_cmd_stat cmd_state;
-	unsigned init_rq_count; /* for debuging purposes only */
+	unsigned init_rq_count; /* for debugging purposes only */
 	unsigned polling_finished:1; /* no more updates */
-	unsigned error:1; /* unrecoverable error occured in lvmpolld */
+	unsigned error:1; /* unrecoverable error occurred in lvmpolld */
 };
 
 typedef void (*lvmpolld_parse_output_fn_t) (struct lvmpolld_lv *pdlv, const char *line);

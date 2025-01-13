@@ -44,10 +44,10 @@ CLEAN_TARGETS += $(DEVICE_MAPPER_DEPENDS) $(DEVICE_MAPPER_OBJECTS) \
 #$(DEVICE_MAPPER_OBJECTS): INCLUDES+=$(VDO_INCLUDES)
 
 $(DEVICE_MAPPER_TARGET): $(DEVICE_MAPPER_OBJECTS)
-	@echo "    [AR] $@"
+	$(SHOW) "    [AR] $@"
 	$(Q) $(RM) $@
 	$(Q) $(AR) rsv $@ $(DEVICE_MAPPER_OBJECTS) > /dev/null
 
-ifeq ("$(DEPENDS)","yes")
+ifeq ("$(USE_TRACKING)","yes")
 -include $(DEVICE_MAPPER_DEPENDS)
 endif

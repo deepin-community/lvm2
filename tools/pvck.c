@@ -284,7 +284,7 @@ static int _text_buf_parsable(char *text_buf, uint64_t text_size)
 #define MAX_LINE_CHECK 128
 
 #define MAX_DESC 1024
-char desc_line[MAX_DESC];
+static char _desc_line[MAX_DESC];
 
 static void _copy_line(char *in, char *out, int *len, int linesize)
 {
@@ -603,18 +603,18 @@ static int _dump_all_text(struct cmd_context *cmd, struct settings *set, const c
 		if (arg_is_set(cmd, verbose_ARG)) {
 			char *str1, *str2;
 			if ((str1 = strstr(text_buf, "description = "))) {
-				memset(desc_line, 0, sizeof(desc_line));
-				_copy_line(str1, desc_line, &len, sizeof(desc_line)-1);
-				if ((p = strchr(desc_line, '\n')))
+				memset(_desc_line, 0, sizeof(_desc_line));
+				_copy_line(str1, _desc_line, &len, sizeof(_desc_line)-1);
+				if ((p = strchr(_desc_line, '\n')))
 					*p = '\0';
-				log_print("%s", desc_line);
+				log_print("%s", _desc_line);
 			}
 			if (str1 && (str2 = strstr(str1, "creation_time = "))) {
-				memset(desc_line, 0, sizeof(desc_line));
-				_copy_line(str2, desc_line, &len, sizeof(desc_line)-1);
-				if ((p = strchr(desc_line, '\n')))
+				memset(_desc_line, 0, sizeof(_desc_line));
+				_copy_line(str2, _desc_line, &len, sizeof(_desc_line)-1);
+				if ((p = strchr(_desc_line, '\n')))
 					*p = '\0';
-				log_print("%s\n", desc_line);
+				log_print("%s\n", _desc_line);
 			}
 		}
 
@@ -782,7 +782,6 @@ static int _dump_raw_locn(struct device *dev, struct devicefile *def, int print_
 	uint64_t meta_offset, meta_size;
 	uint32_t meta_checksum;
 	uint32_t meta_flags;
-	int bad = 0;
 	int mn = mda_num; /* 1 or 2 */
 	int ri = rlocn_index; /* 0 or 1 */
 	int wrapped = 0;
@@ -837,8 +836,6 @@ static int _dump_raw_locn(struct device *dev, struct devicefile *def, int print_
 	if (!meta_offset)
 		return 1;
 
-	if (bad)
-		return 0;
 	return 1;
 }
 
@@ -852,7 +849,7 @@ static int _dump_meta_area(struct device *dev, struct devicefile *def, const cha
 	if (!tofile)
 		return_0;
 
-	if (!(meta_buf = zalloc(mda_size)))
+	if (!(meta_buf = zalloc(mda_size + 1)))
 		return_0;
 
 	if (!_read_bytes(dev, def, mda_offset, mda_size, meta_buf)) {
@@ -901,7 +898,7 @@ static int _dump_current_text(struct device *dev, struct devicefile *def,
 	int ri = rlocn_index; /* 0 or 1 */
 	int bad = 0;
 
-	if (!(meta_buf = malloc(meta_size + 1))) {
+	if (!(meta_buf = zalloc(meta_size + 1))) {
 		log_print("CHECK: mda_header_%d.raw_locn[%d] no mem for metadata text size %llu", mn, ri,
 			  (unsigned long long)meta_size);
 		return 0;
@@ -1018,7 +1015,7 @@ static int _dump_label_and_pv_header(struct cmd_context *cmd, uint64_t labelsect
 				     uint64_t *mda2_offset, uint64_t *mda2_size,
 				     int *mda_count_out)
 {
-	char buf[512];
+	char buf[512 + 1] = { 0 };
 	char str[256];
 	struct label_header *lh;
 	struct pv_header *pvh;
@@ -1068,10 +1065,6 @@ static int _dump_label_and_pv_header(struct cmd_context *cmd, uint64_t labelsect
 	pvh = (struct pv_header *)(buf + 32);
 	pvh_offset = lh_offset + 32; /* from start of disk */
 
-	/* sanity check */
-	if ((void *)pvh != (void *)(buf + pvh_offset - lh_offset))
-		log_print("CHECK: problem with pv_header offset calculation");
-
 	if (print_fields) {
 		log_print("pv_header at %llu", (unsigned long long)pvh_offset);
 		log_print("pv_header.pv_uuid %s", _chars_to_str(pvh->pv_uuid, str, ID_LEN, 256, "pv_header.pv_uuid"));
@@ -1089,10 +1082,6 @@ static int _dump_label_and_pv_header(struct cmd_context *cmd, uint64_t labelsect
 	di = 0;
 	dlocn = pvh->disk_areas_xl;
 	dlocn_offset = pvh_offset + 40; /* from start of disk */
-
-	/* sanity check */
-	if ((void *)dlocn != (void *)(buf + dlocn_offset - lh_offset))
-		log_print("CHECK: problem with pv_header.disk_locn[%d] offset calculation", di);
 
 	while (xlate64(dlocn->offset)) {
 		if (print_fields) {
@@ -1266,7 +1255,7 @@ static int _dump_mda_header(struct cmd_context *cmd, struct settings *set,
 			    uint32_t *checksum0_ret,
 			    int *found_header)
 {
-	char buf[512];
+	char buf[512 + 1] = { 0 };
 	char str[256];
 	char *mda_buf;
 	struct mda_header *mh;
@@ -1365,7 +1354,7 @@ static int _dump_mda_header(struct cmd_context *cmd, struct settings *set,
 	 * looking at all copies of the metadata in the area
 	 */
 	if (print_metadata == PRINT_ALL) {
-		if (!(mda_buf = zalloc(mda_size)))
+		if (!(mda_buf = zalloc(mda_size + 1)))
 			goto_out;
 
 		if (!_read_bytes(dev, def, mda_offset, mda_size, mda_buf)) {
@@ -1747,7 +1736,7 @@ static int _dump_search(struct cmd_context *cmd, const char *dump, struct settin
 	log_print("Searching for metadata at offset %llu size %llu",
 		  (unsigned long long)mda_offset, (unsigned long long)mda_size);
 
-	if (!(buf = zalloc(mda_size)))
+	if (!(buf = zalloc(mda_size + 1)))
 		return_0;
 
 	if (!_read_bytes(dev, def, mda_offset, mda_size, buf)) {
@@ -1767,69 +1756,69 @@ static int _dump_search(struct cmd_context *cmd, const char *dump, struct settin
 
 static int _get_one_setting(struct cmd_context *cmd, struct settings *set, char *key, char *val)
 {
-	if (!strncmp(key, "metadata_offset", strlen("metadata_offset"))) {
+	if (!strncmp(key, "metadata_offset", sizeof("metadata_offset") - 1)) {
 		if (sscanf(val, "%llu", (unsigned long long *)&set->metadata_offset) != 1)
 			goto_bad;
 		set->metadata_offset_set = 1;
 		return 1;
 	}
 
-	if (!strncmp(key, "seqno", strlen("seqno"))) {
+	if (!strncmp(key, "seqno", sizeof("seqno") - 1)) {
 		if (sscanf(val, "%u", &set->seqno) != 1)
 			goto_bad;
 		set->seqno_set = 1;
 		return 1;
 	}
 
-	if (!strncmp(key, "backup_file", strlen("backup_file"))) {
+	if (!strncmp(key, "backup_file", sizeof("backup_file") - 1)) {
 		if ((set->backup_file = dm_pool_strdup(cmd->mem, val)))
 			return 1;
 		return 0;
 	}
 
-	if (!strncmp(key, "mda_offset", strlen("mda_offset"))) {
+	if (!strncmp(key, "mda_offset", sizeof("mda_offset") - 1)) {
 		if (sscanf(val, "%llu", (unsigned long long *)&set->mda_offset) != 1)
 			goto_bad;
 		set->mda_offset_set = 1;
 		return 1;
 	}
 
-	if (!strncmp(key, "mda_size", strlen("mda_size"))) {
+	if (!strncmp(key, "mda_size", sizeof("mda_size") - 1)) {
 		if (sscanf(val, "%llu", (unsigned long long *)&set->mda_size) != 1)
 			goto_bad;
 		set->mda_size_set = 1;
 		return 1;
 	}
 
-	if (!strncmp(key, "mda2_offset", strlen("mda2_offset"))) {
+	if (!strncmp(key, "mda2_offset", sizeof("mda2_offset") - 1)) {
 		if (sscanf(val, "%llu", (unsigned long long *)&set->mda2_offset) != 1)
 			goto_bad;
 		set->mda2_offset_set = 1;
 		return 1;
 	}
 
-	if (!strncmp(key, "mda2_size", strlen("mda2_size"))) {
+	if (!strncmp(key, "mda2_size", sizeof("mda2_size") - 1)) {
 		if (sscanf(val, "%llu", (unsigned long long *)&set->mda2_size) != 1)
 			goto_bad;
 		set->mda2_size_set = 1;
 		return 1;
 	}
 
-	if (!strncmp(key, "device_size", strlen("device_size"))) {
+	if (!strncmp(key, "device_size", sizeof("device_size") - 1)) {
 		if (sscanf(val, "%llu", (unsigned long long *)&set->device_size) != 1)
 			goto_bad;
 		set->device_size_set = 1;
 		return 1;
 	}
 
-	if (!strncmp(key, "data_offset", strlen("data_offset"))) {
+	if (!strncmp(key, "data_offset", sizeof("data_offset") - 1)) {
 		if (sscanf(val, "%llu", (unsigned long long *)&set->data_offset) != 1)
 			goto_bad;
 		set->data_offset_set = 1;
 		return 1;
 	}
 
-	if (!strncmp(key, "pv_uuid", strlen("pv_uuid"))) {
+	if (!strncmp(key, "pv_uuid", sizeof("pv_uuid") - 1)) {
 		if (strchr(val, '-') && (strlen(val) == 32)) {
 			memcpy(&set->pv_id, val, 32);
 			set->pvid_set = 1;
@@ -1843,7 +1832,7 @@ static int _get_one_setting(struct cmd_context *cmd, struct settings *set, char 
 		}
 	}
 
-	if (!strncmp(key, "mda_num", strlen("mda_num"))) {
+	if (!strncmp(key, "mda_num", sizeof("mda_num") - 1)) {
 		if (sscanf(val, "%u", (int *)&set->mda_num) != 1)
 			goto_bad;
 		return 1;
@@ -3010,10 +2999,9 @@ out:
 	return 0;
 }
 
-int pvck(struct cmd_context *cmd, int argc, char **argv)
+static int _pvck_mf(struct metadata_file *mf, struct cmd_context *cmd, int argc, char **argv)
 {
-	struct settings set;
-	struct metadata_file mf;
+	struct settings set = { 0 };
 	struct device *dev = NULL;
 	struct devicefile *def = NULL;
 	const char *dump, *repair;
@@ -3022,9 +3010,6 @@ int pvck(struct cmd_context *cmd, int argc, char **argv)
 	int bad = 0;
 	int ret = 0;
 	int i;
-
-	memset(&set, 0, sizeof(set));
-	memset(&mf, 0, sizeof(mf));
 
 	/*
 	 * By default LVM skips the first sector (sector 0), and writes
@@ -3081,10 +3066,10 @@ int pvck(struct cmd_context *cmd, int argc, char **argv)
 		return_ECMD_FAILED;
 
 	if (arg_is_set(cmd, file_ARG) && (arg_is_set(cmd, repairtype_ARG) || arg_is_set(cmd, repair_ARG))) {
-		if (!(mf.filename = arg_str_value(cmd, file_ARG, NULL)))
+		if (!(mf->filename = arg_str_value(cmd, file_ARG, NULL)))
 			return_ECMD_FAILED;
 
-		if (!_read_metadata_file(cmd, &mf))
+		if (!_read_metadata_file(cmd, mf))
 			return_ECMD_FAILED;
 	}
 
@@ -3157,10 +3142,10 @@ int pvck(struct cmd_context *cmd, int argc, char **argv)
 			ret = _repair_label_header(cmd, repair, &set, labelsector, dev);
 
 		else if (!strcmp(repair, "pv_header"))
-			ret = _repair_pv_header(cmd, repair, &set, &mf, labelsector, dev);
+			ret = _repair_pv_header(cmd, repair, &set, mf, labelsector, dev);
 
 		else if (!strcmp(repair, "metadata"))
-			ret = _repair_metadata(cmd, repair, &set, &mf, labelsector, dev);
+			ret = _repair_metadata(cmd, repair, &set, mf, labelsector, dev);
 		else
 			log_error("Unknown repair value.");
 
@@ -3174,10 +3159,10 @@ int pvck(struct cmd_context *cmd, int argc, char **argv)
 
 		/* repair is a combination of repairtype pv_header+metadata */
 
-		if (!_repair_pv_header(cmd, "pv_header", &set, &mf, labelsector, dev))
+		if (!_repair_pv_header(cmd, "pv_header", &set, mf, labelsector, dev))
 			return_ECMD_FAILED;
 
-		if (!_repair_metadata(cmd, "metadata", &set, &mf, labelsector, dev))
+		if (!_repair_metadata(cmd, "metadata", &set, mf, labelsector, dev))
 			return_ECMD_FAILED;
 
 		return ECMD_PROCESSED;
@@ -3209,4 +3194,13 @@ int pvck(struct cmd_context *cmd, int argc, char **argv)
 	if (bad)
 		return_ECMD_FAILED;
 	return ECMD_PROCESSED;
+}
+
+int pvck(struct cmd_context *cmd, int argc, char **argv)
+{
+	struct metadata_file mf = { 0 };
+	int ret = _pvck_mf(&mf, cmd, argc, argv);
+
+	free(mf.text_buf);
+	return ret;
 }

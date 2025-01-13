@@ -206,7 +206,7 @@ int reopen_standard_stream(FILE **stream, const char *mode)
 		return 0;
 	}
 
-	_check_and_replace_standard_log_streams(old_stream, new_stream);
+	_check_and_replace_standard_log_streams(*stream, new_stream);
 
 	*stream = new_stream;
 	return 1;
@@ -220,22 +220,22 @@ void init_log_fn(lvm2_log_fn_t log_fn)
 /* Read /proc/self/stat to extract pid and starttime */
 static int _get_pid_starttime(int *pid, unsigned long long *starttime)
 {
-	static const char statfile[] = "/proc/self/stat";
+	static const char _statfile[] = DEFAULT_PROC_DIR "/self/stat";
 	char buf[1024];
 	char *p;
 	int fd;
 	int e;
 
-	if ((fd = open(statfile, O_RDONLY)) == -1) {
-		log_sys_debug("open", statfile);
+	if ((fd = open(_statfile, O_RDONLY)) == -1) {
+		log_sys_debug("open", _statfile);
 		return 0;
 	}
 
 	if ((e = read(fd, buf, sizeof(buf) - 1)) <= 0)
-		log_sys_debug("read", statfile);
+		log_sys_debug("read", _statfile);
 
-	if (!close(fd))
-		log_sys_debug("close", statfile);
+	if (close(fd))
+		log_sys_debug("close", _statfile);
 
 	if (e <= 0)
 		return 0;
@@ -251,14 +251,14 @@ static int _get_pid_starttime(int *pid, unsigned long long *starttime)
 		    "%llu", starttime) == 1))
 		return 1;
 
-	log_debug("Cannot parse content of %s.", statfile);
+	log_debug("Cannot parse content of %s.", _statfile);
 
 	return 0;
 }
 
 /*
  * Support envvar LVM_LOG_FILE_EPOCH and allow to attach
- * extra keyword (consist of upto 32 alpha chars) to
+ * extra keyword (consist of up to 32 alpha chars) to
  * opened log file. After this 'epoch' word pid and starttime
  * (in kernel units, read from /proc/self/stat)
  * is automatically attached.
@@ -313,7 +313,7 @@ no_epoch:
 }
 
 /*
- * Unlink the log file depeding on command's return value
+ * Unlink the log file depending on command's return value
  *
  * When envvar LVM_EXPECTED_EXIT_STATUS is set, compare
  * resulting status with this string.
@@ -331,8 +331,8 @@ void unlink_log_file(int ret)
 	    (env = getenv("LVM_EXPECTED_EXIT_STATUS")) &&
 	    ((env[0] == '>' && ret > atoi(env + 1)) ||
 	     (atoi(env) == ret))) {
-		if (unlink(_log_file_path))
-			log_sys_error("unlink", _log_file_path);
+		if (unlink(_log_file_path) && (errno != ENOENT))
+			log_sys_debug("unlink", _log_file_path);
 		_log_file_path[0] = '\0';
 	}
 }
@@ -391,7 +391,7 @@ void init_msg_prefix(const char *prefix)
 {
 	if (prefix)
 		/* Cut away too long prefix */
-		(void) dm_strncpy(_msg_prefix, prefix, sizeof(_msg_prefix));
+		dm_strncpy(_msg_prefix, prefix, sizeof(_msg_prefix));
 }
 
 void init_indent(int indent)
@@ -446,41 +446,49 @@ void reset_log_duplicated(void) {
 
 static const char *_get_log_level_name(int use_stderr, int level)
 {
-	static const char *log_level_names[] = {"",      /* unassigned */
-						"",      /* unassigned */
-						"fatal", /* _LOG_FATAL */
-						"error", /* _LOG_ERROR */
-						"warn",  /* _LOG_WARN */
-						"notice",/* _LOG_NOTICE */
-						"info",  /* _LOG_INFO */
-						"debug"  /* _LOG_DEBUG */
-						};
+	static const char _log_level_names[][8] = {
+		"",      /* unassigned */
+		"",      /* unassigned */
+		"fatal", /* _LOG_FATAL */
+		"error", /* _LOG_ERROR */
+		"warn",  /* _LOG_WARN */
+		"notice",/* _LOG_NOTICE */
+		"info",  /* _LOG_INFO */
+		"debug"  /* _LOG_DEBUG */
+	};
+
 	if (level == _LOG_WARN && !use_stderr)
 		return "print";
 
-	return log_level_names[level];
+	return _log_level_names[level];
 }
 
 const char *log_get_report_context_name(log_report_context_t context)
 {
-	static const char *log_context_names[LOG_REPORT_CONTEXT_COUNT] = {[LOG_REPORT_CONTEXT_NULL] = "",
-									  [LOG_REPORT_CONTEXT_SHELL] = "shell",
-									  [LOG_REPORT_CONTEXT_PROCESSING] = "processing"};
-	return log_context_names[context];
+	static const char _log_context_names[LOG_REPORT_CONTEXT_COUNT][16] = {
+		[LOG_REPORT_CONTEXT_NULL] = "",
+		[LOG_REPORT_CONTEXT_SHELL] = "shell",
+		[LOG_REPORT_CONTEXT_PROCESSING] = "processing"
+	};
+
+	return _log_context_names[context];
 }
 
 
 const char *log_get_report_object_type_name(log_report_object_type_t object_type)
 {
-	static const char *log_object_type_names[LOG_REPORT_OBJECT_TYPE_COUNT] = {[LOG_REPORT_OBJECT_TYPE_NULL] = "",
-										  [LOG_REPORT_OBJECT_TYPE_PRE_CMD] = "pre-cmd",
-										  [LOG_REPORT_OBJECT_TYPE_CMD] = "cmd",
-										  [LOG_REPORT_OBJECT_TYPE_ORPHAN] = "orphan",
-										  [LOG_REPORT_OBJECT_TYPE_PV] = "pv",
-										  [LOG_REPORT_OBJECT_TYPE_LABEL] = "label",
-										  [LOG_REPORT_OBJECT_TYPE_VG] = "vg",
-										  [LOG_REPORT_OBJECT_TYPE_LV] = "lv"};
-	return log_object_type_names[object_type];
+	static const char _log_object_type_names[LOG_REPORT_OBJECT_TYPE_COUNT][8] = {
+		[LOG_REPORT_OBJECT_TYPE_NULL] = "",
+		[LOG_REPORT_OBJECT_TYPE_PRE_CMD] = "pre-cmd",
+		[LOG_REPORT_OBJECT_TYPE_CMD] = "cmd",
+		[LOG_REPORT_OBJECT_TYPE_ORPHAN] = "orphan",
+		[LOG_REPORT_OBJECT_TYPE_PV] = "pv",
+		[LOG_REPORT_OBJECT_TYPE_LABEL] = "label",
+		[LOG_REPORT_OBJECT_TYPE_VG] = "vg",
+		[LOG_REPORT_OBJECT_TYPE_LV] = "lv"
+	};
+
+	return _log_object_type_names[object_type];
 }
 
 void init_debug_file_fields(uint32_t debug_fields)
@@ -515,7 +523,7 @@ static void _set_time_prefix(char *prefix, int buflen)
 	if (!len)
 		goto fail;
 
-	len = dm_snprintf(prefix + len, buflen - len, ".%06ld ", ts.tv_nsec/1000);
+	len = dm_snprintf(prefix + len, buflen - len, ".%06d ", (int)ts.tv_nsec/1000);
 	if (len < 0)
 		goto fail;
 
@@ -583,6 +591,7 @@ static void _vprint_log(int level, const char *file, int line, int dm_errno_or_c
 	    (_log_report.report && !log_bypass_report && (use_stderr || (level <=_LOG_WARN))) ||
 	    log_once) {
 		va_copy(ap, orig_ap);
+		/* coverity[format_string_injection] our code expectes this behavior. */
 		n = vsnprintf(message, sizeof(message), trformat, ap);
 		va_end(ap);
 
@@ -872,12 +881,12 @@ void log_set_report_object_name_and_id(const char *name, const char *id)
  *       For this we need to be able to clearly identify when a command is
  *       being run by dmeventd/lvmpolld/lvmdbusd.
  *
- * TODO: log/journal_commmand_names=["lvcreate","lvconvert"]
+ * TODO: log/journal_command_names=["lvcreate","lvconvert"]
  * This would restrict log/journal=["command"] to the listed command names.
  * Also allow "!command" to exclude a command, e.g. ["!pvs"]
  *
  * TODO: log/journal_daemon_command_names=["lvcreate","lvconvert"]
- * This would restrict log/journal=["dameon_command"] to the listed command names.
+ * This would restrict log/journal=["daemon_command"] to the listed command names.
  *
  * TODO: log/journal_daemon_names=["dmeventd"]
  * This would restrict log/journal=["daemon_command"] to commands run by

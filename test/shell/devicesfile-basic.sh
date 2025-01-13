@@ -43,10 +43,28 @@ mkdir -p "$DFDIR" || true
 DF="$DFDIR/system.devices"
 
 #
+# Test that unused system.devices is renamed
+#
+
+aux lvmconf 'devices/use_devicesfile = 1'
+wipe_all
+rm -f "$DF"
+rm -f "$DF.unused.*"
+touch "$DF"
+pvcreate "$dev1"
+grep "$dev1" "$DF"
+aux lvmconf 'devices/use_devicesfile = 0'
+pvs "$dev1"
+not ls "$DF"
+ls "$DF"-unused*
+rm -f "$DF-unused.*"
+
+#
 # Test with use_devicesfile=0 (no devices file is being applied by default)
 #
 
-aux lvmconf 'devices/use_devicesfile = 0'
+aux lvmconf "devices/use_devicesfile = 0" \
+        "global/event_activation = 1"
 
 wipe_all
 rm -f "$DF"

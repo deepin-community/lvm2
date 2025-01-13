@@ -152,7 +152,7 @@ struct op_def {
  * shorter one if one is a prefix of another!
  * (e.g. =~ comes before =)
 */
-static struct op_def _op_cmp[] = {
+static const struct op_def _op_cmp[] = {
 	{ "=~", FLD_CMP_REGEX, "Matching regular expression. [regex]" },
 	{ "!~", FLD_CMP_REGEX|FLD_CMP_NOT, "Not matching regular expression. [regex]" },
 	{ "=", FLD_CMP_EQUAL, "Equal to. [number, size, percent, string, string list, time]" },
@@ -186,7 +186,7 @@ static struct op_def _op_cmp[] = {
 #define SEL_LIST_SUBSET_LS	0x00040000
 #define SEL_LIST_SUBSET_LE	0x00080000
 
-static struct op_def _op_log[] = {
+static const struct op_def _op_log[] = {
 	{ "&&", SEL_AND, "All fields must match" },
 	{ ",", SEL_AND, "All fields must match" },
 	{ "||", SEL_OR, "At least one field must match" },
@@ -458,7 +458,7 @@ static int _report_field_string_list(struct dm_report *rh,
 	 *
 	 * The very first item in the array of 'struct pos_len' is always
 	 * a pair denoting '[list_size,strlen(field->report_string)]'. The
-	 * rest of items denote start and lenght of each item in the list.
+	 * rest of items denote start and length of each item in the list.
          *
 	 *
 	 * For example, if we have a list with "abc", "xy", "defgh"
@@ -795,11 +795,11 @@ static const char *_get_field_type_name(unsigned field_type)
 static size_t _get_longest_field_id_len(const struct dm_report_field_type *fields)
 {
 	uint32_t f;
-	size_t id_len = 0;
+	size_t l, id_len = 0;
 
 	for (f = 0; fields[f].report_fn; f++)
-		if (strlen(fields[f].id) > id_len)
-			id_len = strlen(fields[f].id);
+		if ((l = strlen(fields[f].id)) > id_len)
+			id_len = l;
 
 	return id_len;
 }
@@ -810,16 +810,17 @@ static void _display_fields_more(struct dm_report *rh,
 				 int display_field_types)
 {
 	uint32_t f;
+	size_t l;
 	const struct dm_report_object_type *type;
 	const char *desc, *last_desc = "";
 
 	for (f = 0; fields[f].report_fn; f++)
-		if (strlen(fields[f].id) > id_len)
-			id_len = strlen(fields[f].id);
+		if ((l = strlen(fields[f].id)) > id_len)
+			id_len = l;
 
 	for (type = rh->types; type->data_fn; type++)
-		if (strlen(type->prefix) + 3 > id_len)
-			id_len = strlen(type->prefix) + 3;
+		if ((l = strlen(type->prefix) + 3) > id_len)
+			id_len = l;
 
 	for (f = 0; fields[f].report_fn; f++) {
 		if (!(type = _find_type(rh, fields[f].type))) {
@@ -963,16 +964,13 @@ static int _get_canonical_field_name(const char *field,
  * Both names are always null-terminated.
  */
 static int _is_same_field(const char *canonical_name1, const char *canonical_name2,
-			  const char *prefix)
+			  const char *prefix, size_t prefix_len)
 {
-	size_t prefix_len;
-
 	/* Exact match? */
 	if (!strcasecmp(canonical_name1, canonical_name2))
 		return 1;
 
 	/* Match including prefix? */
-	prefix_len = strlen(prefix) - 1;
 	if (!strncasecmp(prefix, canonical_name1, prefix_len) &&
 	    !strcasecmp(canonical_name1 + prefix_len, canonical_name2))
 		return 1;
@@ -1048,6 +1046,7 @@ static int _get_field(struct dm_report *rh, const char *field, size_t flen,
 {
 	char field_canon[DM_REPORT_FIELD_TYPE_ID_LEN];
 	uint32_t f;
+	size_t prefix_len;
 
 	if (!flen)
 		return 0;
@@ -1055,8 +1054,9 @@ static int _get_field(struct dm_report *rh, const char *field, size_t flen,
 	if (!_get_canonical_field_name(field, flen, field_canon, sizeof(field_canon), NULL))
 		return_0;
 
+	prefix_len = strlen(rh->field_prefix) - 1;
 	for (f = 0; _implicit_report_fields[f].report_fn; f++) {
-		if (_is_same_field(_implicit_report_fields[f].id, field_canon, rh->field_prefix)) {
+		if (_is_same_field(_implicit_report_fields[f].id, field_canon, rh->field_prefix, prefix_len)) {
 			*f_ret = f;
 			*implicit = 1;
 			return 1;
@@ -1064,7 +1064,7 @@ static int _get_field(struct dm_report *rh, const char *field, size_t flen,
 	}
 
 	for (f = 0; rh->fields[f].report_fn; f++) {
-		if (_is_same_field(rh->canonical_field_ids[f], field_canon, rh->field_prefix)) {
+		if (_is_same_field(rh->canonical_field_ids[f], field_canon, rh->field_prefix, prefix_len)) {
 			*f_ret = f;
 			*implicit = 0;
 			return 1;
@@ -1145,7 +1145,7 @@ static int _add_sort_key(struct dm_report *rh, uint32_t field_num, int implicit,
 static int _key_match(struct dm_report *rh, const char *key, size_t len,
 		      unsigned report_type_only)
 {
-	char key_canon[DM_REPORT_FIELD_TYPE_ID_LEN];
+	int implicit;
 	uint32_t f;
 	uint32_t flags;
 
@@ -1168,16 +1168,8 @@ static int _key_match(struct dm_report *rh, const char *key, size_t len,
 		return 0;
 	}
 
-	if (!_get_canonical_field_name(key, len, key_canon, sizeof(key_canon), NULL))
-		return_0;
-
-	for (f = 0; _implicit_report_fields[f].report_fn; f++)
-		if (_is_same_field(_implicit_report_fields[f].id, key_canon, rh->field_prefix))
-			return _add_sort_key(rh, f, 1, flags, report_type_only);
-
-	for (f = 0; rh->fields[f].report_fn; f++)
-		if (_is_same_field(rh->canonical_field_ids[f], key_canon, rh->field_prefix))
-			return _add_sort_key(rh, f, 0, flags, report_type_only);
+	if (_get_field(rh, key, len, &f, &implicit))
+		return _add_sort_key(rh, f, implicit, flags, report_type_only);
 
 	return 0;
 }
@@ -1403,7 +1395,7 @@ struct dm_report *dm_report_init(uint32_t *report_types,
 	}
 
 	/*
-	 * Return updated types value for further compatility check by caller.
+	 * Return updated types value for further compatibility check by caller.
 	 */
 	_dm_report_init_update_types(rh, report_types);
 
@@ -1459,10 +1451,14 @@ static void *_report_get_field_data(struct dm_report *rh,
 {
 	const struct dm_report_field_type *fields = fp->implicit ? _implicit_report_fields
 								 : rh->fields;
+	char *ret;
 
-	char *ret = fp->type->data_fn(object);
+	if (!object) {
+		log_error(INTERNAL_ERROR "_report_get_field_data: missing object.");
+		return NULL;
+	}
 
-	if (!ret)
+	if (!(ret = fp->type->data_fn(object)))
 		return NULL;
 
 	return (void *)(ret + fields[fp->field_num].offset);
@@ -2263,7 +2259,7 @@ static const char * _skip_space(const char *s)
 	return s;
 }
 
-static int _tok_op(struct op_def *t, const char *s, const char **end,
+static int _tok_op(const struct op_def *t, const char *s, const char **end,
 		   uint32_t expect)
 {
 	size_t len;
@@ -2432,7 +2428,7 @@ static const char *_reserved_name(struct dm_report *rh,
 					  (reserved->type & DM_REPORT_FIELD_TYPE_MASK) ? "type-specific" : "field-specific",
 					   rh->fields[field_num].id);
 			else
-				log_error("Error occured while processing %s reserved value handler for field %s",
+				log_error("Error occurred while processing %s reserved value handler for field %s",
 					  (reserved->type & DM_REPORT_FIELD_TYPE_MASK) ? "type-specific" : "field-specific",
 					   rh->fields[field_num].id);
 		}
@@ -2504,7 +2500,7 @@ float dm_percent_to_float(dm_percent_t percent)
 
 float dm_percent_to_round_float(dm_percent_t percent, unsigned digits)
 {
-	static const float power10[] = {
+	const float power10[] = {
 		1.f, .1f, .01f, .001f, .0001f, .00001f, .000001f,
 		.0000001f, .00000001f, .000000001f,
 		.0000000001f
@@ -2570,12 +2566,12 @@ static int _check_reserved_values_supported(const struct dm_report_field_type fi
 	const struct dm_report_reserved_value *iter;
 	const struct dm_report_field_reserved_value *field_res;
 	const struct dm_report_field_type *field;
-	static uint32_t supported_reserved_types = DM_REPORT_FIELD_TYPE_NUMBER |
+	const uint32_t supported_reserved_types =  DM_REPORT_FIELD_TYPE_NUMBER |
 						   DM_REPORT_FIELD_TYPE_SIZE |
 						   DM_REPORT_FIELD_TYPE_PERCENT |
 						   DM_REPORT_FIELD_TYPE_STRING |
 						   DM_REPORT_FIELD_TYPE_TIME;
-	static uint32_t supported_reserved_types_with_range = DM_REPORT_FIELD_RESERVED_VALUE_RANGE |
+	const uint32_t supported_reserved_types_with_range =  DM_REPORT_FIELD_RESERVED_VALUE_RANGE |
 							      DM_REPORT_FIELD_TYPE_NUMBER |
 							      DM_REPORT_FIELD_TYPE_SIZE |
 							      DM_REPORT_FIELD_TYPE_PERCENT |
@@ -2591,7 +2587,8 @@ static int _check_reserved_values_supported(const struct dm_report_field_type fi
 		if (iter->type & DM_REPORT_FIELD_TYPE_MASK) {
 			if (!(iter->type & supported_reserved_types) ||
 			    ((iter->type & DM_REPORT_FIELD_RESERVED_VALUE_RANGE) &&
-			     !(iter->type & supported_reserved_types_with_range))) {
+			     !(iter->type & (supported_reserved_types_with_range &
+					     ~DM_REPORT_FIELD_RESERVED_VALUE_RANGE)))) {
 				log_error(INTERNAL_ERROR "_check_reserved_values_supported: "
 					  "global reserved value for type 0x%x not supported",
 					   iter->type);
@@ -2601,8 +2598,9 @@ static int _check_reserved_values_supported(const struct dm_report_field_type fi
 			field_res = (const struct dm_report_field_reserved_value *) iter->value;
 			field = &fields[field_res->field_num];
 			if (!(field->flags & supported_reserved_types) ||
-			    ((iter->type & DM_REPORT_FIELD_RESERVED_VALUE_RANGE) &&
-			     !(iter->type & supported_reserved_types_with_range))) {
+			    ((field->type & DM_REPORT_FIELD_RESERVED_VALUE_RANGE) &&
+			     !(field->type & (supported_reserved_types_with_range &
+					     ~DM_REPORT_FIELD_RESERVED_VALUE_RANGE)))) {
 				log_error(INTERNAL_ERROR "_check_reserved_values_supported: "
 					  "field-specific reserved value of type 0x%x for "
 					  "field %s not supported",
@@ -2842,7 +2840,7 @@ struct time_value {
 	time_t t2;
 };
 
-static const char *_out_of_range_msg = "Field selection value %s out of supported range for field %s.";
+static const char _out_of_range_msg[] = "Field selection value %s out of supported range for field %s.";
 
 /*
  * Standard formatted date and time - ISO8601.
@@ -2867,7 +2865,7 @@ static const char *_out_of_range_msg = "Field selection value %s out of supporte
 #define DELIM_DATE '-'
 #define DELIM_TIME ':'
 
-static int _days_in_month[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+static const int _days_in_month[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
 
 static int _is_leap_year(long year)
 {
@@ -2892,7 +2890,6 @@ typedef enum {
 
 static char *_get_date(char *str, struct tm *tm, time_range_t *range)
 {
-	static const char incorrect_date_format_msg[] = "Incorrect date format.";
 	time_range_t tmp_range = RANGE_NONE;
 	long n1, n2 = -1, n3 = -1;
 	char *s = str, *end;
@@ -2938,19 +2935,15 @@ static char *_get_date(char *str, struct tm *tm, time_range_t *range)
 				n3 = n1 % 100;
 				n2 = (n1 / 100) % 100;
 				n1 = n1 / 10000;
-			} else {
-				log_error(incorrect_date_format_msg);
-				return NULL;
-			}
+			} else
+                                goto_bad;
 		} else {
 			if (len == 7) {
 				tmp_range = RANGE_MONTH;
 				/* YYYY-MM */
 				n3 = 1;
-			} else {
-				log_error(incorrect_date_format_msg);
-				return NULL;
-			}
+			} else
+				goto_bad;
 		}
 	}
 
@@ -2973,11 +2966,15 @@ static char *_get_date(char *str, struct tm *tm, time_range_t *range)
 	*range = tmp_range;
 
 	return (char *) _skip_space(end);
+
+bad:
+	log_error("Incorrect date format.");
+
+	return NULL;
 }
 
 static char *_get_time(char *str, struct tm *tm, time_range_t *range)
 {
-	static const char incorrect_time_format_msg[] = "Incorrect time format.";
 	time_range_t tmp_range = RANGE_NONE;
 	long n1, n2 = -1, n3 = -1;
 	char *s = str, *end;
@@ -3025,19 +3022,15 @@ static char *_get_time(char *str, struct tm *tm, time_range_t *range)
 				n3 = n1 % 100;
 				n2 = (n1 / 100) % 100;
 				n1 = n1 / 10000;
-			} else {
-				log_error(incorrect_time_format_msg);
-				return NULL;
-			}
+			} else
+				goto_bad;
 		} else {
 			if (len == 5) {
 				/* HH:MM */
 				tmp_range = RANGE_MINUTE;
 				n3 = 0;
-			} else {
-				log_error(incorrect_time_format_msg);
-				return NULL;
-			}
+			} else
+				goto_bad;
 		}
 	}
 
@@ -3068,6 +3061,11 @@ static char *_get_time(char *str, struct tm *tm, time_range_t *range)
 	*range = tmp_range;
 
 	return (char *) _skip_space(end);
+
+bad:
+	log_error("Incorrect time format.");
+
+	return NULL;
 }
 
 /* The offset is always an absolute offset against GMT! */
@@ -3496,7 +3494,7 @@ static int _get_reserved_value(struct dm_report *rh, uint32_t field_num,
 					  (rvw->reserved->type) & DM_REPORT_FIELD_TYPE_MASK ? "type-specific" : "field-specific",
 					  rh->fields[field_num].id);
 			else
-				log_error("Error occured while processing %s reserved value handler for field %s",
+				log_error("Error occurred while processing %s reserved value handler for field %s",
 					  (rvw->reserved->type) & DM_REPORT_FIELD_TYPE_MASK ? "type-specific" : "field-specific",
 					  rh->fields[field_num].id);
 			return 0;
@@ -3516,7 +3514,6 @@ static struct field_selection *_create_field_selection(struct dm_report *rh,
 						       struct reserved_value_wrapper *rvw,
 						       void *custom)
 {
-	static const char *_field_selection_value_alloc_failed_msg = "dm_report: struct field_selection_value allocation failed for selection field %s";
 	const struct dm_report_field_type *fields = implicit ? _implicit_report_fields
 							     : rh->fields;
 	struct field_properties *fp, *found = NULL;
@@ -3564,8 +3561,8 @@ static struct field_selection *_create_field_selection(struct dm_report *rh,
 	}
 
 	if (!(fs->value = dm_pool_zalloc(rh->selection->mem, sizeof(struct field_selection_value)))) {
-		log_error(_field_selection_value_alloc_failed_msg, field_id);
-		goto error;
+		stack;
+		goto error_field_id;
 	}
 
 	if (((rvw->reserved && (rvw->reserved->type & DM_REPORT_FIELD_RESERVED_VALUE_RANGE)) ||
@@ -3573,8 +3570,8 @@ static struct field_selection *_create_field_selection(struct dm_report *rh,
 	      custom && ((struct time_value *) custom)->range))
 		 &&
 	    !(fs->value->next = dm_pool_zalloc(rh->selection->mem, sizeof(struct field_selection_value)))) {
-		log_error(_field_selection_value_alloc_failed_msg, field_id);
-		goto error;
+		stack;
+		goto error_field_id;
 	}
 
 	fs->fp = found;
@@ -3723,8 +3720,12 @@ static struct field_selection *_create_field_selection(struct dm_report *rh,
 	}
 
 	return fs;
+error_field_id:
+	log_error("dm_report: struct field_selection_value allocation failed for selection field %s",
+		  field_id);
+	goto error;
 bad:
-	log_error(INTERNAL_ERROR "Forbiden NULL custom detected.");
+	log_error(INTERNAL_ERROR "Forbidden NULL custom detected.");
 error:
 	dm_pool_free(rh->selection->mem, fs);
 
@@ -3751,7 +3752,7 @@ static struct selection_node *_alloc_selection_node(struct dm_pool *mem, uint32_
 static void _display_selection_help(struct dm_report *rh)
 {
 	static const char _grow_object_failed_msg[] = "_display_selection_help: dm_pool_grow_object failed";
-	struct op_def *t;
+	const struct op_def *t;
 	const struct dm_report_reserved_value *rv;
 	size_t len_all, len_final = 0;
 	const char **rvs;
@@ -4022,7 +4023,7 @@ error:
 	return NULL;
 }
 
-/* AND_EXPRESSION := EX (AND_OP AND_EXPRSSION) */
+/* AND_EXPRESSION := EX (AND_OP AND_EXPRESSION) */
 static struct selection_node *_parse_and_ex(struct dm_report *rh,
 					    const char *s,
 					    const char **next,
@@ -4104,7 +4105,7 @@ static int _alloc_rh_selection(struct dm_report *rh)
 static int _report_set_selection(struct dm_report *rh, const char *selection, int add_new_fields)
 {
 	struct selection_node *root = NULL;
-	const char *fin, *next;
+	const char *fin = NULL, *next;
 
 	if (rh->selection) {
 		if (rh->selection->selection_root)
@@ -4124,7 +4125,7 @@ static int _report_set_selection(struct dm_report *rh, const char *selection, in
 	if (!(root = _alloc_selection_node(rh->selection->mem, SEL_OR)))
 		return 0;
 
-	if (!_parse_or_ex(rh, selection, &fin, root))
+	if (!_parse_or_ex(rh, selection, &fin, root) || !fin)
 		goto_bad;
 
 	next = _skip_space(fin);
@@ -4262,7 +4263,9 @@ static int _report_headings(struct dm_report *rh)
 
 		fields = fp->implicit ? _implicit_report_fields : rh->fields;
 
-		heading = fields[fp->field_num].heading;
+		heading = rh->flags & DM_REPORT_OUTPUT_FIELD_IDS_IN_HEADINGS ?
+				fields[fp->field_num].id : fields[fp->field_num].heading;
+
 		if (rh->flags & DM_REPORT_OUTPUT_ALIGNED) {
 			if (dm_snprintf(buf, buf_size, "%-*.*s",
 					 fp->width, fp->width, heading) < 0) {
@@ -4314,6 +4317,7 @@ static void _recalculate_fields(struct dm_report *rh)
 	struct row *row;
 	struct dm_report_field *field;
 	int len;
+	int id_len;
 
 	dm_list_iterate_items(row, &rh->rows) {
 		dm_list_iterate_items(field, &row->fields) {
@@ -4327,6 +4331,12 @@ static void _recalculate_fields(struct dm_report *rh)
 				if ((len > field->props->width))
 					field->props->width = len;
 
+			}
+
+			if (rh->flags & DM_REPORT_OUTPUT_FIELD_IDS_IN_HEADINGS) {
+				id_len = (int) strlen(rh->fields[field->props->field_num].id);
+				if (field->props->width < id_len)
+					field->props->width = id_len;
 			}
 		}
 	}
@@ -4414,8 +4424,9 @@ static int _sort_rows(struct dm_report *rh)
 	qsort(rows, count, sizeof(**rows), _row_compare);
 
 	dm_list_init(&rh->rows);
-	while (count--)
-		dm_list_add_h(&rh->rows, &(*rows)[count]->list);
+
+	while (count > 0)
+		dm_list_add_h(&rh->rows, &(*rows)[--count]->list);
 
 	return 1;
 }
@@ -4739,10 +4750,13 @@ static int _output_as_rows(struct dm_report *rh)
 	struct field_properties *fp;
 	struct dm_report_field *field;
 	struct row *row;
+	const char *heading;
 
 	dm_list_iterate_items(fp, &rh->field_props) {
 		if (fp->flags & FLD_HIDDEN) {
 			dm_list_iterate_items(row, &rh->rows) {
+				if (dm_list_empty(&row->fields))
+					continue;
 				field = dm_list_item(dm_list_first(&row->fields), struct dm_report_field);
 				dm_list_del(&field->list);
 			}
@@ -4757,7 +4771,10 @@ static int _output_as_rows(struct dm_report *rh)
 		}
 
 		if ((rh->flags & DM_REPORT_OUTPUT_HEADINGS)) {
-			if (!dm_pool_grow_object(rh->mem, fields[fp->field_num].heading, 0)) {
+			heading = rh->flags & DM_REPORT_OUTPUT_FIELD_IDS_IN_HEADINGS ?
+				fields[fp->field_num].id : fields[fp->field_num].heading;
+
+			if (!dm_pool_grow_object(rh->mem, heading, 0)) {
 				log_error("dm_report: Failed to extend row for field name");
 				goto bad;
 			}
@@ -4797,12 +4814,36 @@ static int _output_as_rows(struct dm_report *rh)
 	return 0;
 }
 
+static struct dm_list *_get_last_displayed_rowh(struct dm_report *rh)
+{
+	struct dm_list *rowh;
+	struct row *row;
+
+	/*
+	 * We need to find 'last displayed row', not just 'last row'.
+	 *
+	 * This is because the report may be marked with
+	 * DM_REPORT_OUTPUT_MULTIPLE_TIMES flag. In that case, the report
+	 * may be used more than once and with different selection
+	 * criteria each time. Therefore, such report may also contain
+	 * rows which we do not display on output with current selection
+	 * criteria.
+	 */
+	for (rowh = dm_list_last(&rh->rows); rowh; rowh = dm_list_prev(&rh->rows, rowh)) {
+		row = dm_list_item(rowh, struct row);
+		if (_should_display_row(row))
+			return rowh;
+	}
+
+	return NULL;
+}
+
 static int _output_as_columns(struct dm_report *rh)
 {
 	struct dm_list *fh, *rowh, *ftmp, *rtmp;
 	struct row *row = NULL;
 	struct dm_report_field *field;
-	struct dm_list *last_row;
+	struct dm_list *last_rowh;
 	int do_field_delim;
 	char *line;
 
@@ -4811,7 +4852,7 @@ static int _output_as_columns(struct dm_report *rh)
 		_report_headings(rh);
 
 	/* Print and clear buffer */
-	last_row = dm_list_last(&rh->rows);
+	last_rowh = _get_last_displayed_rowh(rh);
 	dm_list_iterate_safe(rowh, rtmp, &rh->rows) {
 		row = dm_list_item(rowh, struct row);
 
@@ -4865,7 +4906,7 @@ static int _output_as_columns(struct dm_report *rh)
 				log_error(UNABLE_TO_EXTEND_OUTPUT_LINE_MSG);
 				goto bad;
 			}
-			if (rowh != last_row &&
+			if (rowh != last_rowh &&
 			    !dm_pool_grow_object(rh->mem, JSON_SEPARATOR, 0)) {
 				log_error(UNABLE_TO_EXTEND_OUTPUT_LINE_MSG);
 				goto bad;
@@ -5062,7 +5103,7 @@ struct dm_report_group *dm_report_group_create(dm_report_group_type_t type, void
 	dm_list_init(&group->items);
 
 	if (!(item = dm_pool_zalloc(mem, sizeof(*item)))) {
-		log_error("dm_report: faile to allocate root report group item");
+		log_error("dm_report: failed to allocate root report group item");
 		goto bad;
 	}
 

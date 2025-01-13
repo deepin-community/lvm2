@@ -223,7 +223,7 @@ int update_cache_pool_params(struct cmd_context *cmd,
 		if (*chunk_size < min_chunk_size) {
 			/*
 			 * When using more then 'standard' default,
-			 * keep user informed he might be using things in untintended direction
+			 * keep user informed he might be using things in unintended direction
 			 */
 			log_print_unless_silent("Using %s chunk size instead of default %s, "
 						"so cache pool has less than " FMTu64 " chunks.",
@@ -420,7 +420,7 @@ struct logical_volume *lv_cache_create(struct logical_volume *pool_lv,
 
 	if (!(segtype = get_segtype_from_string(cmd, SEG_TYPE_NAME_CACHE)))
 		return_NULL;
-
+	/* coverity[format_string_injection] lv name is already validated */
 	if (!insert_layer_for_lv(cmd, cache_lv, 0, "_corig"))
 		return_NULL;
 
@@ -479,7 +479,7 @@ int lv_cache_wait_for_clean(struct logical_volume *cache_lv, int *is_clean)
 
 		if (status->cache->fail) {
 			dm_pool_destroy(status->mem);
-			log_warn("WARNING: Skippping flush for failed cache %s.",
+			log_warn("WARNING: Skipping flush for failed cache %s.",
 				 display_lvname(cache_lv));
 			return 1;
 		}
@@ -572,7 +572,7 @@ int lv_cache_remove(struct logical_volume *cache_lv)
 		goto remove;  /* Already dropped */
 	}
 
-	/* Localy active volume is needed for writeback */
+	/* Locally active volume is needed for writeback */
 	if (!lv_info(cache_lv->vg->cmd, cache_lv, 1, NULL, 0, 0)) {
 		/* Give up any remote locks */
 		if (!deactivate_lv_with_sub_lv(cache_lv))
@@ -593,7 +593,7 @@ int lv_cache_remove(struct logical_volume *cache_lv)
 				return_0;
 			return 1;
 		default:
-			/* Otherwise localy activate volume to sync dirty blocks */
+			/* Otherwise locally activate volume to sync dirty blocks */
 			cache_lv->status |= LV_TEMPORARY;
 			if (!activate_lv(cache_lv->vg->cmd, cache_lv) ||
 			    !lv_is_active(cache_lv)) {
@@ -692,7 +692,7 @@ remove:
 	if (!lv_remove(cache_lv)) /* Will use LV_PENDING_DELETE */
 		return_0;
 
-	/* CachePool or CacheVol is left inactivate for further manipulation */
+	/* CachePool or CacheVol is left inactive for further manipulation */
 
 	return 1;
 }
@@ -913,12 +913,17 @@ int cache_set_metadata_format(struct lv_segment *seg, cache_metadata_format_t fo
 			return 1; /* Format already selected in cache pool */
 
 		/* Check configurations and profiles */
-		format = find_config_tree_int(seg->lv->vg->cmd, allocation_cache_metadata_format_CFG,
-					      profile);
+		switch (find_config_tree_int(seg->lv->vg->cmd,
+					     allocation_cache_metadata_format_CFG,
+					     profile)) {
+		case 1:  format = CACHE_METADATA_FORMAT_1; break;
+		case 2:  format = CACHE_METADATA_FORMAT_2; break;
+		default: format = CACHE_METADATA_FORMAT_UNSELECTED; break;
+		}
 	}
 
 	/* See what is a 'best' available cache metadata format
-	 * when the specifed format is other then always existing CMFormat 1 */
+	 * when the specified format is other then always existing CMFormat 1 */
 	if (format != CACHE_METADATA_FORMAT_1) {
 		best = _get_default_cache_metadata_format(seg->lv->vg->cmd);
 

@@ -99,7 +99,7 @@ static int _lvresize_params(struct cmd_context *cmd, struct lvresize_params *lp)
 #ifdef HAVE_BLKID_SUBLKS_FSINFO
 		/*
 		 * When the libblkid fs info feature is available, use the
-		 * the newer fs resizing capabability unless the older
+		 * the newer fs resizing capability unless the older
 		 * fsadm-based resizing is requested with --fs resize_fsadm.
 		 */
 		if ((str = arg_str_value(cmd, fs_ARG, NULL))) {
@@ -178,11 +178,11 @@ static int _lvresize_params(struct cmd_context *cmd, struct lvresize_params *lp)
 
 	if (set_extents_and_size) {
 		if ((lp->extents = arg_uint_value(cmd, extents_ARG, 0))) {
-			lp->sign = arg_sign_value(cmd, extents_ARG, 0);
+			lp->sign = arg_sign_value(cmd, extents_ARG, SIGN_NONE);
 			lp->percent = arg_percent_value(cmd, extents_ARG, PERCENT_NONE);
 		}
 		if ((lp->size = arg_uint64_value(cmd, size_ARG, 0))) {
-			lp->sign = arg_sign_value(cmd, size_ARG, 0);
+			lp->sign = arg_sign_value(cmd, size_ARG, SIGN_NONE);
 			lp->percent = PERCENT_NONE;
 		}
 		if (lp->size && lp->extents) {
@@ -195,7 +195,6 @@ static int _lvresize_params(struct cmd_context *cmd, struct lvresize_params *lp)
 	lp->yes = arg_is_set(cmd, yes_ARG);
 	lp->force = arg_is_set(cmd, force_ARG),
 	lp->nosync = arg_is_set(cmd, nosync_ARG);
-	lp->lockopt = arg_str_value(cmd, lockopt_ARG, NULL);
 
 	if (type_str) {
 		if (!strcmp(type_str, "linear")) {
@@ -418,7 +417,7 @@ retry:
 int lvresize(struct cmd_context *cmd, int argc, char **argv)
 {
 	log_error(INTERNAL_ERROR "Missing function for command definition %d:%s.",
-		  cmd->command->command_index, cmd->command->command_id);
+		  cmd->command->command_index, command_enum(cmd->command->command_enum));
 	return ECMD_FAILED;
 }
 

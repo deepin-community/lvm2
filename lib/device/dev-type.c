@@ -22,6 +22,7 @@
 #include "lib/device/bcache.h"
 #include "lib/label/label.h"
 #include "lib/commands/toolcontext.h"
+#include "lib/activate/activate.h"
 #include "device_mapper/misc/dm-ioctl.h"
 
 #ifdef BLKID_WIPING_SUPPORT
@@ -50,33 +51,15 @@ int dev_is_nvme(struct dev_types *dt, struct device *dev)
 	return (dev->flags & DEV_IS_NVME) ? 1 : 0;
 }
 
-int dev_is_lv(struct device *dev)
+int dev_is_lv(struct cmd_context *cmd, struct device *dev)
 {
-	FILE *fp;
-	char path[PATH_MAX];
-	char buffer[64];
-	int ret = 0;
+	char buffer[128];
 
-	if (dm_snprintf(path, sizeof(path), "%sdev/block/%d:%d/dm/uuid",
-			dm_sysfs_dir(),
-			(int) MAJOR(dev->dev),
-			(int) MINOR(dev->dev)) < 0) {
-		log_warn("Sysfs dm uuid path for %s is too long.", dev_name(dev));
-		return 0;
-	}
+	if (dev_dm_uuid(cmd, dev, buffer, sizeof(buffer)) &&
+	    !strncmp(buffer, UUID_PREFIX, sizeof(UUID_PREFIX) - 1))
+                return 1;
 
-	if (!(fp = fopen(path, "r")))
-		return 0;
-
-	if (!fgets(buffer, sizeof(buffer), fp))
-		log_debug("Failed to read %s.", path);
-	else if (!strncmp(buffer, "LVM-", 4))
-		ret = 1;
-
-	if (fclose(fp))
-		log_sys_debug("fclose", path);
-
-	return ret;
+	return 0;
 }
 
 int dev_is_used_by_active_lv(struct cmd_context *cmd, struct device *dev, int *used_by_lv_count,
@@ -90,8 +73,8 @@ int dev_is_used_by_active_lv(struct cmd_context *cmd, struct device *dev, int *u
 	struct dirent *dirent;
 	char *holder_name;
 	unsigned dm_dev_major, dm_dev_minor;
-	size_t lvm_prefix_len = sizeof(UUID_PREFIX) - 1;
-	size_t lvm_uuid_len = sizeof(UUID_PREFIX) - 1 + 2 * ID_LEN;
+	const size_t lvm_prefix_len = sizeof(UUID_PREFIX) - 1;
+	const size_t lvm_uuid_len = lvm_prefix_len + 2 * ID_LEN;
 	size_t uuid_len;
 	int used_count = 0;
 	char *used_name = NULL;
@@ -103,7 +86,8 @@ int dev_is_used_by_active_lv(struct cmd_context *cmd, struct device *dev, int *u
 	 * sysfs "holders" dir.
 	 */
 
-	if (dm_snprintf(holders_path, sizeof(holders_path), "%sdev/block/%d:%d/holders/", dm_sysfs_dir(), (int) MAJOR(dev->dev), (int) MINOR(dev->dev)) < 0) {
+	if (dm_snprintf(holders_path, sizeof(holders_path), "%sdev/block/%u:%u/holders/",
+			dm_sysfs_dir(), MAJOR(dev->dev), MINOR(dev->dev)) < 0) {
 		log_error("%s: dm_snprintf failed for path to holders directory.", dev_name(dev));
 		return 0;
 	}
@@ -132,25 +116,21 @@ int dev_is_used_by_active_lv(struct cmd_context *cmd, struct device *dev, int *u
 		if (stat(dm_dev_path, &info))
 			continue;
 
-		dm_dev_major = (int)MAJOR(info.st_rdev);
-		dm_dev_minor = (int)MINOR(info.st_rdev);
+		dm_dev_major = MAJOR(info.st_rdev);
+		dm_dev_minor = MINOR(info.st_rdev);
         
 		if (dm_dev_major != cmd->dev_types->device_mapper_major)
 			continue;
 
 		/*
 		 * if "dm-1" is a dm device, then check if it's an LVM LV
-		 * by reading /sys/block/<holder_name>/dm/uuid and seeing
-		 * if the uuid begins with LVM-
-		 * UUID_PREFIX is "LVM-"
+		 * by reading DM status and seeing if the uuid begins
+		 * with UUID_PREFIX  ("LVM-")
 		 */
-
-		dm_uuid[0] = '\0';
-
-		if (!get_dm_uuid_from_sysfs(dm_uuid, sizeof(dm_uuid), dm_dev_major, dm_dev_minor))
+		if (!devno_dm_uuid(cmd, dm_dev_major, dm_dev_minor, dm_uuid, sizeof(dm_uuid)))
 			continue;
 
-		if (!strncmp(dm_uuid, UUID_PREFIX, 4))
+		if (!strncmp(dm_uuid, UUID_PREFIX, lvm_prefix_len))
 			used_count++;
 
 		if (used_by_dm_name && !used_name)
@@ -270,44 +250,45 @@ struct dev_types *create_dev_types(const char *proc_dir,
 		while (line[i] == ' ')
 			i++;
 
-		/* Look for md device */
-		if (!strncmp("md", line + i, 2) && isspace(*(line + i + 2)))
-			dt->md_major = line_maj;
-
-		/* Look for blkext device */
-		if (!strncmp("blkext", line + i, 6) && isspace(*(line + i + 6)))
-			dt->blkext_major = line_maj;
-
-		/* Look for drbd device */
-		if (!strncmp("drbd", line + i, 4) && isspace(*(line + i + 4)))
-			dt->drbd_major = line_maj;
-
-		/* Look for DASD */
-		if (!strncmp("dasd", line + i, 4) && isspace(*(line + i + 4)))
-			dt->dasd_major = line_maj;
-
-		/* Look for EMC powerpath */
-		if (!strncmp("emcpower", line + i, 8) && isspace(*(line + i + 8)))
-			dt->emcpower_major = line_maj;
-
-		/* Look for Veritas Dynamic Multipathing */
-		if (!strncmp("VxDMP", line + i, 5) && isspace(*(line + i + 5)))
-			dt->vxdmp_major = line_maj;
-
-		if (!strncmp("loop", line + i, 4) && isspace(*(line + i + 4)))
-			dt->loop_major = line_maj;
-
-		if (!strncmp("power2", line + i, 6) && isspace(*(line + i + 6)))
-			dt->power2_major = line_maj;
-
-		/* Look for device-mapper device */
-		/* FIXME Cope with multiple majors */
-		if (!strncmp("device-mapper", line + i, 13) && isspace(*(line + i + 13)))
-			dt->device_mapper_major = line_maj;
-
 		/* Major is SCSI device */
 		if (!strncmp("sd", line + i, 2) && isspace(*(line + i + 2)))
 			dt->dev_type_array[line_maj].flags |= PARTITION_SCSI_DEVICE;
+
+		else if (!strncmp("loop", line + i, 4) && isspace(*(line + i + 4)))
+			dt->loop_major = line_maj;
+
+		/* Look for device-mapper device */
+		/* FIXME Cope with multiple majors */
+		else if (!strncmp("device-mapper", line + i, 13) && isspace(*(line + i + 13)))
+			dt->device_mapper_major = line_maj;
+
+		/* Look for md device */
+		else if (!strncmp("md", line + i, 2) && isspace(*(line + i + 2)))
+			dt->md_major = line_maj;
+
+		/* Look for blkext device */
+		else if (!strncmp("blkext", line + i, 6) && isspace(*(line + i + 6)))
+			dt->blkext_major = line_maj;
+
+		/* Look for drbd device */
+		else if (!strncmp("drbd", line + i, 4) && isspace(*(line + i + 4)))
+			dt->drbd_major = line_maj;
+
+		/* Look for DASD */
+		else if (!strncmp("dasd", line + i, 4) && isspace(*(line + i + 4)))
+			dt->dasd_major = line_maj;
+
+		/* Look for EMC powerpath */
+		else if (!strncmp("emcpower", line + i, 8) && isspace(*(line + i + 8)))
+			dt->emcpower_major = line_maj;
+
+		/* Look for Veritas Dynamic Multipathing */
+		else if (!strncmp("VxDMP", line + i, 5) && isspace(*(line + i + 5)))
+			dt->vxdmp_major = line_maj;
+
+		else if (!strncmp("power2", line + i, 6) && isspace(*(line + i + 6)))
+			dt->power2_major = line_maj;
+
 
 		/* Go through the valid device names and if there is a
 		   match store max number of partitions */
@@ -363,7 +344,7 @@ struct dev_types *create_dev_types(const char *proc_dir,
 	}
 
 	if (fclose(pd))
-		log_sys_error("fclose", proc_devices);
+		log_sys_debug("fclose", proc_devices);
 
 	return dt;
 bad:
@@ -459,10 +440,8 @@ static int _loop_is_with_partscan(struct device *dev)
 	char path[PATH_MAX];
 	char buffer[64];
 
-	if (dm_snprintf(path, sizeof(path), "%sdev/block/%d:%d/loop/partscan",
-			dm_sysfs_dir(),
-			(int) MAJOR(dev->dev),
-			(int) MINOR(dev->dev)) < 0) {
+	if (dm_snprintf(path, sizeof(path), "%sdev/block/%u:%u/loop/partscan",
+			dm_sysfs_dir(), MAJOR(dev->dev), MINOR(dev->dev)) < 0) {
 		log_warn("Sysfs path for partscan is too long.");
 		return 0;
 	}
@@ -495,8 +474,8 @@ int dev_get_partition_number(struct device *dev, int *num)
 		return 1;
 	}
 
-	if (dm_snprintf(path, sizeof(path), "%sdev/block/%d:%d/partition",
-			dm_sysfs_dir(), (int)MAJOR(devt), (int)MINOR(devt)) < 0) {
+	if (dm_snprintf(path, sizeof(path), "%sdev/block/%u:%u/partition",
+			dm_sysfs_dir(), MAJOR(devt), MINOR(devt)) < 0) {
 		log_error("Failed to create sysfs path for %s", dev_name(dev));
 		return 0;
 	}
@@ -523,9 +502,14 @@ int dev_get_partition_number(struct device *dev, int *num)
 }
 
 /* See linux/genhd.h and fs/partitions/msdos */
-#define PART_MAGIC 0xAA55
-#define PART_MAGIC_OFFSET UINT64_C(0x1FE)
-#define PART_OFFSET UINT64_C(0x1BE)
+#define PART_MSDOS_MAGIC 0xAA55
+#define PART_MSDOS_MAGIC_OFFSET UINT64_C(0x1FE)
+#define PART_MSDOS_OFFSET UINT64_C(0x1BE)
+#define PART_MSDOS_TYPE_GPT_PMBR UINT8_C(0xEE)
+
+#define PART_GPT_HEADER_OFFSET_LBA 0x01
+#define PART_GPT_MAGIC 0x5452415020494645UL /* "EFI PART" string */
+#define PART_GPT_ENTRIES_FIELDS_OFFSET UINT64_C(0x48)
 
 struct partition {
 	uint8_t boot_ind;
@@ -544,11 +528,11 @@ static int _has_sys_partition(struct device *dev)
 {
 	char path[PATH_MAX];
 	struct stat info;
-	int major = (int) MAJOR(dev->dev);
-	int minor = (int) MINOR(dev->dev);
+	unsigned major = MAJOR(dev->dev);
+	unsigned minor = MINOR(dev->dev);
 
 	/* check if dev is a partition */
-	if (dm_snprintf(path, sizeof(path), "%sdev/block/%d:%d/partition",
+	if (dm_snprintf(path, sizeof(path), "%sdev/block/%u:%u/partition",
 			dm_sysfs_dir(), major, minor) < 0) {
 		log_warn("WARNING: %s: partition path is too long.", dev_name(dev));
 		return 0;
@@ -591,12 +575,71 @@ static int _is_partitionable(struct dev_types *dt, struct device *dev)
 	return 1;
 }
 
+static int _has_gpt_partition_table(struct device *dev)
+{
+	unsigned int pbs, lbs;
+	uint64_t entries_start;
+	uint32_t nr_entries, sz_entry, i;
+
+	struct {
+		uint64_t magic;
+		/* skip fields we're not interested in */
+		uint8_t skip[PART_GPT_ENTRIES_FIELDS_OFFSET - sizeof(uint64_t)];
+		uint64_t part_entries_lba;
+		uint32_t nr_part_entries;
+		uint32_t sz_part_entry;
+	} __attribute__((packed)) gpt_header;
+
+	struct {
+		uint64_t part_type_guid;
+		/* not interested in any other fields */
+	} __attribute__((packed)) gpt_part_entry;
+
+	if (!dev_get_direct_block_sizes(dev, &pbs, &lbs))
+		return_0;
+
+	if (!dev_read_bytes(dev, PART_GPT_HEADER_OFFSET_LBA * lbs, sizeof(gpt_header), &gpt_header))
+		return_0;
+
+	/* the gpt table is always written using LE on disk */
+
+	if (le64_to_cpu(gpt_header.magic) != PART_GPT_MAGIC)
+		return_0;
+
+	entries_start = le64_to_cpu(gpt_header.part_entries_lba) * lbs;
+	nr_entries = le32_to_cpu(gpt_header.nr_part_entries);
+	sz_entry = le32_to_cpu(gpt_header.sz_part_entry);
+
+	for (i = 0; i < nr_entries; i++) {
+		if (!dev_read_bytes(dev, entries_start + i * sz_entry,
+				    sizeof(gpt_part_entry), &gpt_part_entry))
+			return_0;
+
+		/* just check if the guid is nonzero, no need to call le64_to_cpu here */
+		if (gpt_part_entry.part_type_guid)
+			return 1;
+	}
+
+	return 0;
+}
+
+/*
+ * Check if there's a partition table present on the device dev, either msdos or gpt.
+ * Returns:
+ *
+ *   1 - if it has a partition table with at least one real partition defined
+ *       (note: the gpt's PMBR partition alone does not count as a real partition)
+ *
+ *   0 - if it has no partition table,
+ *     - or if it does have a partition table, but without any partition defined,
+ *     - or on error
+ */
 static int _has_partition_table(struct device *dev)
 {
 	int ret = 0;
 	unsigned p;
 	struct {
-		uint8_t skip[PART_OFFSET];
+		uint8_t skip[PART_MSDOS_OFFSET];
 		struct partition part[4];
 		uint16_t magic;
 	} __attribute__((packed)) buf; /* sizeof() == SECTOR_SIZE */
@@ -607,7 +650,7 @@ static int _has_partition_table(struct device *dev)
 	/* FIXME Check for other types of partition table too */
 
 	/* Check for msdos partition table */
-	if (buf.magic == xlate16(PART_MAGIC)) {
+	if (buf.magic == xlate16(PART_MSDOS_MAGIC)) {
 		for (p = 0; p < 4; ++p) {
 			/* Table is invalid if boot indicator not 0 or 0x80 */
 			if (buf.part[p].boot_ind & 0x7f) {
@@ -615,10 +658,20 @@ static int _has_partition_table(struct device *dev)
 				break;
 			}
 			/* Must have at least one non-empty partition */
-			if (buf.part[p].nr_sects)
-				ret = 1;
+			if (buf.part[p].nr_sects) {
+				/*
+				 * If this is GPT's PMBR, then also
+				 * check for gpt partition table.
+				 */
+				if (buf.part[p].sys_ind == PART_MSDOS_TYPE_GPT_PMBR)
+					ret = _has_gpt_partition_table(dev);
+				else
+					ret = 1;
+			}
 		}
-	}
+	} else
+		/* Check for gpt partition table. */
+		ret = _has_gpt_partition_table(dev);
 
 	return ret;
 }
@@ -724,8 +777,8 @@ int dev_is_partitioned(struct cmd_context *cmd, struct device *dev)
  */
 int dev_get_primary_dev(struct dev_types *dt, struct device *dev, dev_t *result)
 {
-	int major = (int) MAJOR(dev->dev);
-	int minor = (int) MINOR(dev->dev);
+	unsigned major = MAJOR(dev->dev);
+	unsigned minor = MINOR(dev->dev);
 	char path[PATH_MAX];
 	char temp_path[PATH_MAX];
 	char buffer[64];
@@ -775,7 +828,7 @@ int dev_get_primary_dev(struct dev_types *dt, struct device *dev, dev_t *result)
 	 * - basename ../../block/md0/md0  = md0
 	 * Parent's 'dev' sysfs attribute  = /sys/block/md0/dev
 	 */
-	if (dm_snprintf(path, sizeof(path), "%sdev/block/%d:%d",
+	if (dm_snprintf(path, sizeof(path), "%sdev/block/%u:%u",
 			dm_sysfs_dir(), major, minor) < 0) {
 		log_warn("WARNING: %s: major:minor sysfs path is too long.", dev_name(dev));
 		return 0;
@@ -890,6 +943,7 @@ int fs_get_blkid(const char *pathname, struct fs_info *fsi)
 	const char *str = "";
 	size_t len = 0;
 	uint64_t fslastblock = 0;
+	uint64_t fssize = 0;
 	unsigned int fsblocksize = 0;
 	int rc;
 
@@ -940,10 +994,25 @@ int fs_get_blkid(const char *pathname, struct fs_info *fsi)
 	if (!blkid_probe_lookup_value(probe, "FSBLOCKSIZE", &str, &len) && len)
 		fsblocksize = (unsigned int)atoi(str);
 
+	if (!blkid_probe_lookup_value(probe, "FSSIZE", &str, &len) && len)
+		fssize = strtoull(str, NULL, 0);
+
 	blkid_free_probe(probe);
 
 	if (fslastblock && fsblocksize)
 		fsi->fs_last_byte = fslastblock * fsblocksize;
+	else if (fssize) {
+		fsi->fs_last_byte = fssize;
+
+		/*
+		 * For swap, there's no FSLASTBLOCK reported by blkid. We do have FSSIZE reported though.
+		 * The last block is then calculated as:
+		 *    FSSIZE (== size of the usable swap area) + FSBLOCKSIZE (== size of the swap header)
+		 */
+		if (!strcmp(fsi->fstype, "swap"))
+			fsi->fs_last_byte += fsblocksize;
+
+	}
 
 	log_debug("libblkid TYPE %s BLOCK_SIZE %d FSLASTBLOCK %llu FSBLOCKSIZE %u fs_last_byte %llu",
 		  fsi->fstype, fsi->fs_block_size_bytes, (unsigned long long)fslastblock, fsblocksize,
@@ -1212,9 +1281,8 @@ int wipe_known_signatures(struct cmd_context *cmd, struct device *dev,
 static int _snprintf_attr(char *buf, size_t buf_size, const char *sysfs_dir,
 			 const char *attribute, dev_t dev)
 {
-	if (dm_snprintf(buf, buf_size, "%sdev/block/%d:%d/%s", sysfs_dir,
-			(int)MAJOR(dev), (int)MINOR(dev),
-			attribute) < 0) {
+	if (dm_snprintf(buf, buf_size, "%sdev/block/%u:%u/%s", sysfs_dir,
+			MAJOR(dev), MINOR(dev),	attribute) < 0) {
 		log_warn("WARNING: sysfs path for %s attribute is too long.", attribute);
 		return 0;
 	}

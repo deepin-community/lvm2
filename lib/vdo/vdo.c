@@ -75,7 +75,8 @@ static void _vdo_display(const struct lv_segment *seg)
 
 static int _vdo_text_import(struct lv_segment *seg,
 			    const struct dm_config_node *n,
-			    struct dm_hash_table *pv_hash __attribute__((unused)))
+			    struct dm_hash_table *pv_hash __attribute__((unused)),
+			    struct dm_hash_table *lv_hash)
 {
 	struct logical_volume *vdo_pool_lv;
 	const char *str;
@@ -84,7 +85,7 @@ static int _vdo_text_import(struct lv_segment *seg,
 	if (!dm_config_has_node(n, "vdo_pool") ||
 	    !(str = dm_config_find_str(n, "vdo_pool", NULL)))
 		return _bad_field("vdo_pool");
-	if (!(vdo_pool_lv = find_lv(seg->lv->vg, str))) {
+	if (!(vdo_pool_lv = dm_hash_lookup(lv_hash, str))) {
 		log_error("Unknown VDO pool logical volume %s.", str);
 		return 0;
 	}
@@ -167,7 +168,8 @@ static void _vdo_pool_display(const struct lv_segment *seg)
 
 	_print_yes_no("Compression\t", vtp->use_compression);
 	_print_yes_no("Deduplication", vtp->use_deduplication);
-	_print_yes_no("Metadata hints", vtp->use_metadata_hints);
+	if (vtp->use_metadata_hints)
+		_print_yes_no("Metadata hints", vtp->use_metadata_hints);
 
 	log_print("  Minimum IO size\t%s",
 		  display_size(cmd, vtp->minimum_io_size));
@@ -191,7 +193,8 @@ static void _vdo_pool_display(const struct lv_segment *seg)
 	log_print("  # Logical threads\t%u", (unsigned) vtp->logical_threads);
 	log_print("  # Physical threads\t%u", (unsigned) vtp->physical_threads);
 	log_print("  Max discard\t\t%u", (unsigned) vtp->max_discard);
-	log_print("  Write policy\t%s", get_vdo_write_policy_name(vtp->write_policy));
+	if (vtp->write_policy != DM_VDO_WRITE_POLICY_AUTO)
+		log_print("  Write policy\t%s", get_vdo_write_policy_name(vtp->write_policy));
 }
 
 /* reused as _vdo_text_import_area_count */
@@ -205,7 +208,8 @@ static int _vdo_pool_text_import_area_count(const struct dm_config_node *sn __at
 
 static int _vdo_pool_text_import(struct lv_segment *seg,
 				 const struct dm_config_node *n,
-				 struct dm_hash_table *pv_hash __attribute__((unused)))
+				 struct dm_hash_table *pv_hash __attribute__((unused)),
+				 struct dm_hash_table *lv_hash)
 {
 	struct dm_vdo_target_params *vtp = &seg->vdo_params;
 	struct logical_volume *data_lv;
@@ -214,7 +218,7 @@ static int _vdo_pool_text_import(struct lv_segment *seg,
 	if (!dm_config_has_node(n, "data") ||
 	    !(str = dm_config_find_str(n, "data", NULL)))
 		return _bad_field("data");
-	if (!(data_lv = find_lv(seg->lv->vg, str))) {
+	if (!(data_lv = dm_hash_lookup(lv_hash, str))) {
 		log_error("Unknown logical volume %s.", str);
 		return 0;
 	}
@@ -421,11 +425,11 @@ static int _vdo_target_present(struct cmd_context *cmd,
 {
 	/* List of features with their kernel target version */
 	static const struct feature {
-		uint32_t maj;
-		uint32_t min;
-		uint32_t patchlevel;
-		unsigned vdo_feature;
-		const char *feature;
+		uint16_t maj;
+		uint16_t min;
+		uint16_t patchlevel;
+		uint16_t vdo_feature;
+		const char feature[24];
 	} _features[] = {
 		{ 6, 2, 3, VDO_FEATURE_ONLINE_RENAME, "online_rename" },
 		{ 8, 2, 0, VDO_FEATURE_VERSION4, "version4" },
@@ -459,7 +463,7 @@ static int _vdo_target_present(struct cmd_context *cmd,
 		/* If stripe target was already detected, reuse its result */
 		if (!(segtype = get_segtype_from_string(cmd, SEG_TYPE_NAME_STRIPED)) ||
 		    !segtype->ops->target_present || !segtype->ops->target_present(cmd, NULL, NULL)) {
-			/* Linear/Stripe targer is for mapping LVs on top of single VDO volume. */
+			/* Linear/Stripe target is for mapping LVs on top of single VDO volume. */
 			if (!target_present(cmd, TARGET_NAME_LINEAR, 0) ||
 			    !target_present(cmd, TARGET_NAME_STRIPED, 0))
 				return 0;
@@ -562,7 +566,7 @@ static void _vdo_pool_destroy(struct segment_type *segtype)
 	free((void *)segtype);
 }
 
-static struct segtype_handler _vdo_ops = {
+static const struct segtype_handler _vdo_ops = {
 	.name = _vdo_name,
 	.display = _vdo_display,
 	.text_import = _vdo_text_import,
@@ -578,7 +582,7 @@ static struct segtype_handler _vdo_ops = {
 	.destroy = _vdo_pool_destroy,
 };
 
-static struct segtype_handler _vdo_pool_ops = {
+static const struct segtype_handler _vdo_pool_ops = {
 	.name = _vdo_pool_name,
 	.display = _vdo_pool_display,
 	.text_import = _vdo_pool_text_import,

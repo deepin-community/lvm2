@@ -42,7 +42,7 @@ struct dev_manager;
 #define SEG_CACHE		(1ULL << 13)
 #define SEG_CACHE_POOL		(1ULL << 14)
 #define SEG_MIRROR		(1ULL << 15)
-#define SEG_ONLY_EXCLUSIVE	(1ULL << 16) /* In cluster only exlusive activation */
+#define SEG_ONLY_EXCLUSIVE	(1ULL << 16) /* In cluster only exclusive activation */
 #define SEG_CAN_ERROR_WHEN_FULL	(1ULL << 17)
 
 #define SEG_RAID0		(1ULL << 18)
@@ -236,7 +236,7 @@ struct segment_type {
 	uint64_t flags;
 	uint32_t parity_devs;		/* Parity drives required by segtype */
 
-	struct segtype_handler *ops;
+	const struct segtype_handler *ops;
 	const char *name;
 	const char *dso;
 
@@ -255,7 +255,8 @@ struct segtype_handler {
 				       uint32_t *area_count);
 	int (*text_import) (struct lv_segment * seg,
 			    const struct dm_config_node * sn,
-			    struct dm_hash_table * pv_hash);
+			    struct dm_hash_table * pv_hash,
+			    struct dm_hash_table * lv_hash);
 	int (*merge_segments) (struct lv_segment * seg1,
 			       struct lv_segment * seg2);
 	int (*add_target_line) (struct dev_manager *dm, struct dm_pool *mem,
