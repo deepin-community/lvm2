@@ -158,4 +158,9 @@ override_dh_installsystemd:
 		lvm2-lvmpolld.socket
 	dh_installsystemd --remaining-packages
 
+override_dh_python3:
+	chmod u+w debian/lvm2-dbusd/usr/sbin/lvmdbusd 2>/dev/null || true
+	dh_python3
+	chmod a-w debian/lvm2-dbusd/usr/sbin/lvmdbusd 2>/dev/null || true
+
 .NOTPARALLEL:

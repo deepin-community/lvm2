@@ -1,3 +1,9 @@
+lvm2 (2.03.27-1deepin1) unstable; urgency=medium
+
+  * add ConditionPathExistsGlob for lvm2-monitor.service to optimize boot performance.
+
+ -- xinpeng.wang <wangxinpeng@uniontech.com>  Wed, 29 Apr 2026 15:42:32 +0800
+
 lvm2 (2.03.27-1) unstable; urgency=medium
 
   * New upstream release.
