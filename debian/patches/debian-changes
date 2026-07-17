@@ -114,10 +114,10 @@ index 423807f40cad15b787004db891f0ea19cdcd5997..a3240a084f5f4374c38470467d51462e
 +- local: debian/pipeline/build.yml
 +- local: debian/pipeline/test.yml
 diff --git a/configure.ac b/configure.ac
-index cbea6adc68a1c650544843ec77f318f7da068548..6aa7fc042f9de3c512c86c01f113f7c9e0d957cb 100644
+index e5e5e71ce1bf8df56b62b284490c167d4b1b594a..121d2b61b200299b606aa85368d10d993e36ac55 100644
 --- a/configure.ac
 +++ b/configure.ac
-@@ -1689,11 +1689,7 @@ AS_IF([test "$BUILD_DMFILEMAPD" = "yes"], [
+@@ -1742,11 +1742,7 @@ AS_IF([test "$BUILD_DMFILEMAPD" = "yes"], [
  ])
  
  ################################################################################
@@ -143,7 +143,7 @@ index fab74dc1d6f3dd8e740a3806d8424855bb399df6..46c14fb5ae4935104891f41e2cd62607
 +dm_event_daemon_talk
  dm_event_get_version
 diff --git a/daemons/dmeventd/dmeventd.c b/daemons/dmeventd/dmeventd.c
-index 0e8524548b5df650049e7b7eaa877c4237318788..692bd54c6eb795d3c27a6819425f24d1e07e34e6 100644
+index b823a0476e267db1b40579051c19866b37434fce..97249515ce5bb8e5a60e4605d281fef6fa156648 100644
 --- a/daemons/dmeventd/dmeventd.c
 +++ b/daemons/dmeventd/dmeventd.c
 @@ -2025,7 +2025,7 @@ static int _reinstate_registrations(struct dm_event_fifos *fifos)
@@ -268,10 +268,10 @@ index 0e8524548b5df650049e7b7eaa877c4237318788..692bd54c6eb795d3c27a6819425f24d1
  }
  
 diff --git a/daemons/dmeventd/dmeventd.h b/daemons/dmeventd/dmeventd.h
-index 661d46a0b2a5043262328c730096ff547ac03aa4..8dbfa6262b596719887f7090660c02099b4756f1 100644
+index e8e22765e99b05846a6a94afaaa39ad355b56ba4..9d5253736560b31daaf5f01729b3f80d8f6e576d 100644
 --- a/daemons/dmeventd/dmeventd.h
 +++ b/daemons/dmeventd/dmeventd.h
-@@ -65,12 +65,12 @@ struct dm_event_fifos {
+@@ -67,12 +67,12 @@ struct dm_event_fifos {
  
  /* Implemented in libdevmapper-event.c, but not part of public API. */
  // FIXME  misuse of bitmask as enum
@@ -365,10 +365,10 @@ index 08b061fb29707886b0bc113ee998aa8cabd66318..745a9fb0af12b00ff92f9d364ae0bf6f
  install_lvm2: install_lvmdbusd
  
 diff --git a/make.tmpl.in b/make.tmpl.in
-index c8a870a8e7a8e0fcfed783fe12f3a2b63799aaf9..d7ddc680df385c4195aa79c5fd61608426920d2a 100644
+index a80aca167a07004a5945bb7a346872b1e1264162..5f3a804f3cf827ecb0fc5d1ae10b01449a92cd05 100644
 --- a/make.tmpl.in
 +++ b/make.tmpl.in
-@@ -518,7 +518,7 @@ DEFS+=-D_FILE_OFFSET_BITS=64
+@@ -521,7 +521,7 @@ DEFS+=-D_FILE_OFFSET_BITS=64
  %.o: %.cpp $(DEPS)
  	$(SHOW) "    [CXX] $(<F)"
  	@mkdir -p $(@D)

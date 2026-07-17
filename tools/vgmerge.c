@@ -156,7 +156,8 @@ static int _vgmerge_single(struct cmd_context *cmd, const char *vg_name_to,
 	}
 
 	dm_list_iterate_items(lvl1, &vg_from->lvs) {
-		lvl1->lv->vg = vg_to;
+		if (!lv_set_vg(lvl1->lv, vg_to))
+			goto_bad;
 		lvl1->lv->lvid.id[0] = lvl1->lv->vg->id;
 	}
 
@@ -188,7 +189,8 @@ static int _vgmerge_single(struct cmd_context *cmd, const char *vg_name_to,
 	/* Flag up that some PVs have moved from another VG */
 	vg_to->old_name = vg_from->name;
 
-        /* Check whether size of pmspare is big enough now for merged VG */
+	/* Check whether size of pmspare is big enough now for merged VG */
+	/* coverity[format_string_injection] pool_metadata_spare_lv name is validated */
 	if (!handle_pool_metadata_spare(vg_to, 0, &vg_to->pvs, poolmetadataspare))
 		goto_bad;
 

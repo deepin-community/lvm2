@@ -21,6 +21,7 @@
 #include "lib/metadata/segtype.h"
 #include "lib/datastruct/str_list.h"
 #include "lib/locking/lvmlockd.h"
+#include "base/data-struct/radix-tree.h"
 
 #include <time.h>
 #include <sys/utsname.h>
@@ -1568,11 +1569,56 @@ int lv_set_creation(struct logical_volume *lv,
 			_utsinit = 1;
 		}
 
-		hostname = _utsname.nodename;
+		lv->hostname = _utsname.nodename;
+	} else
+		lv->hostname = dm_pool_strdup(lv->vg->vgmem, hostname);
+
+	lv->timestamp = timestamp ? : (uint64_t) time(NULL);
+
+	return 1;
+}
+
+/*
+ * As we keep now vg->lv_names for quick looking of an LV by name
+ * when the LV name is changed, we need to also update our lookup tree
+ */
+int lv_set_name(struct logical_volume *lv, const char *lv_name)
+{
+	int r;
+
+	if (lv->vg->lv_names && lv->name &&
+	    !radix_tree_remove(lv->vg->lv_names, lv->name, strlen(lv->name))) {
+		log_error("Cannot remove from lv_names LV %s", lv->name);
+		return 0;
 	}
 
-	lv->hostname = dm_pool_strdup(lv->vg->vgmem, hostname);
-	lv->timestamp = timestamp ? : (uint64_t) time(NULL);
+	lv->name = lv_name; /* NULL -> LV is removed from tree */
+
+	if (lv->vg->lv_names && lv->name &&
+	    (1 != (r = radix_tree_uniq_insert_ptr(lv->vg->lv_names, lv->name,
+						  strlen(lv->name), lv)))) {
+		if (!r)
+			log_error("Cannot insert to lv_names LV %s", lv->name);
+		else
+			log_error("Duplicate LV name %s detected.", lv->name);
+		return 0;
+	}
+
+	return 1;
+}
+
+int lv_set_vg(struct logical_volume *lv, struct volume_group *vg)
+{
+	const char *lv_name;
+
+	if (lv->vg != vg) {
+		lv_name = lv->name;
+		if (!lv_set_name(lv, NULL))
+			return_0; /* drop from existing VG radix_tree */
+		lv->vg = vg;
+		if (!lv_set_name(lv, lv_name))
+			return_0;
+	}
 
 	return 1;
 }

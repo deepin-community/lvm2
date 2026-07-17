@@ -319,6 +319,9 @@ static uint64_t _stats_region_is_grouped(const struct dm_stats* dms,
 	if (region_id == DM_STATS_GROUP_NOT_PRESENT)
 		return 0;
 
+	if (!dms->regions)
+		return 0;
+
 	if (!_stats_region_present(&dms->regions[region_id]))
 		return 0;
 
@@ -3186,9 +3189,9 @@ int dm_stats_get_current_region_len(const struct dm_stats *dms,
 }
 
 int dm_stats_get_current_region_area_len(const struct dm_stats *dms,
-					 uint64_t *step)
+					 uint64_t *area_len)
 {
-	return dm_stats_get_region_area_len(dms, step, dms->cur_region);
+	return dm_stats_get_region_area_len(dms, area_len, dms->cur_region);
 }
 
 int dm_stats_get_area_start(const struct dm_stats *dms, uint64_t *start,
@@ -4753,8 +4756,7 @@ static uint64_t *_stats_map_file_regions(struct dm_stats *dms, int fd,
 
 	if (!(extents = _stats_get_extents_for_file(extent_mem, fd, count))) {
 		log_very_verbose("No extents found in fd %d", fd);
-		if (!update)
-			goto out;
+		goto out;
 	}
 
 	if (update) {

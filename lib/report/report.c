@@ -2622,13 +2622,12 @@ static struct logical_volume *_lv_for_raid_image_seg(const struct lv_segment *se
 				p = strchr(p + 5, '_');
 
 			if (p) {
-				struct lv_list *lvl;
+				struct logical_volume *lv;
 
 				*p = '\0';
-				if ((lvl = find_lv_in_vg(seg->lv->vg, lv_name)) &&
-				    seg_is_reshapable_raid(first_seg(lvl->lv)))
-					return lvl->lv;
-
+				if ((lv = find_lv(seg->lv->vg, lv_name)) &&
+				    seg_is_reshapable_raid(first_seg(lv)))
+					return lv;
 			}
 		}
 	}
@@ -4637,14 +4636,25 @@ int report_devtypes(void *handle)
 
 int report_cmdlog(void *handle, const char *type, const char *context,
 		  const char *object_type_name, const char *object_name,
-		  const char *object_id, const char *object_group,
-		  const char *object_group_id, const char *msg,
+		  const struct id *object_id, const char *object_group,
+		  const struct id *object_group_id, const char *msg,
 		  int current_errno, int ret_code)
 {
+	char object_uuid[64] __attribute__((aligned(8))) = { 0 };
+	char object_group_uuid[64] __attribute__((aligned(8))) = { 0 };
+
 	struct cmd_log_item log_item = {_log_seqnum++, type, context, object_type_name,
-					object_name ? : "", object_id ? : "",
-					object_group ? : "", object_group_id ? : "",
+					object_name ? : "", object_uuid,
+					object_group ? : "", object_group_uuid,
 					msg ? : "", current_errno, ret_code};
+
+	if (object_id &&
+	    !id_write_format(object_id, object_uuid, sizeof(object_uuid)))
+		stack;
+
+	if (object_group_id &&
+	    !id_write_format(object_group_id, object_group_uuid, sizeof(object_group_uuid)))
+		stack;
 
 	if (handle)
 		return dm_report_object(handle, &log_item);

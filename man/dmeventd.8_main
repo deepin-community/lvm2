@@ -111,7 +111,7 @@ it gets umounted if possible.
 .B Thin
 Monitors how full a thin pool data and metadata is becoming and emits
 a warning to syslog when it exceeds 80% full.
-The warning is repeated when more then 85%, 90% and 95%
+The warning is repeated when more than 85%, 90% and 95%
 of the thin pool is filled. See
 .BR lvm.conf (5).
 When a thin pool fills over 50% (data or metadata) thin plugin calls
@@ -141,7 +141,7 @@ Command can also read status with tools like \fBlvs\fP(8).
 .B Vdo
 Monitors how full a VDO pool data is becoming and emits
 a warning to syslog when it exceeds 80% full.
-The warning is repeated when more then 85%, 90% and 95%
+The warning is repeated when more than 85%, 90% and 95%
 of the VDO pool is filled. See
 .BR lvm.conf (5).
 When a VDO pool fills over 50% vdo plugin calls
@@ -170,19 +170,19 @@ Command can also read status with tools like \fBlvs\fP(8).
 .
 .TP
 .B DMEVENTD_THIN_POOL_DATA
-Variable is set by thin plugin and is available to executed program. Value present
-actual usage of thin pool data volume. Variable is not set when error event
-is processed.
+Variable is set by thin plugin and is available to executed program.
+Value present actual usage of thin pool data volume.
+Variable is not set when error event is processed.
 .TP
 .B DMEVENTD_THIN_POOL_METADATA
-Variable is set by thin plugin and is available to executed program. Value present
-actual usage of thin pool metadata volume. Variable is not set when error event
-is processed.
+Variable is set by thin plugin and is available to executed program.
+Value present actual usage of thin pool metadata volume.
+Variable is not set when error event is processed.
 .TP
 .B DMEVENTD_VDO_POOL
-Variable is set by vdo plugin and is available to executed program. Value present
-actual usage of VDO pool data volume. Variable is not set when error event
-is processed.
+Variable is set by vdo plugin and is available to executed program.
+Value present actual usage of VDO pool data volume.
+Variable is not set when error event is processed.
 .TP
 .B LVM_RUN_BY_DMEVENTD
 Variable is set by thin and vdo plugin to prohibit recursive interaction

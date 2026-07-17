@@ -152,14 +152,16 @@ struct thin_message {
 struct load_segment {
 	struct dm_list list;
 
-	unsigned type;
-
 	uint64_t size;
+
+	unsigned type;
 
 	unsigned area_count;		/* Linear + Striped + Mirrored + Crypt */
 	struct dm_list areas;		/* Linear + Striped + Mirrored + Crypt */
 
 	uint32_t stripe_size;		/* Striped + raid */
+
+	uint32_t region_size;		/* Mirror + raid */
 
 	int persistent;			/* Snapshot */
 	uint32_t chunk_size;		/* Snapshot */
@@ -168,7 +170,6 @@ struct load_segment {
 	struct dm_tree_node *merge;	/* Snapshot */
 
 	struct dm_tree_node *log;	/* Mirror */
-	uint32_t region_size;		/* Mirror + raid */
 	unsigned clustered;		/* Mirror */
 	unsigned mirror_area_count;	/* Mirror */
 	uint64_t flags;			/* Mirror + Raid + Cache */
@@ -540,7 +541,8 @@ static struct dm_tree_node *_create_dm_tree_node(struct dm_tree *dtree,
 	struct dm_tree_node *node;
 	dev_t dev;
 
-	if (!(node = dm_pool_zalloc(dtree->mem, sizeof(*node))) ||
+	if (!dtree || !dtree->mem ||
+	    !(node = dm_pool_zalloc(dtree->mem, sizeof(*node))) ||
 	    !(node->name = dm_pool_strdup(dtree->mem, name)) ||
 	    !(node->uuid = dm_pool_strdup(dtree->mem, uuid))) {
 		log_error("_create_dm_tree_node alloc failed.");

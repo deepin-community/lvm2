@@ -20,6 +20,14 @@
 #include "libdm/misc/dm-logging.h"
 #include "libdm/dm-tools/util.h"
 
+#ifdef __linux__
+#  include "libdm/misc/kdev_t.h"
+#else
+#  define MAJOR(x) major((x))
+#  define MINOR(x) minor((x))
+#  define MKDEV(x,y) makedev((x),(y))
+#endif
+
 #include <ctype.h>
 #include <dirent.h>
 #include <fcntl.h>
@@ -31,7 +39,6 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
-#include <stdlib.h>
 
 #ifdef UDEV_SYNC_SUPPORT
 #  include <sys/types.h>
@@ -77,14 +84,6 @@ struct option {
        do __result = (long int) (expression);		\
        while (__result == -1L && errno == EINTR);	\
        __result; }))
-#endif
-
-#ifdef __linux__
-#  include "libdm/misc/kdev_t.h"
-#else
-#  define MAJOR(x) major((x))
-#  define MINOR(x) minor((x))
-#  define MKDEV(x,y) makedev((x),(y))
 #endif
 
 #define LINE_SIZE 4096
@@ -329,7 +328,7 @@ struct command {
 static int _parse_line(struct dm_task *dmt, char *buffer, const char *file,
 		       int line)
 {
-	char ttype[LINE_SIZE], *ptr, *comment;
+	char ttype[LINE_SIZE + 1], *ptr, *comment;
 	unsigned long long start, size;
 	int n;
 
@@ -406,7 +405,7 @@ static int _parse_file(struct dm_task *dmt, const char *file)
 	buffer_size = LINE_SIZE;
 	if (!(buffer = malloc(buffer_size))) {
 		log_error("Failed to malloc line buffer.");
-		return 0;
+		goto out;
 	}
 
 	while (fgets(buffer, (int) buffer_size, fp))
@@ -419,12 +418,11 @@ static int _parse_file(struct dm_task *dmt, const char *file)
 	r = 1;
 
 out:
-	memset(buffer, 0, buffer_size);
-#ifndef HAVE_GETLINE
-	free(buffer);
-#else
-	free(buffer);
-#endif
+	if (buffer) {
+		memset(buffer, 0, buffer_size);
+		free(buffer);
+	}
+
 	if (file && fclose(fp))
 		log_sys_debug("fclose", file);
 
@@ -528,46 +526,53 @@ static char *_extract_uuid_prefix(const char *uuid, const int separator)
 	return uuid_prefix;
 }
 
+static void _destroy_split_name(struct dm_split_name *split_name)
+{
+	free(split_name->subsystem);
+	free(split_name);
+}
+
 static struct dm_split_name *_get_split_name(const char *uuid, const char *name,
 					     int separator)
 {
 	struct dm_split_name *split_name;
+	char *subsystem;
+	size_t len = 0;
 
-	if (!(split_name = malloc(sizeof(*split_name)))) {
+	if (!(subsystem = _extract_uuid_prefix(uuid, separator)))
+		return_NULL;
+
+	if (!strcmp(subsystem, "LVM"))
+		len = strlen(name);
+
+	/* struct size + name string */
+	if (!(split_name = malloc(sizeof(*split_name) + len + 1))) {
 		log_error("Failed to allocate memory to split device name "
 			  "into components.");
+		free(subsystem);
 		return NULL;
 	}
 
-	if (!(split_name->subsystem = _extract_uuid_prefix(uuid, separator))) {
-		free(split_name);
-		return_NULL;
+	split_name->subsystem = subsystem;
+	split_name->vg_name = split_name->lv_name =
+		split_name->lv_layer = (char *) "";
+
+	if (len) {
+		split_name->vg_name = (char*)(split_name + 1);
+		dm_strncpy(split_name->vg_name, name, len + 1);
+
+		if (!dm_split_lvm_name(NULL, NULL,
+				       &split_name->vg_name,
+				       &split_name->lv_name,
+				       &split_name->lv_layer)) {
+			log_error("Failed to allocate memory to split LVM name "
+				  "into components.");
+			_destroy_split_name(split_name);
+			return NULL;
+		}
 	}
 
-	split_name->vg_name = split_name->lv_name =
-	    split_name->lv_layer = (char *) "";
-
-	if (!strcmp(split_name->subsystem, "LVM") &&
-	    (!(split_name->vg_name = strdup(name)) ||
-	     !dm_split_lvm_name(NULL, NULL, &split_name->vg_name,
-				&split_name->lv_name, &split_name->lv_layer)))
-		log_error("Failed to allocate memory to split LVM name "
-			  "into components.");
-
 	return split_name;
-}
-
-static void _destroy_split_name(struct dm_split_name *split_name)
-{
-	/*
-	 * lv_name and lv_layer are allocated within the same block
-	 * of memory as vg_name so don't need to be freed separately.
-	 */
-	if (!strcmp(split_name->subsystem, "LVM"))
-		free(split_name->vg_name);
-
-	free(split_name->subsystem);
-	free(split_name);
 }
 
 /*

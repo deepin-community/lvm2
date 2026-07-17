@@ -573,11 +573,6 @@ struct pv_list {
 	struct dm_list *pe_ranges;	/* Ranges of PEs e.g. for allocation */
 };
 
-struct lv_list {
-	struct dm_list list;
-	struct logical_volume *lv;
-};
-
 struct glv_list {
 	struct dm_list list;
 	struct generic_logical_volume *glv;
@@ -819,7 +814,7 @@ struct wipe_params {
 };
 
 /* Zero out LV and/or wipe signatures */
-int wipe_lv(struct logical_volume *lv, struct wipe_params params);
+int wipe_lv(struct logical_volume *lv, struct wipe_params wp);
 
 /* Wipe any signatures and zero first sector on @lv */
 int activate_and_wipe_lv(struct logical_volume *lv, int commit);
@@ -1023,8 +1018,7 @@ struct lvcreate_params {
 	const char *lv_name; /* all */
 	const char *origin_name; /* snap */
 	const char *pool_name;   /* thin */
-
-	const char *lock_args;
+	const char *lockd_name;
 
 	uint32_t stripes; /* striped/RAID */
 	uint32_t stripe_size; /* striped/RAID */
@@ -1226,7 +1220,7 @@ int lv_add_mirrors(struct cmd_context *cmd, struct logical_volume *lv,
 		   uint32_t mirrors, uint32_t stripes, uint32_t stripe_size,
 		   uint32_t region_size, uint32_t log_count,
 		   struct dm_list *pvs, alloc_policy_t alloc, uint32_t flags);
-int lv_split_mirror_images(struct logical_volume *lv, const char *split_lv_name,
+int lv_split_mirror_images(struct logical_volume *lv, const char *split_name,
 			   uint32_t split_count, struct dm_list *removable_pvs);
 int lv_remove_mirrors(struct cmd_context *cmd, struct logical_volume *lv,
 		      uint32_t mirrors, uint32_t log_count,
@@ -1502,7 +1496,7 @@ struct dm_list *clone_pv_list(struct dm_pool *mem, struct dm_list *pvsl);
 
 int lv_add_integrity_to_raid(struct logical_volume *lv, struct integrity_settings *settings, struct dm_list *pvh,
 			     struct logical_volume *lv_imeta_0);
-int lv_remove_integrity_from_raid(struct logical_volume *lv);
+int lv_remove_integrity_from_raid(struct logical_volume *lv, char **remove_images);
 void lv_clear_integrity_recalculate_metadata(struct logical_volume *lv);
 int lv_has_integrity_recalculate_metadata(struct logical_volume *lv);
 int lv_raid_has_integrity(struct logical_volume *lv);

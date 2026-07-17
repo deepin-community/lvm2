@@ -16,6 +16,10 @@
 #ifndef _LVM_COMMAND_H
 #define _LVM_COMMAND_H
 
+#include "tools/command_enums.h"
+
+#include <stdint.h>
+
 struct cmd_context;
 struct logical_volume;
 
@@ -30,8 +34,8 @@ struct command_function {
 struct command_name {
 	const char *name;
 	const char *desc; /* general command description from commands.h */
-	unsigned int flags;
 	command_fn fn; /* old style */
+	unsigned int flags;
 	uint16_t lvm_command_enum; /* as declared in commands.h with _COMMAND */
 };
 

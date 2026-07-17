@@ -13,7 +13,7 @@
 
 #include "tools/tool.h"
 
-#include "daemon-server.h"
+#include "libdaemon/server/daemon-server.h"
 #include "lib/mm/xlate.h"
 
 #include "lvmlockd-internal.h"
@@ -23,6 +23,9 @@
 #include "sanlock_rv.h"
 #include "sanlock_admin.h"
 #include "sanlock_resource.h"
+
+/* FIXME: copied from sanlock header until the sanlock update is more widespread */
+#define SANLK_ADD_NODELAY      0x00000002
 
 #include <stddef.h>
 #include <poll.h>
@@ -150,11 +153,11 @@ struct lm_sanlock {
 };
 
 struct rd_sanlock {
+	struct val_blk *vb;
 	union {
 		struct sanlk_resource rs;
 		char buf[sizeof(struct sanlk_resource) + sizeof(struct sanlk_disk)];
 	};
-	struct val_blk *vb;
 };
 
 struct sanlk_resourced {
@@ -295,8 +298,8 @@ static int read_host_id_file(void)
 		*sep = '\0';
 		memset(key_str, 0, sizeof(key_str));
 		memset(val_str, 0, sizeof(val_str));
-		(void) sscanf(key, "%s", key_str);
-		(void) sscanf(val, "%s", val_str);
+		(void) sscanf(key, "%63s", key_str);
+		(void) sscanf(val, "%63s", val_str);
 
 		if (!strcmp(key_str, "host_id")) {
 			host_id = atoi(val_str);
@@ -770,31 +773,33 @@ int lm_init_vg_sanlock(char *ls_name, char *vg_name, uint32_t flags, char *vg_ar
  * can be saved in the lv's lock_args in the vg metadata.
  */
 
-int lm_init_lv_sanlock(struct lockspace *ls, char *lv_name, char *vg_args, char *lv_args)
+int lm_init_lv_sanlock(struct lockspace *ls, char *ls_name, char *vg_name, char *lv_name, char *vg_args, char *lv_args, char *prev_args)
 {
-	struct lm_sanlock *lms = (struct lm_sanlock *)ls->lm_data;
+	char disk_path[SANLK_PATH_LEN];
+	struct lm_sanlock *lms;
 	struct sanlk_resourced rd;
 	char lock_lv_name[MAX_ARGS+1];
 	char lock_args_version[MAX_VERSION+1];
 	uint64_t offset;
-	int align_size = lms->align_size;
+	uint64_t prev_offset = 0;
+	int sector_size = 0;
+	int align_size = 0;
+	int align_mb;
+	uint32_t ss_flags;
+	uint32_t rs_flags = 0;
+	uint32_t tries = 1;
 	int rv;
 
 	memset(&rd, 0, sizeof(rd));
 	memset(lock_lv_name, 0, sizeof(lock_lv_name));
 	memset(lock_args_version, 0, sizeof(lock_args_version));
-
-	rv = lock_lv_name_from_args(vg_args, lock_lv_name);
-	if (rv < 0) {
-		log_error("S %s init_lv_san lock_lv_name_from_args error %d %s",
-			  ls->name, rv, vg_args);
-		return rv;
-	}
+	memset(disk_path, 0, sizeof(disk_path));
 
 	snprintf(lock_args_version, MAX_VERSION, "%u.%u.%u",
 		 LV_LOCK_ARGS_MAJOR, LV_LOCK_ARGS_MINOR, LV_LOCK_ARGS_PATCH);
 
 	if (daemon_test) {
+		align_size = 1024 * 1024;
 		snprintf(lv_args, MAX_ARGS, "%s:%llu",
 			 lock_args_version,
 			 (unsigned long long)((align_size * LV_LOCK_BEGIN) + (align_size * daemon_test_lv_count)));
@@ -802,18 +807,54 @@ int lm_init_lv_sanlock(struct lockspace *ls, char *lv_name, char *vg_args, char 
 		return 0;
 	}
 
-	strcpy_name_len(rd.rs.lockspace_name, ls->name, SANLK_NAME_LEN);
-	rd.rs.num_disks = 1;
-	if ((rv = build_dm_path(rd.rs.disks[0].path, SANLK_PATH_LEN, ls->vg_name, lock_lv_name)))
+	rv = lock_lv_name_from_args(vg_args, lock_lv_name);
+	if (rv < 0) {
+		log_error("S %s init_lv_san lock_lv_name_from_args error %d %s",
+			  ls_name, rv, vg_args);
 		return rv;
+	}
 
-	rd.rs.flags = lms->rs_flags;
+	if ((rv = build_dm_path(disk_path, SANLK_PATH_LEN, vg_name, lock_lv_name))) {
+		log_error("S %s init_lv_san lock_lv_name path error %d %s",
+			  ls_name, rv, vg_args);
+		return rv;
+	}
 
-	if (ls->free_lock_offset)
+	if (ls) {
+		lms = (struct lm_sanlock *)ls->lm_data;
+		align_size = lms->align_size;
+		rs_flags = lms->rs_flags;
 		offset = ls->free_lock_offset;
-	else
-		offset = align_size * LV_LOCK_BEGIN;
-	rd.rs.disks[0].offset = offset;
+	} else {
+		/* FIXME: optimize repeated init_lv for vgchange --locktype sanlock,
+		   to avoid finding align_size/rs_flags each time. */
+
+		rv = get_sizes_lockspace(disk_path, &sector_size, &align_size, &align_mb, &ss_flags, &rs_flags);
+		if (rv < 0) {
+			log_error("S %s init_lv_san get_sizes error %d %s",
+				  ls_name, rv, disk_path);
+			return rv;
+		}
+
+		/*
+		 * With a prev offset, start search after that.
+		 * Without a prev offset, start search from the beginning. 
+		 */
+		if (prev_args && !lock_lv_offset_from_args(prev_args, &prev_offset))
+			offset = prev_offset + align_size;
+		else
+			offset = align_size * LV_LOCK_BEGIN;
+	}
+
+	if (offset < (align_size * LV_LOCK_BEGIN)) {
+		log_error("S %s init_lv_san invalid offset %llu", ls_name, (unsigned long long)offset);
+		return -1;
+	}
+
+	strcpy_name_len(rd.rs.lockspace_name, ls_name, SANLK_NAME_LEN);
+	rd.rs.num_disks = 1;
+	memcpy(rd.rs.disks[0].path, disk_path, SANLK_PATH_LEN-1);
+	rd.rs.flags = rs_flags;
 
 	while (1) {
 		rd.rs.disks[0].offset = offset;
@@ -824,20 +865,20 @@ int lm_init_lv_sanlock(struct lockspace *ls, char *lv_name, char *vg_args, char 
 		if (rv == -EMSGSIZE || rv == -ENOSPC) {
 			/* This indicates the end of the device is reached. */
 			log_debug("S %s init_lv_san read limit offset %llu",
-				  ls->name, (unsigned long long)offset);
+				  ls_name, (unsigned long long)offset);
 			rv = -EMSGSIZE;
 			return rv;
 		}
 
 		if (rv && rv != SANLK_LEADER_MAGIC) {
 			log_error("S %s init_lv_san read error %d offset %llu",
-				  ls->name, rv, (unsigned long long)offset);
+				  ls_name, rv, (unsigned long long)offset);
 			break;
 		}
 
 		if (!strncmp(rd.rs.name, lv_name, SANLK_NAME_LEN)) {
 			log_error("S %s init_lv_san resource name %s already exists at %llu",
-				  ls->name, lv_name, (unsigned long long)offset);
+				  ls_name, lv_name, (unsigned long long)offset);
 			return -EEXIST;
 		}
 
@@ -847,11 +888,11 @@ int lm_init_lv_sanlock(struct lockspace *ls, char *lv_name, char *vg_args, char 
 		 * indicating an uninitialized paxos structure on disk.
 		 */
 		if ((rv == SANLK_LEADER_MAGIC) || !strcmp(rd.rs.name, "#unused")) {
-			log_debug("S %s init_lv_san %s found unused area at %llu",
-				  ls->name, lv_name, (unsigned long long)offset);
+			log_debug("S %s init_lv_san %s found unused area at %llu try %u",
+				  ls_name, lv_name, (unsigned long long)offset, tries);
 
 			strcpy_name_len(rd.rs.name, lv_name, SANLK_NAME_LEN);
-			rd.rs.flags = lms->rs_flags;
+			rd.rs.flags = rs_flags;
 
 			rv = sanlock_write_resource(&rd.rs, 0, 0, 0);
 			if (!rv) {
@@ -859,12 +900,13 @@ int lm_init_lv_sanlock(struct lockspace *ls, char *lv_name, char *vg_args, char 
 				         lock_args_version, (unsigned long long)offset);
 			} else {
 				log_error("S %s init_lv_san write error %d offset %llu",
-					  ls->name, rv, (unsigned long long)rv);
+					  ls_name, rv, (unsigned long long)rv);
 			}
 			break;
 		}
 
 		offset += align_size;
+		tries++;
 	}
 
 	return rv;
@@ -1057,21 +1099,34 @@ int lm_rename_vg_sanlock(char *ls_name, char *vg_name, uint32_t flags, char *vg_
 int lm_free_lv_sanlock(struct lockspace *ls, struct resource *r)
 {
 	struct rd_sanlock *rds = (struct rd_sanlock *)r->lm_data;
+	struct lm_sanlock *lms = (struct lm_sanlock *)ls->lm_data;
 	struct sanlk_resource *rs = &rds->rs;
+	uint64_t offset = rds->rs.disks[0].offset;
 	int rv;
 
-	log_debug("%s:%s free_lv_san", ls->name, r->name);
+	log_debug("%s:%s free_lv_san %llu", ls->name, r->name, (unsigned long long)offset);
 
 	if (daemon_test)
 		return 0;
 
 	strcpy_name_len(rs->name, "#unused", SANLK_NAME_LEN);
 
-	rv = sanlock_write_resource(rs, 0, 0, 0);
-	if (rv < 0) {
-		log_error("%s:%s free_lv_san write error %d",
-			  ls->name, r->name, rv);
+	if (!offset) {
+		lock_lv_offset_from_args(r->lv_args, &offset);
+		rds->rs.disks[0].offset = offset;
+		log_debug("%s:%s free_lv_san lock_args offset %llu", ls->name, r->name, (unsigned long long)offset);
 	}
+
+	if (offset < (lms->align_size * LV_LOCK_BEGIN)) {
+		log_error("%s:%s free_lv_san invalid offset %llu",
+			  ls->name, r->name, (unsigned long long)offset);
+		return -1;
+	}
+
+	rv = sanlock_write_resource(rs, 0, 0, 0);
+	if (rv < 0)
+		log_error("%s:%s free_lv_san %llu write error %d",
+			  ls->name, r->name, (unsigned long long)offset, rv);
 
 	return rv;
 }
@@ -1262,6 +1317,7 @@ int lm_find_free_lock_sanlock(struct lockspace *ls, uint64_t lv_size_bytes)
 	struct sanlk_resourced rd;
 	uint64_t offset;
 	uint64_t start_offset;
+	uint32_t tries = 0;
 	int rv;
 	int round = 0;
 
@@ -1340,8 +1396,8 @@ int lm_find_free_lock_sanlock(struct lockspace *ls, uint64_t lv_size_bytes)
 		 * an invalid paxos structure on disk.
 		 */
 		if (rv == SANLK_LEADER_MAGIC) {
-			log_debug("S %s find_free_lock_san found empty area at %llu",
-				  ls->name, (unsigned long long)offset);
+			log_debug("S %s find_free_lock_san found empty area at %llu try %u",
+				  ls->name, (unsigned long long)offset, tries);
 			ls->free_lock_offset = offset;
 			return 0;
 		}
@@ -1353,12 +1409,13 @@ int lm_find_free_lock_sanlock(struct lockspace *ls, uint64_t lv_size_bytes)
 		}
 
 		if (!strcmp(rd.rs.name, "#unused")) {
-			log_debug("S %s find_free_lock_san found unused area at %llu",
-				  ls->name, (unsigned long long)offset);
+			log_debug("S %s find_free_lock_san found unused area at %llu try %u",
+				  ls->name, (unsigned long long)offset, tries);
 			ls->free_lock_offset = offset;
 			return 0;
 		}
 
+		tries++;
 		offset += lms->align_size;
 	}
 
@@ -1594,9 +1651,10 @@ fail:
 	return ret;
 }
 
-int lm_add_lockspace_sanlock(struct lockspace *ls, int adopt_only, int adopt_ok)
+int lm_add_lockspace_sanlock(struct lockspace *ls, int adopt_only, int adopt_ok, int nodelay)
 {
 	struct lm_sanlock *lms = (struct lm_sanlock *)ls->lm_data;
+	uint32_t flags = 0;
 	int rv;
 
 	if (daemon_test) {
@@ -1604,7 +1662,10 @@ int lm_add_lockspace_sanlock(struct lockspace *ls, int adopt_only, int adopt_ok)
 		goto out;
 	}
 
-	rv = sanlock_add_lockspace_timeout(&lms->ss, 0, sanlock_io_timeout);
+	if (nodelay)
+		flags |= SANLK_ADD_NODELAY;
+
+	rv = sanlock_add_lockspace_timeout(&lms->ss, flags, sanlock_io_timeout);
 	if (rv == -EEXIST && (adopt_ok || adopt_only)) {
 		/* We could alternatively just skip the sanlock call for adopt. */
 		log_debug("S %s add_lockspace_san adopt found ls", ls->name);
@@ -1691,7 +1752,7 @@ out:
 	return 0;
 }
 
-static int lm_add_resource_sanlock(struct lockspace *ls, struct resource *r)
+int lm_add_resource_sanlock(struct lockspace *ls, struct resource *r)
 {
 	struct lm_sanlock *lms = (struct lm_sanlock *)ls->lm_data;
 	struct rd_sanlock *rds = (struct rd_sanlock *)r->lm_data;

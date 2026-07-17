@@ -65,14 +65,16 @@ const char *get_alloc_string(alloc_policy_t alloc)
 alloc_policy_t get_alloc_from_string(const char *str)
 {
 	int i;
-
-	/* cling_by_tags is part of cling */
-	if (!strcmp("cling_by_tags", str))
-		return ALLOC_CLING;
+	alloc_policy_t alloc;
 
 	for (i = 0; i < _num_policies; i++)
-		if (!strcmp(_policies[i].str, str))
-			return _policies[i].alloc;
+		if (!strcmp(_policies[i].str, str)) {
+			alloc = _policies[i].alloc;
+			/* cling_by_tags is part of cling */
+			if (alloc == ALLOC_CLING_BY_TAGS)
+				alloc = ALLOC_CLING;
+			return alloc;
+		}
 
 	/* Special case for old metadata */
 	if (!strcmp("next free", str))
@@ -932,13 +934,13 @@ void display_name_error(name_error_t name_error)
 char yes_no_prompt(const char *prompt, ...)
 {
 	/* Lowercase Yes/No strings */
-	static const char _yes[] = "yes";
-	static const char _no[] = "no";
+	char buf[12] = { 0 };
+	static const char _yes[sizeof(buf)] = "yes";
+	static const char _no[sizeof(buf)] = "no";
 	const char *answer = NULL;
 	int c = silent_mode() ? EOF : 0;
 	int ret = 0, sig = 0;
 	unsigned i = 0;
-	char buf[12];
 	va_list ap;
 
 	sigint_allow();

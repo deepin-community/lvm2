@@ -13,7 +13,7 @@
 
 #include "tools/tool.h"
 
-#include "daemon-server.h"
+#include "libdaemon/server/daemon-server.h"
 #include "lib/mm/xlate.h"
 
 #include "lvmlockd-internal.h"
@@ -490,7 +490,7 @@ out:
 	return rv;
 }
 
-static int lm_add_resource_idm(struct lockspace *ls, struct resource *r)
+int lm_add_resource_idm(struct lockspace *ls, struct resource *r)
 {
 	struct rd_idm *rdi = (struct rd_idm *)r->lm_data;
 

@@ -354,8 +354,9 @@ int thin_pool_check_overprovisioning(const struct logical_volume *lv)
 	struct cmd_context *cmd = lv->vg->cmd;
 	const char *txt = "";
 	uint64_t thinsum = 0, poolsum = 0, sz = ~0;
-	int threshold, max_threshold = 0;
-	int percent, min_percent = 100;
+	int threshold, def_threshold, max_threshold = 0;
+	int percent, def_percent, min_percent = 100;
+	struct profile *profile;
 	int more_pools = 0;
 
 	/* When passed thin volume, check related pool first */
@@ -373,15 +374,26 @@ int thin_pool_check_overprovisioning(const struct logical_volume *lv)
 			return 1; /* All thins fit into this thin pool */
 	}
 
+	def_threshold = find_config_tree_int(cmd, activation_thin_pool_autoextend_threshold_CFG,
+					     NULL);
+	def_percent = find_config_tree_int(cmd, activation_thin_pool_autoextend_percent_CFG,
+					   NULL);
+
 	/* Sum all thins and all thin pools in VG */
 	dm_list_iterate_items(lvl, &lv->vg->lvs) {
 		if (!lv_is_thin_pool(lvl->lv))
 			continue;
 
-		threshold = find_config_tree_int(cmd, activation_thin_pool_autoextend_threshold_CFG,
-						 lv_config_profile(lvl->lv));
-		percent = find_config_tree_int(cmd, activation_thin_pool_autoextend_percent_CFG,
-					       lv_config_profile(lvl->lv));
+		if ((profile = lv_config_profile(lvl->lv))) {
+			threshold = find_config_tree_int(cmd, activation_thin_pool_autoextend_threshold_CFG,
+							 profile);
+			percent = find_config_tree_int(cmd, activation_thin_pool_autoextend_percent_CFG,
+						       profile);
+		} else {
+			threshold = def_threshold;
+			percent = def_percent;
+		}
+
 		if (threshold > max_threshold)
 			max_threshold = threshold;
 		if (percent < min_percent)
@@ -403,7 +415,7 @@ int thin_pool_check_overprovisioning(const struct logical_volume *lv)
 		/* Thin sum size is above VG size */
 		txt = " and the size of whole volume group";
 	else if ((sz = vg_free(lv->vg)) < thinsum)
-		/* Thin sum size is more then free space in a VG */
+		/* Thin sum size is more than free space in a VG */
 		txt = !sz ? "" : " and the amount of free space in volume group";
 	else if ((max_threshold > 99) || !min_percent)
 		/* There is some free space in VG, but it is not configured
@@ -612,8 +624,8 @@ int update_thin_pool_lv(struct logical_volume *lv, int activate)
 
 	if (activate) {
 		/* If the pool is not active, do activate deactivate */
-		monitored = dmeventd_monitor_mode();
-		init_dmeventd_monitor(DMEVENTD_MONITOR_IGNORE);
+		if (DMEVENTD_MONITOR_IGNORE != (monitored = dmeventd_monitor_mode()))
+			init_dmeventd_monitor(DMEVENTD_MONITOR_IGNORE);
 		if (!lv_is_active(lv)) {
 			/*
 			 * FIXME:
@@ -648,6 +660,9 @@ int update_thin_pool_lv(struct logical_volume *lv, int activate)
 			}
 		}
 
+		/* Unlock memory if possible */
+		memlock_unlock(lv->vg->cmd);
+
 		if (!sync_local_dev_names(lv->vg->cmd)) {
 			log_error("Failed to sync local devices LV %s.",
 				  display_lvname(lv));
@@ -661,11 +676,8 @@ int update_thin_pool_lv(struct logical_volume *lv, int activate)
 		}
 		init_dmeventd_monitor(monitored);
 
-		/* Unlock memory if possible */
-		memlock_unlock(lv->vg->cmd);
-
 		if (!ret)
-			return_0;
+			return 0;
 	}
 
 	dm_list_init(&(first_seg(lv)->thin_messages));
@@ -910,7 +922,7 @@ int update_thin_pool_params(struct cmd_context *cmd,
 	*crop_metadata = get_thin_pool_crop_metadata(cmd, *crop_metadata, pool_metadata_size);
 
 	if ((max_pool_data_size / extent_size) < pool_data_extents) {
-		log_error("Selected chunk size %s cannot address more then %s of thin pool data space.",
+		log_error("Selected chunk size %s cannot address more than %s of thin pool data space.",
 			  display_size(cmd, *chunk_size), display_size(cmd, max_pool_data_size));
 		return 0;
 	}

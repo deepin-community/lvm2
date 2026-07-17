@@ -207,14 +207,19 @@ OO_ALL: --commandprofile String, --config String, --debug,
 --verbose, --version, --yes, --test, --devicesfile String, --devices PV, --nohints --journal String
 
 #
+# options for pvdisplay, lvdisplay, vgdisplay
+#
+OO_REPORTING: --configreport ConfigReport, --foreign,
+--ignorelockingfailure, --logonly, --readonly, --reportformat ReportFmt,
+--select String, --shared, --units Units
+
+#
 # options for pvs, lvs, vgs, fullreport
 #
-OO_REPORT: --aligned, --all, --binary, --configreport ConfigReport, --foreign,
---headings HeadingsType --ignorelockingfailure, --logonly,
---nameprefixes, --noheadings, --nosuffix,
---options String, --readonly, --reportformat ReportFmt, --rows,
---select String, --separator String, --shared, --sort String,
---unbuffered, --units Units, --unquoted
+OO_REPORT: OO_REPORTING, --all, --aligned, --binary,
+--headings HeadingsType, --nameprefixes, --noheadings,
+--nosuffix, --options String, --rows, --separator String,
+--sort String, --unbuffered, --unquoted
 
 #
 # options for config, dumpconfig, lvmconfig
@@ -1387,15 +1392,25 @@ DESC: new LV to type writecache.
 ---
 
 lvdisplay
-OO: --aligned, --all, --binary, --colon, --columns,
---configreport ConfigReport, --foreign, --history, --ignorelockingfailure,
---logonly, --maps, --noheadings,
---nosuffix, --options String, --sort String, --readonly,
---segments, --select String, --separator String,
---shared, --unbuffered, --units Units
+OO: OO_REPORTING, --all, --history, --segments, --maps
 OP: VG|LV|Tag ...
-IO: --partial, --ignoreskippedcluster, --reportformat ReportFmt
+IO: --partial, --ignoreskippedcluster
 ID: lvdisplay_general
+
+lvdisplay --columns
+OO: OO_REPORT, --history, --segments
+OP: VG|LV|Tag ...
+IO: --partial, --ignoreskippedcluster
+RULE: --noheadings not --headings
+ID: lvdisplay_columns
+DESC: Display output in columns like lvs.
+
+lvdisplay --colon
+OO: OO_REPORTING, --all, --history, --segments
+OP: VG|LV|Tag ...
+IO: --partial, --ignoreskippedcluster
+ID: lvdisplay_colon
+DESC: Generate colon separated output.
 
 ---
 
@@ -1623,14 +1638,25 @@ RULE: --bootloaderareasize not --restorefile
 ---
 
 pvdisplay
-OO: --aligned, --all, --binary, --colon, --columns, --configreport ConfigReport,
---foreign, --ignorelockingfailure,
---logonly, --maps, --noheadings, --nosuffix, --options String,
---readonly, --reportformat ReportFmt, --select String, --separator String, --shared,
---short, --sort String, --unbuffered, --units Units
+OO: OO_REPORTING, --maps, --segments, --short
 OP: PV|Tag ...
-IO: --ignoreskippedcluster
+IO: --partial, --ignoreskippedcluster
 ID: pvdisplay_general
+
+pvdisplay --columns
+OO: OO_REPORT, --segments
+OP: PV|Tag ...
+IO: --partial, --ignoreskippedcluster
+RULE: --noheadings not --headings
+ID: pvdisplay_columns
+DESC: Display output in columns like pvs.
+
+pvdisplay --colon
+OO: OO_REPORTING, --segments
+OP: PV|Tag ...
+IO: --partial, --ignoreskippedcluster
+ID: pvdisplay_colon
+DESC: Generate colon separated output.
 
 ---
 
@@ -1846,14 +1872,25 @@ ID: vgcreate_general
 ---
 
 vgdisplay
-OO: --activevolumegroups, --aligned, --binary, --colon, --columns,
---configreport ConfigReport, --foreign, --ignorelockingfailure,
---logonly, --noheadings, --nosuffix,
---options String, --readonly, --select String,
---shared, --short, --separator String, --sort String, --unbuffered, --units Units
+OO: OO_REPORTING, --short, --activevolumegroups
 OP: VG|Tag ...
-IO: --partial, --ignoreskippedcluster, --reportformat ReportFmt
+IO: --partial, --ignoreskippedcluster
 ID: vgdisplay_general
+
+vgdisplay --columns
+OO: OO_REPORT
+OP: VG|Tag ...
+IO: --partial, --ignoreskippedcluster
+RULE: --noheadings not --headings
+ID: vgdisplay_columns
+DESC: Display output in columns like vgs.
+
+vgdisplay --colon
+OO: OO_REPORTING, --activevolumegroups
+OP: VG|Tag ...
+IO: --partial, --ignoreskippedcluster
+ID: vgdisplay_colon
+DESC: Generate colon separated output.
 
 ---
 

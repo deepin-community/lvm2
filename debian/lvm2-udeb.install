@@ -1,4 +1,5 @@
 etc/lvm/lvm.conf
+usr/libexec/lvresize_fs_helper
 usr/sbin/lvchange
 usr/sbin/lvconvert
 usr/sbin/lvcreate

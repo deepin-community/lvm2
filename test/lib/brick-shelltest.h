@@ -177,7 +177,7 @@ public:
     }
 };
 
-static void _fsync_name( std::string n )
+static void _fsync_name( const std::string &n )
 {
     int fd = open( n.c_str(), O_WRONLY );
     if ( fd >= 0 ) {
@@ -322,8 +322,8 @@ struct Journal {
                     char buf[64];
                     time_t t = time( 0 );
                     if (localtime_r(&t, &time_info)) {
-                        strftime(buf, sizeof(buf), "%F %T", &time_info);
-                        of << "--- " << buf << " ---";
+                        if ( strftime( buf, sizeof(buf), "%F %T", &time_info ) )
+                            of << "--- " << buf << " ---";
                     }
                 }
                 of << std::endl;
@@ -713,10 +713,11 @@ struct KMsg : Source {
     void transform( char *buf, ssize_t *sz ) {
         char newbuf[ buffer_size ];
         struct tm time_info;
-        unsigned level, num, pos;
+        unsigned level, num;
+        int pos;
         unsigned long t;
         time_t tt;
-        size_t len;
+        size_t len, slen;
         const char *delimiter;
 
         buf[ *sz ] = 0;
@@ -728,8 +729,10 @@ struct KMsg : Source {
             memcpy( newbuf, buf, *sz );
             tt = time( 0 );
             len = snprintf( buf, 64, "[%lu.%06lu] <%u> ", t / 1000000, t % 1000000, level );
-            if ( localtime_r( &tt, &time_info ) )
-                len += strftime( buf + len, 64, "%F %T  ", &time_info );
+            if ( localtime_r( &tt, &time_info ) &&
+                ( slen = strftime( buf + len, 64, "%F %T  ", &time_info ) ) )
+                    len += slen;
+
             memcpy( buf + len, newbuf + pos, *sz - pos );
             *sz = *sz - pos + len;
         }
@@ -1398,7 +1401,7 @@ static int run( int argc, const char **argv, std::string fl_envvar = "TEST_FLAVO
     Options opt;
     const char *env;
 
-    if ( args.has( "--help" ) ) {
+    if ( args.has( "--help" ) || args.has( "-h" ) || args.has( "-?" ) ) {
         std::cout <<
             "  lvm2-testsuite - Run a lvm2 testsuite.\n\n"
             "lvm2-testsuite"
@@ -1535,6 +1538,11 @@ static int run( int argc, const char **argv, std::string fl_envvar = "TEST_FLAVO
     opt.testdir = resolve_path( args.opt( "--testdir" ), TESTSUITE_DATA ) + "/";
     opt.workdir = resolve_path( args.opt( "--workdir" ), opt.testdir.c_str() );
     opt.outdir = resolve_path( args.opt( "--outdir" ), "." );
+
+    if (getuid() != 0) {
+        std::cout << "Skipping tests, root is required, current UID: " << getuid() << "\n";
+        return 0;
+    }
 
     setup_handlers();
 

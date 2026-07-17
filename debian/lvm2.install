@@ -50,6 +50,7 @@ usr/sbin/vgrename
 usr/sbin/vgs
 usr/sbin/vgscan
 usr/sbin/vgsplit
+usr/libexec/lvresize_fs_helper
 usr/lib/tmpfiles.d/lvm2.conf
 usr/share/man/man5/lvm.conf.5
 usr/share/man/man7/lvmcache.7

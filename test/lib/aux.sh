@@ -33,7 +33,8 @@ check_daemon_in_builddir() {
 
 create_corosync_conf() {
 	local COROSYNC_CONF="/etc/corosync/corosync.conf"
-	local COROSYNC_NODE=$(hostname)
+	local COROSYNC_NODE
+	COROSYNC_NODE=$(hostname || true)
 
 	if test -a "$COROSYNC_CONF"; then
 		if ! grep "created by lvm test suite" "$COROSYNC_CONF"; then
@@ -319,26 +320,29 @@ prepare_lvmdbusd() {
 	unset LVM_EXPECTED_EXIT_STATUS
 	export LVM_DBUSD_TEST_SKIP_SIGNAL=1
 
-	"$daemon" $lvmdbusdebug > debug.log_LVMDBUSD_out 2>&1 &
-	local pid=$!
-
+	local pid=-1
 	echo -n "## checking lvmdbusd IS running..."
 	if which dbus-send &>/dev/null ; then
 	for i in {100..0}; do
+		if test ! -d "/proc/$pid" ; then
+			cat debug.log_LVMDBUSD_out || true
+			"$daemon" $lvmdbusdebug > debug.log_LVMDBUSD_out 2>&1 &
+			pid=$!
+		fi
 		dbus-send --system --dest=org.freedesktop.DBus --type=method_call --print-reply /org/freedesktop/DBus org.freedesktop.DBus.ListNames > dbus_services
 		grep -q com.redhat.lvmdbus1 dbus_services && break
 		sleep .1
 	done
-	else
-		sleep 2
-	fi
-
 	if [ "$i" -eq 0 ] ; then
 		printf "\nFailed to serve lvm dBus service in 10 seconds.\n"
 		sed -e "s,^,## DBUS_SERVICES: ," dbus_services
 		ps aux
 		return 1
 	fi
+	else
+		sleep 2
+	fi
+
 
 	comm=
 	# TODO: Is there a better check than wait 1 second and check pid?
@@ -430,8 +434,13 @@ teardown_devs_prefixed() {
 				local force="-f"
 				if test "$i" = 0; then
 					if test "$once" = 1 ; then
+						case "$DM_NAME" in
+						*pv[0-9]*) ;; # do not report removal of our own PVs
+						*)
 						once=0
 						echo "## removing stray mapped devices with names beginning with $prefix: "
+						;;
+						esac
 					fi
 					test "$DM_OPEN" = 0 || break  # stop loop with 1st. opened device
 					force=""
@@ -607,9 +616,9 @@ teardown() {
 
 	echo -n .
 
-	test -d "$DM_DEV_DIR/mapper" && teardown_devs
+	echo "ok"
 
-	echo -n .
+	test -d "$DM_DEV_DIR/mapper" && teardown_devs
 
 	fi
 
@@ -620,10 +629,9 @@ teardown() {
 	}
 
 	if test "${LVM_TEST_PARALLEL:-0}" = 0 && test -z "$RUNNING_DMEVENTD"; then
+		rm -f debug.log* # no trace of lvm2 command for this case
 		not pgrep dmeventd &>/dev/null # printed in STACKTRACE
 	fi
-
-	echo -n .
 
 	test -n "$TESTDIR" && {
 		cd "$TESTOLDPWD" || die "Failed to enter $TESTOLDPWD"
@@ -632,14 +640,32 @@ teardown() {
 	}
 
 	# Remove any dangling symlink in /dev/disk (our tests can confuse udev)
-	test -d /dev/disk && {
-		find /dev/disk -type l ! -exec /usr/bin/test -e {} \; -print0 | xargs -0 rm -f || true
-	}
+	find /dev/disk -type l -exec test ! -e {} \; -print0 2>/dev/null | xargs -0 rm -f || true
 
 	# Remove any metadata archives and backups from this test on system
 	rm -f /etc/lvm/archive/"${PREFIX}"* /etc/lvm/backup/"${PREFIX}"*
 
-	echo "ok"
+	# Check if this test is leaking some 'symlinks' with our name (udev)
+	LEAKED_LINKS=( $(find /dev -path "/dev/mapper/${PREFIX}*" -type l -exec test ! -e {} \; -print -o \
+		-path "/dev/${PREFIX}*/" -type l -exec test ! -e {} \; -print  2>/dev/null || true) )
+
+	test "${#LEAKED_LINKS[@]}" -eq 0 || echo "## removing stray symlinks the names beginning with ${PREFIX}"
+
+	if test "${LVM_TEST_PARALLEL:-0}" = 0 ; then
+		# for non parallel testing erase any dangling links prefixed with LVMTEST
+		find /dev -path "/dev/mapper/${COMMON_PREFIX}*" -type l -exec test ! -e {} \; -print0 -o \
+			-path "/dev/${COMMON_PREFIX}*" -type l -exec test ! -e {} \; -print0 2>/dev/null | xargs -0 rm -f || true
+		LEAKED_PREFIX=${COMMON_PREFIX}
+	else
+		rm -f "${LEAKED_LINKS[@]}" || true
+		LEAKED_PREFIX=${PREFIX}
+	fi
+
+	# Remove empty dirs with test prefix
+	find /dev -type d -name "${LEAKED_PREFIX}*" -empty -delete 2>/dev/null || true
+
+	# Fail test with leaked links as most likely somewhere is missing synchronization...
+	test "${#LEAKED_LINKS[@]}" -eq 0 || die "Test leaked these symlinks ${LEAKED_LINKS[@]}"
 }
 
 prepare_loop() {
@@ -1066,9 +1092,9 @@ prepare_devs() {
 		# then allocate a dedicated backing device for PV; otherwise, rollback
 		# to use single backing device for device-mapper.
 		if [ -n "$LVM_TEST_BACKING_DEVICE" ] && [ "$n" -le ${#BACKING_DEVICE_ARRAY[@]} ]; then
-			table[i]="0 $size linear "${BACKING_DEVICE_ARRAY[i]}" $(( header_shift * 2048 ))"
+			table[i]="0 $size linear ${BACKING_DEVICE_ARRAY[i]} $(( header_shift * 2048 ))"
 		else
-			table[i]="0 $size linear "$BACKING_DEV" $(( i * size + ( header_shift * 2048 ) ))"
+			table[i]="0 $size linear $BACKING_DEV $(( i * size + ( header_shift * 2048 ) ))"
 		fi
 		concise[i]="$name,TEST-$name,,,${table[i]}"
 		echo "${table[i]}" > "$name.table"

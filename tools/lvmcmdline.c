@@ -21,6 +21,7 @@
 #include "lvm-version.h"
 #include "lib/locking/lvmlockd.h"
 #include "lib/datastruct/str_list.h"
+#include "lib/mm/memlock.h"
 #include "libdaemon/server/daemon-stray.h"
 
 /* coverity[unnecessary_header] */
@@ -87,6 +88,21 @@ static const struct command_function _command_functions[CMD_COUNT] = {
 	{ vgchange_lockstart_CMD, vgchange_lock_start_stop_cmd },
 	{ vgchange_lockstop_CMD, vgchange_lock_start_stop_cmd },
 	{ vgchange_systemid_CMD, vgchange_systemid_cmd },
+
+	/* lvdisplay variants */
+	{ lvdisplay_columns_CMD,	lvdisplay_columns_cmd },
+	{ lvdisplay_colon_CMD,		lvdisplay_colon_cmd },
+	{ lvdisplay_general_CMD,	lvdisplay_general_cmd },
+
+	/* pvdisplay variants */
+	{ pvdisplay_columns_CMD,	pvdisplay_columns_cmd },
+	{ pvdisplay_colon_CMD,		pvdisplay_cmd },
+	{ pvdisplay_general_CMD,	pvdisplay_cmd },
+
+	/* vgdisplay variants */
+	{ vgdisplay_columns_CMD,	vgdisplay_columns_cmd },
+	{ vgdisplay_colon_CMD,		vgdisplay_colon_cmd },
+	{ vgdisplay_general_CMD,	vgdisplay_general_cmd },
 
 	/* lvconvert utilities related to repair. */
 	{ lvconvert_repair_CMD,	lvconvert_repair_cmd },
@@ -1212,7 +1228,7 @@ static int _opt_synonym_to_standard(const char *cmd_name, int opt)
 	return 0;
 }
 
-static void _add_getopt_arg(int arg_enum, char **optstrp, struct option **longoptsp);
+static void _add_getopt_arg(int opt_enum, char **optstrp, struct option **longoptsp);
 
 /*
  * The valid args for a command name in general is a union of
@@ -2229,8 +2245,8 @@ static int _process_command_line(struct cmd_context *cmd, int *argc, char ***arg
 			log_error("Argument%s%c%s%s cannot be used in interactive mode.",
 				  a->short_opt ? " -" : "",
 				  a->short_opt ? : ' ',
-				  (a->short_opt && a->long_opt) ?
-				  "/" : "", a->long_opt ? : "");
+				  (a->short_opt && a->long_opt[0]) ?
+				  "/" : "", a->long_opt[0] ? a->long_opt : "");
 			return 0;
 		}
 
@@ -2262,8 +2278,8 @@ static int _process_command_line(struct cmd_context *cmd, int *argc, char ***arg
 			log_error("Option%s%c%s%s may not be repeated.",
 				  a->short_opt ? " -" : "",
 				  a->short_opt ? : ' ',
-				  (a->short_opt && a->long_opt) ?
-				  "/" : "", a->long_opt ? : "");
+				  (a->short_opt && a->long_opt[0]) ?
+				  "/" : "", a->long_opt[0] ? a->long_opt : "");
 			return 0;
 		}
 
@@ -2645,7 +2661,7 @@ static int _process_common_commands(struct cmd_context *cmd)
 	if (arg_is_set(cmd, help_ARG) ||
 	    arg_is_set(cmd, longhelp_ARG) ||
 	    arg_is_set(cmd, help2_ARG)) {
-		_usage(cmd->name, arg_is_set(cmd, longhelp_ARG), 0);
+		_usage(cmd->name, arg_count(cmd, longhelp_ARG), 0);
 		return ECMD_PROCESSED;
 	}
 
@@ -2694,6 +2710,7 @@ static void _apply_current_settings(struct cmd_context *cmd)
 {
 	_apply_current_output_settings(cmd);
 
+	memlock_init(cmd);
 	init_test(cmd->current_settings.test);
 	init_mirror_in_sync(0);
 	init_dmeventd_monitor(DEFAULT_DMEVENTD_MONITOR);
@@ -2945,18 +2962,12 @@ static int _init_lvmlockd(struct cmd_context *cmd)
 	if (use_lvmlockd && arg_is_set(cmd, lockopt_ARG)) {
 		lockd_lockopt_get_flags(arg_str_value(cmd, lockopt_ARG, ""), &cmd->lockopt);
 
-		if (cmd->lockopt & LOCKOPT_SKIPLV) {
-			log_warn("WARNING: skipping LV lock in lvmlockd.");
+		if (cmd->lockopt & LOCKOPT_SKIPLV)
 			cmd->lockd_lv_disable = 1;
-		}
-		if (cmd->lockopt & LOCKOPT_SKIPVG) {
-			log_warn("WARNING: skipping VG lock in lvmlockd.");
+		if (cmd->lockopt & LOCKOPT_SKIPVG)
 			cmd->lockd_vg_disable = 1;
-		}
-		if (cmd->lockopt & LOCKOPT_SKIPGL) {
-			log_warn("WARNING: skipping global lock in lvmlockd.");
+		if (cmd->lockopt & LOCKOPT_SKIPGL)
 			cmd->lockd_gl_disable = 1;
-		}
 	}
 
 	lvmlockd_disconnect(); /* start over when tool context is refreshed */

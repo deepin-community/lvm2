@@ -36,6 +36,19 @@ config {
 	# This configuration option has an automatic default value.
 	# checks = 1
 
+	# Configuration option config/validate_metadata.
+	# Allows to select the level of validation after metadata transformation.
+	# Validation takes extra CPU time to verify internal consistency.
+	# Accepted values:
+	#   full
+	#     Do a full metadata validation before disk write.
+	#   none
+	#     Skip any checks (unrecommended, slightly faster).
+	#
+	# This configuration option is advanced.
+	# This configuration option has an automatic default value.
+	# validate_metadata = "full"
+
 	# Configuration option config/abort_on_errors.
 	# Abort the LVM process if a configuration mismatch is found.
 	# This configuration option has an automatic default value.
@@ -573,7 +586,7 @@ allocation {
 
 	# Configuration option allocation/thin_pool_crop_metadata.
 	# Older version of lvm2 cropped pool's metadata size to 15.81 GiB.
-	# This is slightly less then the actual maximum 15.88 GiB.
+	# This is slightly less than the actual maximum 15.88 GiB.
 	# For compatibility with older version and use of cropped size set to 1.
 	# This configuration option has an automatic default value.
 	# thin_pool_crop_metadata = 0

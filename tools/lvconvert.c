@@ -422,7 +422,7 @@ static int _insert_lvconvert_layer(struct cmd_context *cmd,
 static int _failed_mirrors_count(struct logical_volume *lv)
 {
 	struct lv_segment *lvseg;
-	int ret = 0;
+	int ret = 0, r;
 	unsigned s;
 
 	dm_list_iterate_items(lvseg, &lv->segments) {
@@ -430,9 +430,10 @@ static int _failed_mirrors_count(struct logical_volume *lv)
 			return -1;
 		for (s = 0; s < lvseg->area_count; s++) {
 			if (seg_type(lvseg, s) == AREA_LV) {
-				if (is_temporary_mirror_layer(seg_lv(lvseg, s)))
-					ret += _failed_mirrors_count(seg_lv(lvseg, s));
-				else if (lv_is_partial(seg_lv(lvseg, s)))
+				if (is_temporary_mirror_layer(seg_lv(lvseg, s))) {
+					if ((r = _failed_mirrors_count(seg_lv(lvseg, s))) > 0)
+						ret += r;
+				} else if (lv_is_partial(seg_lv(lvseg, s)))
 					++ ret;
 			}
 			else if (seg_type(lvseg, s) == AREA_PV &&
@@ -446,19 +447,22 @@ static int _failed_mirrors_count(struct logical_volume *lv)
 
 static int _failed_logs_count(struct logical_volume *lv)
 {
-	int ret = 0;
+	int ret = 0, r;
 	unsigned s;
 	struct logical_volume *log_lv = first_seg(lv)->log_lv;
 	if (log_lv && lv_is_partial(log_lv)) {
-		if (lv_is_mirrored(log_lv))
-			ret += _failed_mirrors_count(log_lv);
-		else
+		if (lv_is_mirrored(log_lv)) {
+			if ((r = _failed_mirrors_count(log_lv)) > 0)
+				ret += r;
+		} else
 			ret += 1;
 	}
 	for (s = 0; s < first_seg(lv)->area_count; s++) {
 		if (seg_type(first_seg(lv), s) == AREA_LV &&
-		    is_temporary_mirror_layer(seg_lv(first_seg(lv), s)))
-			ret += _failed_logs_count(seg_lv(first_seg(lv), s));
+		    is_temporary_mirror_layer(seg_lv(first_seg(lv), s))) {
+                        if ((r = _failed_logs_count(seg_lv(first_seg(lv), s))) > 0)
+				ret += r;
+		}
 	}
 	return ret;
 }
@@ -1081,14 +1085,14 @@ static int _lvconvert_mirrors_repair(struct cmd_context *cmd,
 	if (!mirror_remove_missing(cmd, lv, 0))
 		return_0;
 
-	if (failed_mimages)
+	if (failed_mimages > 0)
 		log_print_unless_silent("Mirror status: %d of %d images failed.",
 					failed_mimages, original_mimages);
 
 	/*
 	 * Count the failed log devices
 	 */
-	if (failed_logs)
+	if (failed_logs > 0)
 		log_print_unless_silent("Mirror log status: %d of %d images failed.",
 					failed_logs, original_logs);
 
@@ -1854,7 +1858,7 @@ static int _lvconvert_splitsnapshot(struct cmd_context *cmd, struct logical_volu
 			return_0;
 
 		if ((arg_count(cmd, force_ARG) == PROMPT) &&
-		    !arg_count(cmd, yes_ARG) &&
+		    !arg_is_set(cmd, yes_ARG) &&
 		    lv_is_visible(cow) &&
 		    lv_is_active(cow)) {
 			if (yes_no_prompt("Do you really want to split off active "
@@ -1895,7 +1899,7 @@ static int _lvconvert_split_and_keep_cachevol(struct cmd_context *cmd,
 	 * This would generally be done to rescue data from
 	 * the origin if the cache could not be repaired.
 	 */
-	if (!lv_is_active(lv) && arg_count(cmd, force_ARG))
+	if (!lv_is_active(lv) && arg_is_set(cmd, force_ARG))
 		direct_detach = 1;
 
 	/*
@@ -1906,7 +1910,7 @@ static int _lvconvert_split_and_keep_cachevol(struct cmd_context *cmd,
 	 * detach the cache in this case.
 	 */
 	if ((cache_mode != CACHE_MODE_WRITETHROUGH) && lv_is_partial(lv_fast)) {
-		if (!arg_count(cmd, force_ARG)) {
+		if (!arg_is_set(cmd, force_ARG)) {
 			log_warn("WARNING: writeback cache on %s is not complete and cannot be flushed.", display_lvname(lv_fast));
 			log_warn("WARNING: cannot detach writeback cache from %s without --force.", display_lvname(lv));
 			log_error("Conversion aborted.");
@@ -1918,7 +1922,7 @@ static int _lvconvert_split_and_keep_cachevol(struct cmd_context *cmd,
 	if (direct_detach) {
 		log_warn("WARNING: Data may be lost by detaching writeback cache without flushing.");
 
-		if (!arg_count(cmd, yes_ARG) &&
+		if (!arg_is_set(cmd, yes_ARG) &&
 		    yes_no_prompt("Detach writeback cache %s from %s without flushing data?",
 				  display_lvname(lv_fast), display_lvname(lv)) == 'n') {
 			log_error("Conversion aborted.");
@@ -2022,7 +2026,7 @@ static int _lvconvert_split_and_remove_cachepool(struct cmd_context *cmd,
 	/* TODO: Check for failed cache as well to get prompting? */
 	if (lv_is_partial(lv)) {
 		if (first_seg(seg->pool_lv)->cache_mode != CACHE_MODE_WRITETHROUGH) {
-			if (!arg_count(cmd, force_ARG)) {
+			if (!arg_is_set(cmd, force_ARG)) {
 				log_error("Conversion aborted.");
 				log_error("Cannot uncache writeback cache volume %s without --force.",
 					  display_lvname(lv));
@@ -2032,7 +2036,7 @@ static int _lvconvert_split_and_remove_cachepool(struct cmd_context *cmd,
 				 cache_mode_num_to_str(first_seg(seg->pool_lv)->cache_mode), display_lvname(lv));
 		}
 
-		if (!arg_count(cmd, yes_ARG) &&
+		if (!arg_is_set(cmd, yes_ARG) &&
 		    yes_no_prompt("Do you really want to uncache %s with missing LVs? [y/n]: ",
 				  display_lvname(lv)) == 'n') {
 			log_error("Conversion aborted.");
@@ -2105,7 +2109,7 @@ static int _lvconvert_snapshot(struct cmd_context *cmd,
 		 snap_name);
 	log_warn("THIS WILL DESTROY CONTENT OF LOGICAL VOLUME (filesystem etc.)");
 
-	if (!arg_count(cmd, yes_ARG) &&
+	if (!arg_is_set(cmd, yes_ARG) &&
 	    yes_no_prompt("Do you really want to convert %s? [y/n]: ",
 			  snap_name) == 'n') {
 		log_error("Conversion aborted.");
@@ -2980,7 +2984,7 @@ static int _lvconvert_swap_pool_metadata(struct cmd_context *cmd,
 				 display_lvname(lv));
 
 			/* Ok, user has likely some serious reason for this */
-			if (!arg_count(cmd, yes_ARG) &&
+			if (!arg_is_set(cmd, yes_ARG) &&
 			    yes_no_prompt("Do you really want to change chunk size for %s pool volume? [y/n]: ",
 					  display_lvname(lv)) == 'n') {
 				log_error("Conversion aborted.");
@@ -2991,7 +2995,7 @@ static int _lvconvert_swap_pool_metadata(struct cmd_context *cmd,
 		seg->chunk_size = chunk_size;
 	}
 
-	if (!arg_count(cmd, yes_ARG) &&
+	if (!arg_is_set(cmd, yes_ARG) &&
 	    yes_no_prompt("Do you want to swap metadata of %s pool with metadata volume %s? [y/n]: ",
 			  display_lvname(lv),
 			  display_lvname(metadata_lv)) == 'n') {
@@ -3154,6 +3158,13 @@ static int _lvconvert_to_pool(struct cmd_context *cmd,
 
 	activate_pool = to_thinpool && is_active;
 
+	/* Before the conversion starts, make sure the volume is unused and can be deactivated
+	 * (as it needs to change target type) */
+	if (is_active && !to_thin && !deactivate_lv(cmd, lv)) {
+		log_error("Cannot convert logical volume %s.", display_lvname(lv));
+		return 0;
+	}
+
 	/* Wipe metadata_lv by default, but allow skipping this for cache pools. */
 	zero_metadata = (to_cachepool) ? arg_int_value(cmd, zero_ARG, 1) : 1;
 
@@ -3314,7 +3325,7 @@ static int _lvconvert_to_pool(struct cmd_context *cmd,
 	} else if (to_cachepool)
 		log_warn("WARNING: Using mismatched cache pool metadata MAY DESTROY YOUR DATA!");
 
-	if (!arg_count(cmd, yes_ARG) &&
+	if (!arg_is_set(cmd, yes_ARG) &&
 	    yes_no_prompt("Do you really want to convert %s? [y/n]: ",
 			  converted_names) == 'n') {
 		log_error("Conversion aborted.");
@@ -3405,13 +3416,6 @@ static int _lvconvert_to_pool(struct cmd_context *cmd,
 		if (!(pool_lv = _lvconvert_insert_thin_layer(lv)))
 			goto_bad;
 	} else {
-		/* Deactivate the data LV  (changing target type) */
-		if (!deactivate_lv(cmd, lv)) {
-			log_error("Aborting. Failed to deactivate logical volume %s.",
-				  display_lvname(lv));
-			goto bad;
-		}
-
 		if (data_vdo) {
 			if (lv_is_vdo(lv)) {
 				if ((seg = first_seg(lv)))
@@ -3512,7 +3516,7 @@ static int _lvconvert_to_pool(struct cmd_context *cmd,
 		metadata_lv->lock_args = NULL;
 
 		if (to_thin) {
-			if (!lockd_init_lv_args(cmd, vg, pool_lv, vg->lock_type, &pool_lv->lock_args)) {
+			if (!lockd_init_lv_args(cmd, vg, pool_lv, vg->lock_type, NULL, &pool_lv->lock_args)) {
 				log_error("Cannot allocate lock for new pool LV.");
 				goto bad;
 			}
@@ -3683,7 +3687,7 @@ static int _cache_vol_attach(struct cmd_context *cmd,
 	if (cache_mode == CACHE_MODE_WRITEBACK) {
 		log_warn("WARNING: repairing a damaged cachevol is not yet possible.");
 		log_warn("WARNING: cache mode writethrough is suggested for safe operation.");
-		if (!arg_count(cmd, yes_ARG) &&
+		if (!arg_is_set(cmd, yes_ARG) &&
 		    yes_no_prompt("Continue using writeback without repair?") == 'n')
 			goto_out;
 	}
@@ -3822,14 +3826,15 @@ static int _lvconvert_repair_pvs_mirror(struct cmd_context *cmd, struct logical_
 	lp.alloc = (alloc_policy_t) arg_uint_value(cmd, alloc_ARG, ALLOC_INHERIT);
 	lp.stripes = 1;
 
-	ret = _lvconvert_mirrors_repair(cmd, lv, &lp, use_pvh);
+	if (!(ret = _lvconvert_mirrors_repair(cmd, lv, &lp, use_pvh)))
+		stack;
 
 	if (lp.need_polling) {
 		if (!lv_is_active(lv))
 			log_print_unless_silent("Conversion starts after activation.");
 		else {
 			if (!(idl = _convert_poll_id_list_create(cmd, lv)))
-				return 0;
+				return_0;
 			dm_list_add(&lr->poll_idls, &idl->list);
 		}
 		lr->need_polling = 1;
@@ -3856,7 +3861,7 @@ static void _lvconvert_repair_pvs_raid_ask(struct cmd_context *cmd, int *do_it)
 		return;
 	}
 
-	if (!arg_count(cmd, yes_ARG) &&
+	if (!arg_is_set(cmd, yes_ARG) &&
 	    yes_no_prompt("Attempt to replace failed RAID images "
 			  "(requires full device resync)? [y/n]: ") == 'n') {
 		*do_it = 0;
@@ -3927,7 +3932,10 @@ static int _lvconvert_repair_pvs(struct cmd_context *cmd, struct logical_volume 
 			_remove_missing_empty_pv(lv->vg, failed_pvs);
 	}
 
-	return ret ? ECMD_PROCESSED : ECMD_FAILED;
+	if (!ret)
+		return_ECMD_FAILED;
+
+	return ECMD_PROCESSED;
 }
 
 static int _lvconvert_repair_cachepool_thinpool(struct cmd_context *cmd, struct logical_volume *lv,
@@ -5376,7 +5384,7 @@ out:
 static int _lvconvert_change_region_size_single(struct cmd_context *cmd, struct logical_volume *lv,
 			     struct processing_handle *handle)
 {
-	if (!lv_raid_change_region_size(lv, arg_is_set(cmd, yes_ARG), arg_count(cmd, force_ARG),
+	if (!lv_raid_change_region_size(lv, arg_count(cmd, yes_ARG), arg_count(cmd, force_ARG),
 			                arg_int_value(cmd, regionsize_ARG, 0)))
 		return_ECMD_FAILED;
 
@@ -5649,8 +5657,8 @@ static int _lvconvert_detach_writecache(struct cmd_context *cmd,
 	 */
 	active_begin = lv_is_active(lv);
 
-	if (lv_is_partial(lv_fast) || (!active_begin && arg_count(cmd, force_ARG))) {
-		if (!arg_count(cmd, force_ARG)) {
+	if (lv_is_partial(lv_fast) || (!active_begin && arg_is_set(cmd, force_ARG))) {
+		if (!arg_is_set(cmd, force_ARG)) {
 			log_warn("WARNING: writecache on %s is not complete and cannot be flushed.", display_lvname(lv_fast));
 			log_warn("WARNING: cannot detach writecache from %s without --force.", display_lvname(lv));
 			log_error("Conversion aborted.");
@@ -5659,7 +5667,7 @@ static int _lvconvert_detach_writecache(struct cmd_context *cmd,
 
 		log_warn("WARNING: Data may be lost by detaching writecache without flushing.");
 
-		if (!arg_count(cmd, yes_ARG) &&
+		if (!arg_is_set(cmd, yes_ARG) &&
 		     yes_no_prompt("Detach writecache %s from %s without flushing data?",
 				   display_lvname(lv_fast), display_lvname(lv)) == 'n') {
 			log_error("Conversion aborted.");
@@ -6475,7 +6483,7 @@ static int _lvconvert_integrity_remove(struct cmd_context *cmd, struct logical_v
 	if (!lockd_lv(cmd, lv, "ex", 0))
 		return_0;
 
-	if (!lv_remove_integrity_from_raid(lv))
+	if (!lv_remove_integrity_from_raid(lv, NULL))
 		return_0;
 
 	log_print_unless_silent("Logical volume %s has removed integrity.", display_lvname(lv));

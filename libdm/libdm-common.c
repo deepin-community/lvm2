@@ -14,7 +14,7 @@
  */
 
 #include "libdm/misc/dmlib.h"
-#include "libdm-targets.h"
+#include "libdm/ioctl/libdm-targets.h"
 #include "libdm-common.h"
 #include "libdm/misc/kdev_t.h"
 #include "libdm/misc/dm-ioctl.h"
@@ -509,7 +509,7 @@ int unmangle_string(const char *str, const char *str_name, size_t len,
 		    char *buf, size_t buf_len, dm_string_mangling_t mode)
 {
 	int strict = mode != DM_STRING_MANGLING_NONE;
-	char str_rest[DM_NAME_LEN];
+	char str_rest[DM_NAME_LEN + 1];
 	size_t i, j;
 	unsigned int code;
 	int r = 0;

@@ -279,7 +279,7 @@ static bool _insert_prefix_chain(struct radix_tree *rt, struct value *v, const u
 		pc->len = i;
 
 		if (!_insert(rt, &pc->child, kb + i, ke, rv)) {
-			free(pc2);
+			free(pc->child.value.ptr);
 			return false;
 		}
 
@@ -293,6 +293,7 @@ static bool _insert_prefix_chain(struct radix_tree *rt, struct value *v, const u
 		if (pc->len == 1) {
 			n4->values[0] = pc->child;
 			free(pc);
+			v->value.ptr = NULL;
 		} else {
 			memmove(pc->prefix, pc->prefix + 1, pc->len - 1);
 			pc->len--;
@@ -562,6 +563,13 @@ bool radix_tree_insert(struct radix_tree *rt, const void *key, size_t keylen, un
 	const uint8_t *ke = kb + keylen;
 	struct lookup_result lr = _lookup_prefix(&rt->root, kb, ke);
 	return _insert(rt, lr.v, lr.kb, ke, rv);
+}
+
+int radix_tree_uniq_insert(struct radix_tree *rt, const void *key, size_t keylen, union radix_value rv)
+{
+	unsigned entries = rt->nr_entries;
+	return radix_tree_insert(rt, key, keylen, rv) ?
+		((entries != rt->nr_entries) ? 1 : -1) : 0;
 }
 
 // Note the degrade functions also free the original node.

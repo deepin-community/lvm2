@@ -85,9 +85,11 @@ function _get_size
 	local data_stripes=$3
 	local reshape_len rimagesz
 
-        # Get any reshape size in sectors
-	reshape_len=$(lvs --noheadings -aoname,reshapelen --unit s $vg/${lv}_rimage_0|head -1|cut -d ']' -f2)
-	reshape_len=$(echo ${reshape_len/S}|xargs)
+	# Get any reshape size in sectors
+	# avoid using pipes as exit codes may cause test failure
+	reshape_len="$(lvs --noheadings --nosuffix -aoreshapelen --unit s $vg/${lv}_rimage_0)"
+	# drop everything past 'S'
+	reshape_len="$(echo ${reshape_len/S*}|xargs)"
 
 	# Get rimage size - reshape length
 	rimagesz=$(($(blockdev --getsz /dev/mapper/${vg}-${lv}_rimage_0) - $reshape_len))
@@ -103,7 +105,7 @@ function _check_size
 	local data_stripes=$3
 
 	# Compare size of LV with calculated one
-	[ $(blockdev --getsz /dev/$vg/$lv) -eq $(_get_size $vg $lv $data_stripes) ] && echo 0 || echo 1
+	[ "$(blockdev --getsz /dev/$vg/$lv)" -eq "$(_get_size $vg $lv $data_stripes)" ] && echo 0 || echo 1
 }
 
 function _total_stripes
@@ -127,7 +129,9 @@ function _lvcreate
 	local lv=$5
 	shift 5
 	local opts="$*"
-	local stripes=$(_total_stripes $raid_type $data_stripes)
+	local stripes
+
+	stripes=$(_total_stripes $raid_type $data_stripes)
 
 	lvcreate -y -aey --type $raid_type -i $data_stripes -L $size -n $lv $vg $opts
 
@@ -149,10 +153,11 @@ function _reshape_layout
 	local ignore_a_chars=$6
 	shift 6
 	local opts="$*"
-	local stripes=$(_total_stripes $raid_type $data_stripes)
+	local stripes
 
-	# Avoid random udev sync delays causing _check_size to be unreliable
-	lvconvert -y --noudevsync --ty $raid_type --stripes $data_stripes $opts $vg/$lv
+	stripes=$(_total_stripes $raid_type $data_stripes)
+
+	lvconvert -y --ty $raid_type --stripes $data_stripes $opts $vg/$lv
 	check lv_first_seg_field $vg/$lv1 segtype "$raid_type"
 
 	if [ $wait_for_reshape -eq 1 ]
@@ -168,8 +173,10 @@ function _add_stripes
 	local vg=$2
 	local lv=$3
 	local data_stripes=$4
-	local stripes=$(_total_stripes $raid_type $data_stripes)
+	local stripes=
 	local stripesize="$((16 << ($data_stripes % 5))).00k" # Stripe size variation
+
+	stripes=$(_total_stripes $raid_type $data_stripes)
 
 	aux delay_dev "$dev1" $ms 0
 	_reshape_layout $raid_type $data_stripes $vg $lv 0 1 --stripesize $stripesize
@@ -207,9 +214,12 @@ function _remove_stripes
 	local vg=$2
 	local lv=$3
 	local data_stripes=$4
-	local cur_data_stripes=$(get lv_field "$vg/$lv" datastripes -a)
-	local stripes=$(get lv_field "$vg/$lv" stripes -a)
+	local cur_data_stripes
+	local stripes
 	local stripesize="$((16 << ($data_stripes % 5))).00k" # Stripe size variation
+
+	cur_data_stripes=$(get lv_field "$vg/$lv" datastripes -a)
+	stripes=$(get lv_field "$vg/$lv" stripes -a)
 
 	# Check, shrink hilesystem to the resulting smaller size and check again
 	if [ $SKIP_RESIZE -eq 0 ]

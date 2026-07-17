@@ -1,8 +1,17 @@
-lvm2 (2.03.27-1deepin1) unstable; urgency=medium
+lvm2 (2.03.31-2) unstable; urgency=medium
 
-  * add ConditionPathExistsGlob for lvm2-monitor.service to optimize boot performance.
+  * Ask build system to install stuff writable. (closes: #1104357)
 
- -- xinpeng.wang <wangxinpeng@uniontech.com>  Wed, 29 Apr 2026 15:42:32 +0800
+ -- Bastian Blank <waldi@debian.org>  Mon, 05 May 2025 20:14:18 +0200
+
+lvm2 (2.03.31-1) unstable; urgency=medium
+
+  * New upstream release.
+
+  [ Luke W Faraone ]
+  * Include lvresize_fs_helper (Closes: #1068733)
+
+ -- Bastian Blank <waldi@debian.org>  Mon, 03 Mar 2025 22:04:46 +0100
 
 lvm2 (2.03.27-1) unstable; urgency=medium
 

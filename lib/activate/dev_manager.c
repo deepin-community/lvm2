@@ -902,7 +902,7 @@ int devno_dm_uuid(struct cmd_context *cmd, int major, int minor,
 	const char *uuid;
 	int r = 0;
 
-	if (major != cmd->dev_types->device_mapper_major)
+	if (major != (int) cmd->dev_types->device_mapper_major)
 		return 0;
 
 	if (dm_devs_cache_use()) {
@@ -2014,7 +2014,7 @@ int dev_manager_thin_device_id(struct dev_manager *dm,
 
 	if (dm_get_next_target(dmt, NULL, &start, &length,
 			       &target_type, &params)) {
-		log_error("More then one table line found for %s.",
+		log_error("More than one table line found for %s.",
 			  display_lvname(lv));
 		goto out;
 	}
@@ -2067,7 +2067,7 @@ int dev_manager_vdo_pool_status(struct dev_manager *dm,
 			     display_lvname(lv));
 
 	if (dm_get_next_target(dmt, NULL, &start, &length, &type, &params)) {
-		log_error("More then one table line found for %s.",
+		log_error("More than one table line found for %s.",
 			  display_lvname(lv));
 		goto out;
 	}
@@ -2121,7 +2121,7 @@ int dev_manager_vdo_pool_size_config(struct dev_manager *dm,
 			     display_lvname(lv));
 
 	if (dm_get_next_target(dmt, NULL, &start, &length, &type, &params)) {
-		log_error("More then one table line found for %s.",
+		log_error("More than one table line found for %s.",
 			  display_lvname(lv));
 		goto out;
 	}

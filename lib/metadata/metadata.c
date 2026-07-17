@@ -34,6 +34,7 @@
 #include "lib/config/defaults.h"
 #include "lib/locking/lvmlockd.h"
 #include "lib/notify/lvmnotify.h"
+#include "base/data-struct/radix-tree.h"
 
 #include <time.h>
 #include <math.h>
@@ -1636,6 +1637,7 @@ struct pv_list *find_pv_in_vg_by_uuid(const struct volume_group *vg,
 struct lv_list *find_lv_in_vg(const struct volume_group *vg,
 			      const char *lv_name)
 {
+	struct logical_volume *lv;
 	struct lv_list *lvl;
 	const char *ptr;
 
@@ -1644,6 +1646,11 @@ struct lv_list *find_lv_in_vg(const struct volume_group *vg,
 		ptr++;
 	else
 		ptr = lv_name;
+
+	if (vg->lv_names) {
+		lv = radix_tree_lookup_ptr(vg->lv_names, ptr, strlen(ptr));
+		return (lv) ? &lv->lvl : NULL;
+	}
 
 	dm_list_iterate_items(lvl, &vg->lvs)
 		if (!strcmp(lvl->lv->name, ptr))
@@ -1659,6 +1666,13 @@ struct logical_volume *find_lv_in_vg_by_lvid(const struct volume_group *vg,
 
 	if (memcmp(&lvid->id[0], &vg->id, ID_LEN))
 		return NULL; /* Check VG does not match */
+
+	if (vg->lv_uuids)
+		/* Used only for committed read-only VG (which happens to be
+		 * the only user of this 'find' function.
+		 * ATM we do NOT update this radix_tree when LV is added/removed! */
+		return radix_tree_lookup_ptr(vg->lv_uuids, &lvid->id[1],
+					     sizeof(lvid->id[1]));
 
 	dm_list_iterate_items(lvl, &vg->lvs)
 		if (!memcmp(&lvid->id[1], &lvl->lv->lvid.id[1], sizeof(lvid->id[1])))
@@ -1731,6 +1745,16 @@ struct physical_volume *find_pv(struct volume_group *vg, struct device *dev)
 			return pvl->pv;
 
 	return NULL;
+}
+
+struct physical_volume *find_pv_by_pv_name(struct volume_group *vg, const char *pv_name)
+{
+	if (!vg->pv_names) {
+		log_error(INTERNAL_ERROR "Cannot find pv name %s outside of _read_vg()", pv_name);
+		return NULL;
+	}
+
+	return radix_tree_lookup_ptr(vg->pv_names, pv_name, strlen(pv_name));
 }
 
 /* Find segment at a given logical extent in an LV */
@@ -2116,12 +2140,12 @@ void lv_calculate_readahead(const struct logical_volume *lv, uint32_t *read_ahea
 }
 
 struct validate_hash {
-	struct dm_hash_table *lvname;
-	struct dm_hash_table *historical_lvname;
-	struct dm_hash_table *lvid;
-	struct dm_hash_table *historical_lvid;
-	struct dm_hash_table *pvid;
-	struct dm_hash_table *lv_lock_args;
+	struct radix_tree *lvname;
+	struct radix_tree *historical_lvname;
+	struct radix_tree *lvid;
+	struct radix_tree *historical_lvid;
+	struct radix_tree *pvid;
+	struct radix_tree *lv_lock_args;
 };
 
 /*
@@ -2139,7 +2163,7 @@ static int _lv_validate_references_single(struct logical_volume *lv, void *data)
 	unsigned s;
 	int r = 1;
 
-	if (lv != dm_hash_lookup_binary(vhash->lvid, &lv->lvid.id[1],
+	if (lv != radix_tree_lookup_ptr(vhash->lvid, &lv->lvid.id[1],
 					sizeof(lv->lvid.id[1]))) {
 		log_error(INTERNAL_ERROR
 			  "Referenced LV %s not listed in VG %s.",
@@ -2153,7 +2177,7 @@ static int _lv_validate_references_single(struct logical_volume *lv, void *data)
 				continue;
 			pv = seg_pv(lvseg, s);
 			/* look up the reference in vg->pvs */
-			if (pv != dm_hash_lookup_binary(vhash->pvid, &pv->id,
+			if (pv != radix_tree_lookup_ptr(vhash->pvid, &pv->id,
 							sizeof(pv->id))) {
 				log_error(INTERNAL_ERROR
 					  "Referenced PV %s not listed in VG %s.",
@@ -2252,7 +2276,7 @@ int vg_validate(struct volume_group *vg)
 	struct dm_str_list *sl;
 	char uuid[64] __attribute__((aligned(8)));
 	char uuid2[64] __attribute__((aligned(8)));
-	int r = 1;
+	int r = 1, rt;
 	unsigned hidden_lv_count = 0, lv_count = 0, lv_visible_count = 0;
 	unsigned pv_count = 0;
 	unsigned num_snapshots = 0;
@@ -2274,7 +2298,7 @@ int vg_validate(struct volume_group *vg)
 	}
 
 	/* FIXME Also check there's no data/metadata overlap */
-	if (!(vhash.pvid = dm_hash_create(vg->pv_count))) {
+	if (!(vhash.pvid = radix_tree_create(NULL, NULL))) {
 		log_error("Failed to allocate pvid hash.");
 		return 0;
 	}
@@ -2306,8 +2330,14 @@ int vg_validate(struct volume_group *vg)
 			r = 0;
 		}
 
-		if (dm_hash_lookup_binary(vhash.pvid, &pvl->pv->id,
-					  sizeof(pvl->pv->id))) {
+		if (1 != (rt = radix_tree_uniq_insert_ptr(vhash.pvid, &pvl->pv->id,
+							  sizeof(pvl->pv->id), pvl->pv))) {
+			r = 0;
+			if (!rt) {
+				log_error("Failed to store pvid.");
+				goto out;
+			}
+
 			if (!id_write_format(&pvl->pv->id, uuid,
 					     sizeof(uuid)))
 				stack;
@@ -2315,7 +2345,6 @@ int vg_validate(struct volume_group *vg)
 				  "%s detected for %s in %s.",
 				  uuid, pv_dev_name(pvl->pv),
 				  vg->name);
-			r = 0;
 		}
 
 		dm_list_iterate_items(sl, &pvl->pv->tags)
@@ -2324,13 +2353,6 @@ int vg_validate(struct volume_group *vg)
 					  pv_dev_name(pvl->pv), sl->str);
 				r = 0;
 			}
-
-		if (!dm_hash_insert_binary(vhash.pvid, &pvl->pv->id,
-					   sizeof(pvl->pv->id), pvl->pv)) {
-			log_error("Failed to hash pvid.");
-			r = 0;
-			break;
-		}
 	}
 
 
@@ -2399,7 +2421,7 @@ int vg_validate(struct volume_group *vg)
 			}
 		}
 
-		if (!check_lv_segments(lvl->lv, 0)) {
+		if (!check_lv_segments_incomplete_vg(lvl->lv)) {
 			log_error(INTERNAL_ERROR "LV segments corrupted in %s.",
 				  lvl->lv->name);
 			r = 0;
@@ -2453,56 +2475,54 @@ int vg_validate(struct volume_group *vg)
 	if (!r)
 		goto out;
 
-	if (!(vhash.lvname = dm_hash_create(lv_count))) {
+	if (!(vhash.lvname = radix_tree_create(NULL, NULL))) {
 		log_error("Failed to allocate lv_name hash");
 		r = 0;
 		goto out;
 	}
 
-	if (!(vhash.lvid = dm_hash_create(lv_count))) {
+	if (!(vhash.lvid = radix_tree_create(NULL, NULL))) {
 		log_error("Failed to allocate uuid hash");
 		r = 0;
 		goto out;
 	}
 
-	dm_list_iterate_items(lvl, &vg->lvs) {
-		if (dm_hash_lookup(vhash.lvname, lvl->lv->name)) {
+	/* For best CPU cache utilization do a separate pass for lvname and lvid */
+	dm_list_iterate_items(lvl, &vg->lvs)
+		if (1 != (rt = radix_tree_uniq_insert_ptr(vhash.lvname, lvl->lv->name,
+							  strlen(lvl->lv->name), lvl))) {
+			r = 0;
+			if (!rt) {
+				log_error("Failed to store lvname.");
+				goto out;
+			}
 			log_error(INTERNAL_ERROR
 				  "Duplicate LV name %s detected in %s.",
 				  lvl->lv->name, vg->name);
-			r = 0;
 		}
 
-		if (dm_hash_lookup_binary(vhash.lvid, &lvl->lv->lvid.id[1],
-					  sizeof(lvl->lv->lvid.id[1]))) {
+	dm_list_iterate_items(lvl, &vg->lvs)
+		if (1 != (rt = radix_tree_uniq_insert_ptr(vhash.lvid, &lvl->lv->lvid.id[1],
+							  sizeof(lvl->lv->lvid.id[1]), lvl->lv))) {
+			r = 0;
+			if (!rt) {
+				log_error("Failed to store lvid.");
+				goto out;
+			}
+
 			if (!id_write_format(&lvl->lv->lvid.id[1], uuid,
 					     sizeof(uuid)))
 				stack;
-			log_error(INTERNAL_ERROR "Duplicate LV id "
-				  "%s detected for %s in %s.",
+			log_error(INTERNAL_ERROR "Duplicate LV id %s detected for %s in %s.",
 				  uuid, lvl->lv->name, vg->name);
-			r = 0;
 		}
 
-		if (!check_lv_segments(lvl->lv, 1)) {
+	dm_list_iterate_items(lvl, &vg->lvs)
+		if (!check_lv_segments_complete_vg(lvl->lv)) {
 			log_error(INTERNAL_ERROR "LV segments corrupted in %s.",
 				  lvl->lv->name);
 			r = 0;
 		}
-
-		if (!dm_hash_insert(vhash.lvname, lvl->lv->name, lvl)) {
-			log_error("Failed to hash lvname.");
-			r = 0;
-			break;
-		}
-
-		if (!dm_hash_insert_binary(vhash.lvid, &lvl->lv->lvid.id[1],
-					   sizeof(lvl->lv->lvid.id[1]), lvl->lv)) {
-			log_error("Failed to hash lvid.");
-			r = 0;
-			break;
-		}
-	}
 
 	if (!_lv_postorder_vg(vg, _lv_validate_references_single, &vhash)) {
 		stack;
@@ -2546,7 +2566,7 @@ int vg_validate(struct volume_group *vg)
 	if (vg_max_lv_reached(vg))
 		stack;
 
-	if (!(vhash.lv_lock_args = dm_hash_create(lv_count))) {
+	if (!(vhash.lv_lock_args = radix_tree_create(NULL, NULL))) {
 		log_error("Failed to allocate lv_lock_args hash");
 		r = 0;
 		goto out;
@@ -2641,13 +2661,15 @@ int vg_validate(struct volume_group *vg)
 				}
 
 				if (!strcmp(vg->lock_type, "sanlock")) {
-					if (dm_hash_lookup(vhash.lv_lock_args, lvl->lv->lock_args)) {
+					if (radix_tree_lookup_ptr(vhash.lv_lock_args, lvl->lv->lock_args,
+								  strlen(lvl->lv->lock_args))) {
 						log_error(INTERNAL_ERROR "LV %s has duplicate lock_args %s.",
 							  display_lvname(lvl->lv), lvl->lv->lock_args);
 						r = 0;
 					}
 
-					if (!dm_hash_insert(vhash.lv_lock_args, lvl->lv->lock_args, lvl)) {
+					if (!radix_tree_insert_ptr(vhash.lv_lock_args, lvl->lv->lock_args,
+								   strlen(lvl->lv->lock_args), lvl)) {
 						log_error("Failed to hash lvname.");
 						r = 0;
 					}
@@ -2671,19 +2693,19 @@ int vg_validate(struct volume_group *vg)
 		}
 	}
 
-	if (!(vhash.historical_lvname = dm_hash_create(dm_list_size(&vg->historical_lvs)))) {
+	if (!(vhash.historical_lvname = radix_tree_create(NULL, NULL))) {
 		r = 0;
 		goto_out;
 	}
 
-        if (!(vhash.historical_lvid = dm_hash_create(dm_list_size(&vg->historical_lvs)))) {
-                r = 0;
-                goto_out;
-        }
+	if (!(vhash.historical_lvid = radix_tree_create(NULL, NULL))) {
+		r = 0;
+		goto_out;
+	}
 
 	dm_list_iterate_items(glvl, &vg->historical_lvs) {
 		if (!glvl->glv->is_historical) {
-			log_error(INTERNAL_ERROR "LV %s/%s appearing in VG's historical list is not a historical LV",
+			log_error(INTERNAL_ERROR "LV %s/%s appearing in VG's historical list is not a historical LV.",
 				  vg->name, glvl->glv->live->name);
 			r = 0;
 			continue;
@@ -2692,7 +2714,7 @@ int vg_validate(struct volume_group *vg)
 		hlv = glvl->glv->historical;
 
 		if (hlv->vg != vg) {
-			log_error(INTERNAL_ERROR "Historical LV %s points to different VG %s while it is listed in VG %s",
+			log_error(INTERNAL_ERROR "Historical LV %s points to different VG %s while it is listed in VG %s.",
 				  hlv->name, hlv->vg->name, vg->name);
 			r = 0;
 			continue;
@@ -2706,62 +2728,57 @@ int vg_validate(struct volume_group *vg)
 			log_error(INTERNAL_ERROR "Historical LV %s has VG UUID %s but its VG %s has UUID %s",
 				  hlv->name, uuid, hlv->vg->name, uuid2);
 			r = 0;
-			continue;
-                }
-
-		if (dm_hash_lookup_binary(vhash.historical_lvid, &hlv->lvid.id[1], sizeof(hlv->lvid.id[1]))) {
-			if (!id_write_format(&hlv->lvid.id[1], uuid,sizeof(uuid)))
-				stack;
-			log_error(INTERNAL_ERROR "Duplicate historical LV id %s detected for %s in %s",
-				  uuid, hlv->name, vg->name);
-                        r = 0;
-                }
-
-		if (dm_hash_lookup(vhash.historical_lvname, hlv->name)) {
-			log_error(INTERNAL_ERROR "Duplicate historical LV name %s detected in %s", hlv->name, vg->name);
-			r = 0;
-			continue;
 		}
 
-                if (!dm_hash_insert(vhash.historical_lvname, hlv->name, hlv)) {
-                        log_error("Failed to hash historical LV name");
-                        r = 0;
-                        break;
-                }
+		if (1 != (rt = radix_tree_uniq_insert_ptr(vhash.historical_lvname, hlv->name,
+							  strlen(hlv->name), hlv))) {
+			r = 0;
+			if (!rt) {
+				log_error("Failed to store historical LV name.");
+				goto out;
+			}
+			log_error(INTERNAL_ERROR "Duplicate historical LV name %s detected in %s.",
+				  hlv->name, vg->name);
+		}
 
-                if (!dm_hash_insert_binary(vhash.historical_lvid, &hlv->lvid.id[1], sizeof(hlv->lvid.id[1]), hlv)) {
-                        log_error("Failed to hash historical LV id");
-                        r = 0;
-                        break;
-                }
+		if (1 != (rt = radix_tree_uniq_insert_ptr(vhash.historical_lvid, &hlv->lvid.id[1],
+							  sizeof(hlv->lvid.id[1]), hlv))) {
+			r = 0;
+			if (!rt) {
+				log_error("Failed to store historical LV id.");
+				goto out;
+			}
+			if (!id_write_format(&hlv->lvid.id[1], uuid,sizeof(uuid)))
+				stack;
+			log_error(INTERNAL_ERROR "Duplicate historical LV id %s detected for %s in %s.",
+				  uuid, hlv->name, vg->name);
+		}
 
-		if (dm_hash_lookup(vhash.lvname, hlv->name)) {
-			log_error(INTERNAL_ERROR "Name %s appears as live and historical LV at the same time in VG %s",
+		if (radix_tree_lookup_ptr(vhash.lvname, hlv->name, strlen(hlv->name))) {
+			log_error(INTERNAL_ERROR "Name %s appears as live and historical LV at the same time in VG %s.",
 				  hlv->name, vg->name);
 			r = 0;
-			continue;
 		}
 
 		if (!hlv->indirect_origin && dm_list_empty(&hlv->indirect_glvs)) {
-			log_error(INTERNAL_ERROR "Historical LV %s is not part of any LV chain in VG %s", hlv->name, vg->name);
+			log_error(INTERNAL_ERROR "Historical LV %s is not part of any LV chain in VG %s.",
+				  hlv->name, vg->name);
 			r = 0;
-			continue;
 		}
 	}
-
 out:
 	if (vhash.lvid)
-		dm_hash_destroy(vhash.lvid);
+		radix_tree_destroy(vhash.lvid);
 	if (vhash.lvname)
-		dm_hash_destroy(vhash.lvname);
+		radix_tree_destroy(vhash.lvname);
 	if (vhash.historical_lvid)
-		dm_hash_destroy(vhash.historical_lvid);
+		radix_tree_destroy(vhash.historical_lvid);
 	if (vhash.historical_lvname)
-		dm_hash_destroy(vhash.historical_lvname);
+		radix_tree_destroy(vhash.historical_lvname);
 	if (vhash.pvid)
-		dm_hash_destroy(vhash.pvid);
+		radix_tree_destroy(vhash.pvid);
 	if (vhash.lv_lock_args)
-		dm_hash_destroy(vhash.lv_lock_args);
+		radix_tree_destroy(vhash.lv_lock_args);
 
 	return r;
 }
@@ -2917,7 +2934,6 @@ int vg_write(struct volume_group *vg)
 	struct dm_list *mdah;
 	struct pv_list *pvl, *pvl_safe, *new_pvl;
 	struct metadata_area *mda;
-	struct lv_list *lvl;
 	struct device *mda_dev;
 	int revert = 0, wrote = 0;
 
@@ -2926,25 +2942,18 @@ int vg_write(struct volume_group *vg)
 
 	log_debug("Writing metadata for VG %s.", vg->name);
 
-	if (vg_is_shared(vg)) {
-		dm_list_iterate_items(lvl, &vg->lvs) {
-			if (lvl->lv->lock_args && !strcmp(lvl->lv->lock_args, "pending")) {
-				if (!lockd_init_lv_args(vg->cmd, vg, lvl->lv, vg->lock_type, &lvl->lv->lock_args)) {
-					log_error("Cannot allocate lock for new LV.");
-					return 0;
-				}
-				lvl->lv->new_lock_args = 1;
-			}
-		}
-	}
-
 	if (!_handle_historical_lvs(vg)) {
 		log_error("Failed to handle historical LVs in VG %s.", vg->name);
 		return 0;
 	}
 
-	if (!vg_validate(vg))
-		return_0;
+	if (vg->cmd->vg_write_validates_vg) {
+		log_debug_metadata("Validating volume group structure.");
+		if (!vg_validate(vg))
+			return_0;
+	} else
+		log_debug_metadata("Skipping validation of volume group structure.");
+
 
 	if (vg->status & PARTIAL_VG) {
 		log_error("Cannot update partial volume group %s.", vg->name);
@@ -3020,10 +3029,13 @@ int vg_write(struct volume_group *vg)
 
 	/* Write to each copy of the metadata area */
 	dm_list_iterate_items(mda, &vg->fid->metadata_areas_in_use) {
-		mda_dev = mda_get_device(mda);
-
 		if (mda->status & MDA_FAILED)
 			continue;
+
+		if (!(mda_dev = mda_get_device(mda))) {
+			log_warn("WARNING: mda without device.");
+			continue;
+		}
 
 		/*
 		 * When the scan and vg_read find old metadata in an mda, they
@@ -3170,14 +3182,6 @@ int vg_commit(struct volume_group *vg)
 void vg_revert(struct volume_group *vg)
 {
 	struct metadata_area *mda;
-	struct lv_list *lvl;
-
-	dm_list_iterate_items(lvl, &vg->lvs) {
-		if (lvl->lv->new_lock_args) {
-			lockd_free_lv(vg->cmd, vg, lvl->lv->name, &lvl->lv->lvid.id[1], lvl->lv->lock_args);
-			lvl->lv->new_lock_args = 0;
-		}
-	}
 
 	_vg_wipe_cached_precommitted(vg); /* VG is no longer needed */
 
@@ -4109,6 +4113,11 @@ struct metadata_area *fid_get_mda_indexed(struct format_instance *fid,
 	static char full_key[PATH_MAX];
 	struct metadata_area *mda = NULL;
 
+	if (!fid) {
+		log_error(INTERNAL_ERROR "FID is not defined!");
+		return NULL;
+	}
+
 	if (!fid->metadata_areas_index)
 		return_NULL;
 
@@ -4331,6 +4340,8 @@ const struct logical_volume *lv_committed(const struct logical_volume *lv)
 {
 	struct volume_group *vg;
 	const struct logical_volume *found_lv;
+	struct lv_list *lvl;
+	int r;
 
 	if (!lv)
 		return NULL;
@@ -4339,6 +4350,24 @@ const struct logical_volume *lv_committed(const struct logical_volume *lv)
 		return lv;
 
 	vg = lv->vg->vg_committed;
+
+	if (!vg->lv_uuids &&
+	    (vg->lv_uuids = radix_tree_create(NULL, NULL)))
+		/* Create radix_tree for the 'committed' VG, that should
+		 * never be modified and is only used for 'activation'
+		 * so the tree need to constructed just once. */
+		dm_list_iterate_items(lvl, &vg->lvs) {
+			if (!(r = radix_tree_uniq_insert_ptr(vg->lv_uuids,
+								 &lvl->lv->lvid.id[1],
+								 sizeof(lvl->lv->lvid.id[1]),
+								 lvl->lv))) {
+				radix_tree_destroy(vg->lv_uuids);
+				vg->lv_uuids = NULL; /* fallback to linear search */
+				break;
+			}
+			if (r != 1) /* There is duplicate ID, but continue with 'best' effort */
+				log_warn("WARNING: Duplicate id found!");
+		}
 
 	if (!(found_lv = find_lv_in_vg_by_lvid(vg, &lv->lvid))) {
 		log_error(INTERNAL_ERROR "LV %s (UUID %s) not found in committed metadata.",
@@ -4981,7 +5010,18 @@ struct volume_group *vg_read(struct cmd_context *cmd, const char *vg_name, const
 		if (!(vg_read_flags & READ_OK_NOTFOUND))
 			log_error("Volume group \"%s\" not found", vg_name);
 		failure |= FAILED_NOTFOUND;
-		goto bad;
+		goto_bad;
+	}
+
+	/* Update DM cache after grabbing lock
+	 * TODO: do a lazy-update of this cache, only when it's really used */
+	if (dm_devs_cache_use()) {
+		log_debug_cache("Rescanning DM cache.");
+		if (!dm_devs_cache_update()) {
+			log_error("Can't allocate DM cache memory for VG %s.", vg_name);
+			failure |= FAILED_ALLOCATION;
+			goto bad;
+		}
 	}
 
 	/*
@@ -4997,7 +5037,7 @@ struct volume_group *vg_read(struct cmd_context *cmd, const char *vg_name, const
 		if (!(vg_read_flags & READ_OK_NOTFOUND))
 			log_error("Volume group \"%s\" not found.", vg_name);
 		failure |= FAILED_NOTFOUND;
-		goto bad;
+		goto_bad;
 	}
 
 	/*
@@ -5072,16 +5112,8 @@ struct volume_group *vg_read(struct cmd_context *cmd, const char *vg_name, const
 	}
 
 	dm_list_iterate_items(lvl, &vg->lvs) {
-		if (!check_lv_segments(lvl->lv, 0)) {
-			log_error(INTERNAL_ERROR "LV segments corrupted in %s.", lvl->lv->name);
-			failure |= FAILED_INTERNAL_ERROR;
-			goto bad;
-		}
-	}
-
-	dm_list_iterate_items(lvl, &vg->lvs) {
 		/* Checks that cross-reference other LVs. */
-		if (!check_lv_segments(lvl->lv, 1)) {
+		if (!check_lv_segments_complete_vg(lvl->lv)) {
 			log_error(INTERNAL_ERROR "LV segments corrupted in %s.", lvl->lv->name);
 			failure |= FAILED_INTERNAL_ERROR;
 			goto bad;

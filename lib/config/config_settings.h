@@ -214,6 +214,16 @@ cfg(config_checks_CFG, "checks", config_CFG_SECTION, CFG_DEFAULT_COMMENTED, CFG_
 	"without any warning (a message about the configuration key not being\n"
 	"found is issued in verbose mode only).\n")
 
+cfg(config_validate_metadata_CFG, "validate_metadata", config_CFG_SECTION, CFG_DEFAULT_COMMENTED | CFG_ADVANCED, CFG_TYPE_STRING, DEFAULT_VALIDATE_METADATA, vsn(2, 3, 28), NULL, 0, NULL,
+	"Allows to select the level of validation after metadata transformation.\n"
+	"Validation takes extra CPU time to verify internal consistency.\n"
+	"Accepted values:\n"
+	"  full\n"
+	"    Do a full metadata validation before disk write.\n"
+	"  none\n"
+	"    Skip any checks (unrecommended, slightly faster).\n"
+	"#\n")
+
 cfg(config_abort_on_errors_CFG, "abort_on_errors", config_CFG_SECTION, CFG_DEFAULT_COMMENTED, CFG_TYPE_BOOL, 0, vsn(2,2,99), NULL, 0, NULL,
 	"Abort the LVM process if a configuration mismatch is found.\n")
 
@@ -671,7 +681,7 @@ cfg(allocation_thin_pool_metadata_require_separate_pvs_CFG, "thin_pool_metadata_
 
 cfg(allocation_thin_pool_crop_metadata_CFG, "thin_pool_crop_metadata", allocation_CFG_SECTION, CFG_DEFAULT_COMMENTED, CFG_TYPE_BOOL, DEFAULT_THIN_POOL_CROP_METADATA, vsn(2, 3, 12), NULL, 0, NULL,
 	"Older version of lvm2 cropped pool's metadata size to 15.81 GiB.\n"
-	"This is slightly less then the actual maximum 15.88 GiB.\n"
+	"This is slightly less than the actual maximum 15.88 GiB.\n"
 	"For compatibility with older version and use of cropped size set to 1.\n")
 
 cfg(allocation_thin_pool_zero_CFG, "thin_pool_zero", allocation_CFG_SECTION, CFG_PROFILABLE | CFG_PROFILABLE_METADATA | CFG_DEFAULT_COMMENTED, CFG_TYPE_BOOL, DEFAULT_THIN_POOL_ZERO, vsn(2, 2, 99), NULL, 0, NULL,

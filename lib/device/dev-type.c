@@ -16,6 +16,7 @@
 #include "lib/misc/lib.h"
 #include "lib/device/dev-type.h"
 #include "lib/device/device-types.h"
+#include "lib/device/filesystem.h"
 #include "lib/mm/xlate.h"
 #include "lib/config/config.h"
 #include "lib/metadata/metadata.h"
@@ -23,6 +24,7 @@
 #include "lib/label/label.h"
 #include "lib/commands/toolcontext.h"
 #include "lib/activate/activate.h"
+#include "lib/display/display.h"
 #include "device_mapper/misc/dm-ioctl.h"
 
 #ifdef BLKID_WIPING_SUPPORT
@@ -46,7 +48,7 @@
  * is excessive and unnecessary compared to just comparing /dev/name*.
  */
 
-int dev_is_nvme(struct dev_types *dt, struct device *dev)
+int dev_is_nvme(struct device *dev)
 {
 	return (dev->flags & DEV_IS_NVME) ? 1 : 0;
 }
@@ -106,7 +108,7 @@ int dev_is_used_by_active_lv(struct cmd_context *cmd, struct device *dev, int *u
 		 * from this name, create path "/dev/dm-1" to run stat on.
 		 */
 		
-		if (dm_snprintf(dm_dev_path, sizeof(dm_dev_path), "%s/%s", cmd->dev_dir, holder_name) < 0)
+		if (dm_snprintf(dm_dev_path, sizeof(dm_dev_path), "%s%s", cmd->dev_dir, holder_name) < 0)
 			continue;
 
 		/*
@@ -562,7 +564,7 @@ static int _is_partitionable(struct dev_types *dt, struct device *dev)
 	    _loop_is_with_partscan(dev))
 		return 1;
 
-	if (dev_is_nvme(dt, dev)) {
+	if (dev_is_nvme(dev)) {
 		/* If this dev is already a partition then it's not partitionable. */
 		if (_has_sys_partition(dev))
 			return 0;
@@ -604,14 +606,14 @@ static int _has_gpt_partition_table(struct device *dev)
 	/* the gpt table is always written using LE on disk */
 
 	if (le64_to_cpu(gpt_header.magic) != PART_GPT_MAGIC)
-		return_0;
+		return 0;
 
 	entries_start = le64_to_cpu(gpt_header.part_entries_lba) * lbs;
 	nr_entries = le32_to_cpu(gpt_header.nr_part_entries);
 	sz_entry = le32_to_cpu(gpt_header.sz_part_entry);
 
 	for (i = 0; i < nr_entries; i++) {
-		if (!dev_read_bytes(dev, entries_start + i * sz_entry,
+		if (!dev_read_bytes(dev, entries_start + (uint64_t)i * sz_entry,
 				    sizeof(gpt_part_entry), &gpt_part_entry))
 			return_0;
 
@@ -663,7 +665,7 @@ static int _has_partition_table(struct device *dev)
 				 * If this is GPT's PMBR, then also
 				 * check for gpt partition table.
 				 */
-				if (buf.part[p].sys_ind == PART_MSDOS_TYPE_GPT_PMBR)
+				if (buf.part[p].sys_ind == PART_MSDOS_TYPE_GPT_PMBR && !ret)
 					ret = _has_gpt_partition_table(dev);
 				else
 					ret = 1;
@@ -790,7 +792,7 @@ int dev_get_primary_dev(struct dev_types *dt, struct device *dev, dev_t *result)
 	 * block dev types that have their own major number, so
 	 * the calculation based on minor number doesn't work.
 	 */
-	if (dev_is_nvme(dt, dev))
+	if (dev_is_nvme(dev))
 		goto sys_partition;
 
 	/*
@@ -1005,8 +1007,8 @@ int fs_get_blkid(const char *pathname, struct fs_info *fsi)
 		fsi->fs_last_byte = fssize;
 
 		/*
-		 * For swap, there's no FSLASTBLOCK reported by blkid. We do have FSSIZE reported though.
-		 * The last block is then calculated as:
+		 * For swap, FSLASTBLOCK is reported by blkid since v2.41 so use that directly.
+		 * Otherwise, we do have FSSIZE reported since v2.39. Then. then last block is calculated as:
 		 *    FSSIZE (== size of the usable swap area) + FSBLOCKSIZE (== size of the swap header)
 		 */
 		if (!strcmp(fsi->fstype, "swap"))
@@ -1378,6 +1380,22 @@ static unsigned long _dev_topology_attribute(struct dev_types *dt,
 	return result;
 }
 
+static unsigned long _dev_topology_attribute_4k(struct dev_types *dt,
+						const char *attribute,
+						struct device *dev,
+						unsigned long default_value)
+{
+	unsigned long result = _dev_topology_attribute(dt, attribute, dev, default_value);
+
+	if ((result > 1) && (result & 0x3)) {
+		log_warn("WARNING: Ignoring %s = %lu for device %s (not divisible by 4KiB).",
+			 attribute, result << SECTOR_SHIFT, dev_name(dev));
+		result = 8;
+	}
+
+	return result;
+}
+
 unsigned long dev_alignment_offset(struct dev_types *dt, struct device *dev)
 {
 	return _dev_topology_attribute(dt, "alignment_offset", dev, 0UL);
@@ -1385,12 +1403,12 @@ unsigned long dev_alignment_offset(struct dev_types *dt, struct device *dev)
 
 unsigned long dev_minimum_io_size(struct dev_types *dt, struct device *dev)
 {
-	return _dev_topology_attribute(dt, "queue/minimum_io_size", dev, 0UL);
+	return _dev_topology_attribute_4k(dt, "queue/minimum_io_size", dev, 0UL);
 }
 
 unsigned long dev_optimal_io_size(struct dev_types *dt, struct device *dev)
 {
-	return _dev_topology_attribute(dt, "queue/optimal_io_size", dev, 0UL);
+	return _dev_topology_attribute_4k(dt, "queue/optimal_io_size", dev, 0UL);
 }
 
 unsigned long dev_discard_max_bytes(struct dev_types *dt, struct device *dev)

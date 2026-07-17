@@ -49,7 +49,8 @@ static int _lv_tree_move(struct dm_list *lvh,
 		*lvht = dm_list_next(lvh, lvh);
 
 	dm_list_move(&vg_to->lvs, lvh);
-	lv->vg = vg_to;
+	if (!lv_set_vg(lv, vg_to))
+		return_0;
 	lv->lvid.id[0] = lv->vg->id;
 
 	if (seg)
@@ -702,6 +703,7 @@ int vgsplit(struct cmd_context *cmd, int argc, char **argv)
 	vg_to->status |= EXPORTED_VG;
 
 
+	/* coverity[format_string_injection] pool_metadata_spare_lv name is validated */
 	if (!handle_pool_metadata_spare(vg_to, 0, &vg_to->pvs, poolmetadataspare))
 		goto_bad;
 

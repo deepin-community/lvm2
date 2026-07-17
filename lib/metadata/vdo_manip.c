@@ -544,8 +544,10 @@ struct logical_volume *convert_vdo_lv(struct logical_volume *lv,
 		return_NULL;
 
 	/* Also swap naming, so the passed in LV keeps the passed-in name */
-	vdo_lv->name = lv->name;
-	lv->name = lvc.lv_name;
+	tmp_lv.name = lv->name;
+	lv_set_name(lv, NULL);
+	lv_set_name(vdo_lv, tmp_lv.name);
+	lv_set_name(lv, lvc.lv_name);
 
 	/* Swap segment referencing */
 	if (!remove_seg_from_segs_using_this_lv(lv, first_seg(lv)))
@@ -639,7 +641,7 @@ static int _get_sysinfo_memory(uint64_t *total_mb, uint64_t *available_mb)
 {
 	struct sysinfo si = { 0 };
 
-	*total_mb = *available_mb = UINT64_MAX;
+	*total_mb = *available_mb = ((UINT64_MAX) >> 20);
 
 	if (sysinfo(&si) != 0)
 		return 0;
@@ -757,7 +759,7 @@ static int _vdo_snprintf(char **buf, size_t *bufsize, const char *format, ...)
 
 int check_vdo_constrains(struct cmd_context *cmd, const struct vdo_pool_size_config *cfg)
 {
-	static const char _vdo_split[][4] = { "", " and", ",", "," };
+	static const char _vdo_split[][8] = { "", " and", ",", "," };
 	uint64_t req_mb, total_mb, available_mb;
 	uint64_t phy_mb = _round_sectors_to_tib(UINT64_C(268) * cfg->physical_size); // 268 MiB per 1 TiB of physical size
 	uint64_t virt_mb = _round_1024(UINT64_C(1638) * _round_sectors_to_tib(cfg->virtual_size)); // 1.6 MiB per 1 TiB
