@@ -1,3 +1,10 @@
+lvm2 (2.03.31-2deepin1) unstable; urgency=medium
+
+  * Restore deepin-specific patches:
+  * uniontech: add ConditionPathExistsGlob for lvm2-monitor.service
+
+ -- lichenggang <lichenggang@uniontech.com>  Thu, 17 Jul 2026 10:00:00 +0800
+
 lvm2 (2.03.31-2) unstable; urgency=medium
 
   * Ask build system to install stuff writable. (closes: #1104357)
