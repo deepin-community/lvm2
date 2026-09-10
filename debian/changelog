@@ -1,3 +1,9 @@
+lvm2 (2.03.31-2deepin2) unstable; urgency=medium
+
+  * Rebuild with LTO enabled (dpkg vendor feature optimize/lto).
+
+ -- tunaichao <tunaichao@uniontech.com>  Thu, 10 Sep 2026 19:30:03 +0800
+
 lvm2 (2.03.31-2deepin1) unstable; urgency=medium
 
   * Restore deepin-specific patches:
